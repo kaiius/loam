@@ -371,7 +371,10 @@ export function createUI(canvas, renderer, world) {
       const d = ui.dragging;
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 5) d.moved = true;
       if (d.moved && d.draggable) {
+        // v0.17.2: the hand moves in two dimensions — held objects follow the
+        // cursor in x AND y (Joshua: "I should be able to do both").
         d.hit.obj.x = Math.max(20, Math.min(world.width - 20, x));
+        d.hit.obj.y = Math.max(20, Math.min(world.height - 20, y));
         if (d.hit.type === 'toy') d.hit.obj.vx = 0;
       }
       return;
