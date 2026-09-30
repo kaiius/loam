@@ -33,6 +33,7 @@ const DIALECT_S = 0.5;
 const NOTABLE = new Set([
   'hatch', 'death', 'mating', 'speciation', 'traditionFounded',
   'traditionAdopted', 'epimark', 'novelGenome', 'beautifulMutant', 'seedDispersed',
+  'soilRich',
 ]);
 
 const dayOf = (t) => `Day ${Math.floor((t || 0) / DAY_LENGTH) + 1}`;
@@ -337,6 +338,11 @@ function present(world) {
       if (seeds >= 2) continue;
       seeds++;
       els.push(entry(world, { t: e.t, icon: '🌰', text: `A seedling took root, far from its parent.` }));
+      continue;
+    }
+    if (e.type === 'soilRich') {
+      // v0.14.1: the detritus layer made history — the dead feeding the living.
+      els.push(entry(world, { t: e.t, icon: '🪱', text: `The ground in ${e.zone || 'a biome'} grew rich — rot and litter become the next harvest.` }));
       continue;
     }
   }

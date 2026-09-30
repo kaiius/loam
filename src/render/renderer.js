@@ -295,6 +295,14 @@ function drawFood(ctx, f, t) {
     ctx.beginPath();
     ctx.ellipse(f.x - 3, f.y - 10 + bob * 0.5, 6, 4, 0.2, 0, Math.PI * 2);
     ctx.fill();
+  } else if (f.foodKind === 'scrap') {
+    // v0.14.1: scraps — fallen crumbs, brown and scattered.
+    ctx.fillStyle = '#8a6f4d';
+    ctx.beginPath();
+    ctx.arc(f.x - 4, f.y - 6 + bob, 3.5, 0, Math.PI * 2);
+    ctx.arc(f.x + 3, f.y - 4 + bob * 0.7, 2.8, 0, Math.PI * 2);
+    ctx.arc(f.x, f.y - 9 + bob * 1.2, 2.2, 0, Math.PI * 2);
+    ctx.fill();
   } else {
     ctx.fillStyle = '#c9a86a';
     ctx.beginPath();

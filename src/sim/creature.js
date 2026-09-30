@@ -7,7 +7,7 @@ import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
-import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS } from './world.js';
+import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION } from './world.js';
 
 let nextId = 1;
 
@@ -477,6 +477,12 @@ export function doEat(c, world) {
   // v0.14: the waste cycle — part of every bite passes through the gut.
   // Nutrition feeds blood sugar; the rest is excreted into the soil.
   c.gut = (c.gut || 0) + bite * WASTE_FRACTION;
+  // v0.14.1: messy eaters — a fraction of every bite falls as scraps.
+  // Poor food for the desperate, compost for the soil if ignored.
+  const scrapAmt = bite * SCRAP_FRACTION;
+  if (scrapAmt > 0.005 && world.foods.length < 90) {
+    addFood(world, c.x + world.rng.range(-8, 8), c.platformIndex, 'scrap', scrapAmt, SCRAP_ROT, { nutrition: SCRAP_NUTRITION });
+  }
   const eff = food.foodKind === 'meat' ? c.pheno.meatEfficiency : c.pheno.fruitEfficiency;
   // v0.8: medicinal leaves. Bitter and barely nutritious, but they purge
   // illness — self-medication. The illness reward term (below) makes recovery
@@ -503,8 +509,10 @@ export function doEat(c, world) {
     const palatability = 1 - 0.5 * bitter;
     const nutrition = (food.nutrition || 1) * palatability;
     c._ate = (c._ate || 0) + bite * 1.1 * eff * nutrition;
-    c.actionLabel = `eating ${food.foodKind === 'meat' ? 'meat' : 'fruit'}`;
-    c.reward += 0.6 * palatability; // bitter meals reinforce less
+    // v0.14.1: scraps are desperation food — eaten, but joylessly.
+    const isScrap = food.foodKind === 'scrap';
+    c.actionLabel = isScrap ? 'picking at scraps' : `eating ${food.foodKind === 'meat' ? 'meat' : 'fruit'}`;
+    c.reward += (isScrap ? 0.25 : 0.6) * palatability; // bitter meals reinforce less
     // v0.13: seed dispersal — the eaten fruit's plant may ride along.
     disperseSeed(world, c, food);
   }

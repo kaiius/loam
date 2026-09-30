@@ -8,7 +8,7 @@ import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, DUP
 import { createBrain, decide, learn, senseVector, ACTIONS } from '../src/sim/brain.js';
 import { createBiochem, tickBiochem, mood } from '../src/sim/biochem.js';
 import { createRng } from '../src/sim/rng.js';
-import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE } from '../src/sim/world.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
   memoryCapacity, RECALL_BUDGET,
@@ -2996,4 +2996,92 @@ test('chronicle: an empty young world builds without crashing', () => {
   const chs = buildChronicle(world);
   assert.equal(chs.length, 6);
   for (const ch of chs) assert.deepEqual(ch.entries, [], `${ch.id} is empty but well-formed`);
+});
+
+// ---- v0.14.1 "Detritus": death feeds the ground — rot, scraps, litter ----
+
+test('v0.14.1: rot composts — expired food mass enters the soil, not the void', () => {
+  const world = bindWorld(createWorld(14110));
+  populate(world);
+  const zone = zoneAt(500).key;
+  const s = world.soil[zone];
+  s.waste = 0; s.fertility = 0.5;
+  // A carcass: 1.2 meat at nutrition 1, rotting now.
+  addFood(world, 500, 2, 'meat', 1.2, 0.01, { nutrition: 1 });
+  const carcass = world.foods[world.foods.length - 1];
+  const wasteBefore = s.waste;
+  world.time += 1; // past rotsAt
+  compostRot(world);
+  assert.ok(!world.foods.includes(carcass), 'the carcass is gone as an item');
+  assert.ok(Math.abs(s.waste - wasteBefore - 1.2) < 1e-9, `soil waste gained the carcass mass, got ${s.waste}`);
+});
+
+test('v0.14.1: eating drops scraps — messy eaters litter', () => {
+  const world = bindWorld(createWorld(14111));
+  populate(world);
+  const c = addTestCreature(world, 500);
+  addFood(world, c.x, c.platformIndex, 'fruit', 1, 0, { plantId: 0, bitterness: 0, nutrition: 1 });
+  const food = world.foods[world.foods.length - 1];
+  c._senses = { _food: food };
+  const nBefore = world.foods.length;
+  assert.ok(doEat(c, world), 'the creature ate');
+  const scrap = world.foods.find((f) => f.foodKind === 'scrap');
+  assert.ok(scrap, 'a scrap item fell');
+  assert.ok(Math.abs(scrap.amount - Math.min(1, c.pheno.biteSize) * SCRAP_FRACTION) < 1e-9,
+    `scrap is a fraction of the bite, got ${scrap.amount}`);
+  assert.equal(scrap.nutrition, SCRAP_NUTRITION, 'scraps are poor food');
+  assert.ok(scrap.rotsAt > world.time && scrap.rotsAt <= world.time + SCRAP_ROT + 1, 'scraps rot on a timer');
+  assert.ok(nBefore + 1 >= world.foods.length, 'scrap added (fruit may be fully eaten)');
+});
+
+test('v0.14.1: scraps are edible but joyless — desperation food', () => {
+  const world = bindWorld(createWorld(14112));
+  populate(world);
+  const c = addTestCreature(world, 500);
+  addFood(world, c.x, c.platformIndex, 'scrap', 1, 60, { nutrition: SCRAP_NUTRITION });
+  const scrap = world.foods[world.foods.length - 1];
+  c._senses = { _food: scrap };
+  c.reward = 0;
+  assert.ok(doEat(c, world), 'the creature ate the scrap');
+  assert.ok(c._ate > 0, 'scraps feed a little');
+  assert.ok(c.reward < 0.6, `scraps reinforce less than a real meal, got ${c.reward}`);
+  assert.equal(c.actionLabel, 'picking at scraps');
+});
+
+test('v0.14.1: plants shed litter — the unused parts feed the ground', () => {
+  const world = bindWorld(createWorld(14113));
+  populate(world);
+  const p = world.plants[0];
+  const s = world.soil[p.zone];
+  s.waste = 0;
+  shedLitter(world, 100);
+  let expected = 0;
+  for (const q of world.plants) {
+    const g = (q.pheno && q.pheno.growthRate !== undefined) ? q.pheno.growthRate : 0.5;
+    expected += LITTER_RATE * (0.5 + g) * 100;
+  }
+  assert.ok(s.waste > 0, 'litter accumulated in the soil');
+  // All plants in these seeds share the zone only if p.zone matches; check total instead.
+  let total = 0;
+  for (const z of Object.values(world.soil)) total += z.waste;
+  assert.ok(Math.abs(total - expected) < 1e-6, `litter mass is lawful, got ${total} expected ${expected}`);
+});
+
+test('v0.14.1: rich ground enters the chronicle — the land remembers', () => {
+  const world = bindWorld(createWorld(14114));
+  populate(world);
+  const s = world.soil.verdant;
+  s.waste = 0; s.fertility = 0.99; s.richNoted = false;
+  tickSoil(world, 0.5); // no waste: leaching pulls DOWN — no event
+  assert.ok(!world.events.some((e) => e.type === 'soilRich'), 'lean soil writes no history');
+  s.fertility = 1.2; // above 1.0 even after this tick's leaching
+  tickSoil(world, 0.001);
+  const ev = world.events.find((e) => e.type === 'soilRich');
+  assert.ok(ev, 'first richness is noted');
+  assert.equal(ev.zone, 'verdant');
+  tickSoil(world, 10);
+  assert.equal(world.events.filter((e) => e.type === 'soilRich').length, 1, 'noted once per enrichment');
+  const chs = buildChronicle(world);
+  const present = chs.find((c) => c.id === 'present');
+  assert.ok(present.entries.some((e) => e.icon === '🪱'), 'the chronicle carries the rich-ground entry');
 });

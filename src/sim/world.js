@@ -502,6 +502,12 @@ export const SOIL_LEACH = 0.004; // per-second relaxation of fertility to 0.5
 export const SOIL_FERT_MAX = 1.5;
 export const WASTE_ODOR_SCALE = 4; // soil-waste units that read as full stink
 export const CONTAM_ILLNESS = 0.15; // illness per unit bite at full contamination
+// v0.14.1 "Detritus": nothing leaves the loop. Rot, scraps, shed leaves all
+// compost into the zone soil — death feeds the ground that feeds the plants.
+export const SCRAP_FRACTION = 0.12; // of each bite falls as litter
+export const SCRAP_ROT = 45; // seconds before a scrap composts
+export const SCRAP_NUTRITION = 0.35; // scraps are poor food
+export const LITTER_RATE = 0.004; // soil-waste per second per plant at growthRate 0.5
 
 // v0.14: disgust's information channel — how fouled the ground smells here,
 // 0 (clean) to 1 (full stink). Tolerates stub worlds without soil (see the
@@ -532,6 +538,42 @@ export function tickSoil(world, dt) {
     s.fertility = Math.min(SOIL_FERT_MAX, s.fertility + conv * SOIL_CONV_EFF);
     // Leaching: unused fertility washes out toward the baseline.
     s.fertility += (0.5 - s.fertility) * Math.min(1, SOIL_LEACH * dt);
+    // v0.14.1: the land remembers — first crossing into rich ground is
+    // history, not just chemistry. Noted once per zone per enrichment.
+    if (s.fertility >= 1.0 && !s.richNoted) {
+      s.richNoted = true;
+      if (world.events) world.events.push({ type: 'soilRich', zone: z.key, t: world.time });
+    } else if (s.fertility < 0.8) {
+      s.richNoted = false; // lean times reset the record; richness can return
+    }
+  }
+}
+
+// v0.14.1 "Detritus": rot is not deletion. When food expires uneaten, its
+// remaining mass composts into the zone soil — corpse meat after the
+// scavengers have had their 150s, nest fruit, fallen scraps, bitter leaves.
+// What the eaters don't take, the ground does.
+export function compostRot(world) {
+  for (let i = world.foods.length - 1; i >= 0; i--) {
+    const f = world.foods[i];
+    if (f.rotsAt > 0 && world.time >= f.rotsAt) {
+      const s = world.soil && world.soil[zoneAt(f.x).key];
+      if (s) s.waste += f.amount * (f.nutrition || 1);
+      world.foods.splice(i, 1);
+    }
+  }
+}
+
+// v0.14.1: leaf litter — the unused parts of plants. Every plant sheds mass
+// into its zone's soil as it grows; fast growers shed more. Shed leaves are
+// not an item (no render, no sense surface); they go straight to the ground.
+export function shedLitter(world, dt) {
+  if (!world.soil) return;
+  for (const p of world.plants) {
+    const s = world.soil[p.zone];
+    if (!s) continue;
+    const gr = (p.pheno && p.pheno.growthRate !== undefined) ? p.pheno.growthRate : 0.5;
+    s.waste += LITTER_RATE * (0.5 + gr) * dt;
   }
 }
 
@@ -796,14 +838,14 @@ export function tickWorld(world, dt) {
 
   // v0.14: the waste cycle — decomposition and leaching run on the soil,
   // once per tick, after the plants have eaten from it.
+  // v0.14.1: leaf litter sheds before decomposition runs, so shed mass
+  // composts the same tick it falls.
+  shedLitter(world, dt);
   tickSoil(world, dt);
 
-  // Food rots (only nest-cache fruit has a timer; plant fruit lasts).
-  for (let i = world.foods.length - 1; i >= 0; i--) {
-    if (world.foods[i].rotsAt > 0 && world.time >= world.foods[i].rotsAt) {
-      world.foods.splice(i, 1);
-    }
-  }
+  // v0.14.1: rot composts — see compostRot. (Only nest-cache fruit, scraps,
+  // and carcass meat carry timers; plant fruit is eaten or it hangs.)
+  compostRot(world);
 
   // Critters wander.
   for (const cr of world.critters) {
