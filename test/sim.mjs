@@ -11,7 +11,7 @@ import { createBiochem, tickBiochem, mood, ageStage } from '../src/sim/biochem.j
 import { createRng } from '../src/sim/rng.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
-import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams } from '../src/sim/world.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
   memoryCapacity, RECALL_BUDGET,
@@ -144,6 +144,79 @@ test('v0.16: teacher calls are full acoustic events with utterance logging', () 
   assert.equal(u.ctx, 'food', 'true context recorded');
   assert.equal(u.speaker, 'Sunny');
   assert.ok(u.fromTeacher, 'Rosetta stone marked');
+});
+
+test('v0.19: ridge sound shadow — solid earth eats the ray that punches through', () => {
+  const world = bindWorld(createWorld(7));
+  // The Whispering Plains ridge: solid mass x 1950–2250, top y=700, foot y=820.
+  const ridge = world.platforms.find((p) => p.solid && p.kind === 'ridge');
+  assert.ok(ridge, 'the plains ridge is flagged solid');
+  // Ground-level ray across the ridge: passes through the body → shadowed.
+  const shadowed = soundOcclusion(world, 1900, 810, 2300, 810);
+  // Same ray with the solid flag lifted: only slab/foliage apply → louder.
+  const wasSolid = ridge.solid;
+  ridge.solid = false;
+  const open = soundOcclusion(world, 1900, 810, 2300, 810);
+  ridge.solid = wasSolid;
+  assert.ok(shadowed < open, `ridge shadows the ray (${shadowed.toFixed(3)} < ${open.toFixed(3)})`);
+  assert.ok(Math.abs(shadowed - open * RIDGE_SHADOW) < 1e-9, `shadow factor is exactly RIDGE_SHADOW (${RIDGE_SHADOW})`);
+});
+
+test('v0.19: no shadow when the caller stands on the ridge — the ray leaves along the surface', () => {
+  const world = bindWorld(createWorld(7));
+  const ridge = world.platforms.find((p) => p.solid && p.kind === 'ridge');
+  // Caller on the ridge top (y≈700), hearer on the far ground: no punch-through.
+  const fromTop = soundOcclusion(world, 2100, 700, 2300, 810);
+  const wasSolid = ridge.solid;
+  ridge.solid = false;
+  const open = soundOcclusion(world, 2100, 700, 2300, 810);
+  ridge.solid = wasSolid;
+  assert.equal(fromTop, open, 'endpoint on the mass is excluded from the shadow');
+});
+
+test('v0.19: desert rock outcrops cast shadows too', () => {
+  const world = bindWorld(createWorld(7));
+  const rocks = world.platforms.filter((p) => p.solid && p.kind === 'rock');
+  assert.equal(rocks.length, 3, 'three solid outcrops in the desert');
+  // Ray across the middle outcrop (x 2650–2800, top 700, foot 830) at y=820.
+  const shadowed = soundOcclusion(world, 2600, 820, 2900, 820);
+  for (const r of rocks) r.solid = false;
+  const open = soundOcclusion(world, 2600, 820, 2900, 820);
+  for (const r of rocks) r.solid = true;
+  assert.ok(shadowed < open, `outcrop shadows the ray (${shadowed.toFixed(3)} < ${open.toFixed(3)})`);
+});
+
+test('v0.19: ridge shadow is NaN-hardened', () => {
+  const world = bindWorld(createWorld(7));
+  const a = soundOcclusion(world, NaN, 810, 2300, 810);
+  const b = soundOcclusion(world, 1900, 810, NaN, 810);
+  assert.ok(Number.isFinite(a) && Number.isFinite(b), 'NaN rays attenuate, never throw');
+  assert.ok(a >= 0 && a <= 1 && b >= 0 && b <= 1, 'attenuation stays in [0,1]');
+});
+
+test('v0.19: ridge shadow reaches the ear — callsHeardBy carries it', () => {
+  const world = bindWorld(createWorld(4242));
+  populate(world);
+  const a = world.creatures[0];
+  const b = world.creatures[1];
+  // Pin both to the plains ground (platform 24, y=820), flanking the ridge.
+  a.platformIndex = 24; a.x = 1900;
+  b.platformIndex = 24; b.x = 2200;
+  b.pheno.lexHear = 0; // keenest ears — both rays must arrive for the ratio
+  a.pheno.vocalRange = 0; a.voicePitch = 0.6; a.pheno.size = 0;
+  const loud = { pitch: 0.6, length: 0.3, loudness: 1.0 };
+  const ridge = world.platforms.find((p) => p.solid && p.kind === 'ridge');
+  emitCall(world, a, 'contact', loud);
+  const shadowed = callsHeardBy(world, b);
+  ridge.solid = false;
+  world.calls.length = 0;
+  emitCall(world, a, 'contact', loud);
+  const open = callsHeardBy(world, b);
+  ridge.solid = true;
+  assert.ok(open.call && shadowed.call, 'both rays arrive with keen ears');
+  const ratio = shadowed.loudnessAtEar / open.loudnessAtEar;
+  assert.ok(Math.abs(ratio - RIDGE_SHADOW) < 1e-9,
+    `ear amplitude ratio is exactly RIDGE_SHADOW (${ratio.toFixed(4)} ≈ ${RIDGE_SHADOW})`);
 });
 
 test('v0.16: witnessed death triggers the teacher danger demo', () => {

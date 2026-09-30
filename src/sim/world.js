@@ -68,12 +68,15 @@ export function createWorld(seed = 1) {
       { x1: 960, x2: 1120, y: 150, kind: 'branch' },
       // --- Whispering Plains (24–25): open ground + one low ridge ---
       { x1: 1800, x2: 2400, y: 820, kind: 'ground' },
-      { x1: 1950, x2: 2250, y: 700, kind: 'branch' },
+      // v0.19 "Language": the ridge is a solid mass of earth (top y=700,
+      // body down to the ground) — it casts a sound shadow. solid:true
+      // marks acoustic mass; the slab band alone would leak sound through.
+      { x1: 1950, x2: 2250, y: 700, kind: 'ridge', solid: true },
       // --- Sunscorch Desert (26–29): ground + 3 rock outcrops ---
       { x1: 2400, x2: 3000, y: 830, kind: 'ground' },
-      { x1: 2450, x2: 2600, y: 705, kind: 'branch' },
-      { x1: 2650, x2: 2800, y: 700, kind: 'branch' },
-      { x1: 2800, x2: 2950, y: 710, kind: 'branch' },
+      { x1: 2450, x2: 2600, y: 705, kind: 'rock', solid: true },
+      { x1: 2650, x2: 2800, y: 700, kind: 'rock', solid: true },
+      { x1: 2800, x2: 2950, y: 710, kind: 'rock', solid: true },
       // --- Mangrove Shallows (30–35): walkable seabed + 5 root platforms over water ---
       { x1: 3000, x2: 3600, y: 950, kind: 'ground' },
       { x1: 3020, x2: 3200, y: 770, kind: 'branch' },
@@ -717,6 +720,11 @@ export function soundOcclusion(world, x1, y1, x2, y2) {
   const plats = world.platforms || [];
   for (let i = 0; i < plats.length; i++) {
     if (segmentHitsSlab(x1, y1, x2, y2, plats[i])) att *= 0.55;
+    // v0.19 "Language": ridge sound shadows. A solid mass (ridge, rock)
+    // is earth, not air — the ray that punches THROUGH the body loses
+    // energy to diffraction. The slab band alone would leak sound under
+    // the ridge top; the body test closes the leak.
+    if (plats[i].solid && rayHitsSolid(x1, y1, x2, y2, plats[i])) att *= RIDGE_SHADOW;
   }
   const N = 10;
   let fol = 0;
@@ -727,6 +735,50 @@ export function soundOcclusion(world, x1, y1, x2, y2) {
   fol /= (N - 1);
   att *= Math.max(0.25, 1 - 0.6 * Math.min(1, fol));
   return att;
+}
+
+// v0.19: the acoustic body of a solid platform — from its top down to the
+// ground beneath (the ridge's foot). NaN-guarded: a bad platform yields a
+// degenerate body that no ray can enter.
+export const RIDGE_SHADOW = 0.45; // attenuation per solid-mass crossing
+function solidBody(pl) {
+  const x1 = Number(pl.x1), x2 = Number(pl.x2), top = Number(pl.y);
+  if (![x1, x2, top].every(Number.isFinite) || x2 <= x1) {
+    return { x1: 0, x2: -1, top: 0, base: 0 };
+  }
+  let base = top + 160; // fallback foot if the ground map has no answer
+  try {
+    const g = groundYAt((x1 + x2) / 2);
+    if (Number.isFinite(g)) base = Math.max(g, top + 40);
+  } catch (e) { /* keep the fallback */ }
+  return { x1, x2, top, base };
+}
+
+// Does the ray pass through the solid body? Endpoints standing on the mass
+// itself are excluded — the ray leaves along the surface, it doesn't punch
+// through. Interior samples make the test robust to any angle. A true
+// shadow needs the ray to spend real distance inside the earth: a single
+// sample kissing the body's corner (a hearer standing at the ridge's foot,
+// the ray clipping the cliff base) is diffraction around an edge, not a
+// shadow — it takes >=3 of 20 samples to count.
+function rayHitsSolid(x1, y1, x2, y2, pl) {
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return false;
+  const near1 = Math.abs(y1 - pl.y) < 16 && x1 >= pl.x1 - 4 && x1 <= pl.x2 + 4;
+  const near2 = Math.abs(y2 - pl.y) < 16 && x2 >= pl.x1 - 4 && x2 <= pl.x2 + 4;
+  if (near1 || near2) return false;
+  const b = solidBody(pl);
+  const N = 20;
+  let inside = 0;
+  for (let i = 1; i < N; i++) {
+    const t = i / N;
+    const x = x1 + (x2 - x1) * t;
+    const y = y1 + (y2 - y1) * t;
+    // The foot edge is inclusive: a ray running at ground level still meets
+    // the ridge face and diffracts over it. The top edge stays strict —
+    // grazing the crest is not punching through.
+    if (x > b.x1 && x < b.x2 && y > b.top && y <= b.base && ++inside >= 3) return true;
+  }
+  return false;
 }
 
 // v0.16: troop-level word census (delta c — culture lives at the troop
