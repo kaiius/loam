@@ -35,9 +35,10 @@ export const ACTIONS = [
   'climb', // move up/down a climb link to another branch
   'groom', // groom the nearest creature — the troop's bonding ritual
   'jump', // leap: gravity's answer to the gap between branches (physics)
+  'vocal', // call out: grounded call type, evolvable pitch (v0.14 Voices)
 ];
 
-export const N_IN = 22; // 20 senses + jumpNear + bias... see senseVector
+export const N_IN = 25; // 24 senses + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -48,7 +49,8 @@ const MIN_ASSOC = 16; // pruning never goes below this
 // senses: [hunger, tiredness, boredom, loneliness, fear, light,
 //           foodDist, foodDir, creatureDist, creatureDir, toyDist, toyDir,
 //           isAdult, illness, homeDist, kinNear, bondNear,
-//           climbUp, climbDown, groomNear, jumpNear, bias]
+//           climbUp, climbDown, groomNear, jumpNear, callHeard, callPitch,
+//           wasteOdor, bias]
 // v0.12 rule kept: never renumber. New senses append before the bias.
 export function senseVector(s) {
   return [
@@ -56,7 +58,8 @@ export function senseVector(s) {
     s.foodDist, s.foodDir, s.creatureDist, s.creatureDir,
     s.toyDist, s.toyDir, s.isAdult, s.illness,
     s.homeDist || 0, s.kinNear || 0, s.bondNear || 0,
-    s.climbUp || 0, s.climbDown || 0, s.groomNear || 0, s.jumpNear || 0, 1,
+    s.climbUp || 0, s.climbDown || 0, s.groomNear || 0, s.jumpNear || 0,
+    s.callHeard || 0, s.callPitch || 0, s.wasteOdor || 0, 1,
   ];
 }
 
@@ -72,7 +75,9 @@ function randSparse(rng, rows, cols, density, scale) {
   const idx = [];
   const w = [];
   for (let r = 0; r < rows; r++) {
-    const n = Math.max(1, Math.round(cols * density * (0.5 + rng.next())));
+    // v0.14: clamp to cols — a density near 1 could otherwise ask for more
+    // distinct inputs than exist, hanging the while loop forever.
+    const n = Math.min(cols, Math.max(1, Math.round(cols * density * (0.5 + rng.next()))));
     const cols_ = new Set();
     while (cols_.size < n) cols_.add(rng.int(0, cols - 1));
     idx.push([...cols_]);
@@ -133,6 +138,7 @@ export function createBrain(pheno, rng) {
   biasM[8] = 0.05; // seekHome — the homeward pull starts as a whisper
   biasM[9] = 0.05; // climb — curiosity about the vertical
   biasM[10] = pheno.sociability * 0.4; // groom — the social instinct
+  biasM[12] = 0.03; // vocal — answering calls starts as a whisper
 
   return {
     nAssoc,

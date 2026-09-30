@@ -492,3 +492,168 @@ export function drawCreature(ctx, c, groundY, t) {
 
   ctx.restore();
 }
+
+// ---------------------------------------------------------------------------
+// The Teacher — Sunny's in-sim avatar (v0.14 "Voices"). A blue monkey in a
+// jaunty newsboy cap: visually NOT a tanglekin (tanglekins never wear caps,
+// and their fur hue comes from the genome — the Teacher is always this
+// blue). Feet at groundY, facing +x (caller mirrors via ctx.scale).
+// Poses: perching (sitting, tail curled), traveling (bob), demonstrating
+// (sound arcs from the mouth), rewarding (a lifted hand + sparkle).
+export function drawTeacher(ctx, teacher, groundY, t) {
+  const r = 20; // the Teacher is a fixed presence — not genome-sized
+  const moving = Math.abs(teacher.vx) > 1;
+  const demonstrating = (teacher.demoQueue || []).length > 0;
+  const rewarding = /reward/.test(teacher.actionLabel || '');
+
+  const hop = moving ? Math.abs(Math.sin(teacher.hopPhase)) * r * 0.2 : 0;
+  const breathe = moving ? 0 : Math.sin(t * 2.2) * 0.015;
+
+  // Sunny blue.
+  const fur = '#2f6fd0';
+  const furDark = '#1e4f9e';
+  const furLight = '#5b93e8';
+  const muzzleC = '#bcd2f5';
+  const capC = '#2b2f3a';   // charcoal newsboy cap
+  const capBand = '#171a22';
+
+  ctx.save();
+  ctx.translate(teacher.x, groundY);
+  ctx.scale(teacher.facing || 1, 1);
+  ctx.translate(0, -hop);
+  ctx.scale(1, 1 + breathe);
+
+  const sit = !moving ? r * 0.28 : 0; // perching settles the body down
+  const torsoY = -r * 1.05 + sit;
+  const headX = r * 0.22, headY = -r * 1.98 + sit * 0.6, headR = r * 0.58;
+
+  // ---- Tail (behind): a curling monkey tail. ----
+  {
+    ctx.strokeStyle = furDark;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = r * 0.16;
+    ctx.beginPath();
+    const sway = Math.sin(t * 1.8) * r * 0.12;
+    ctx.moveTo(-r * 0.6, torsoY + r * 0.4);
+    ctx.quadraticCurveTo(-r * 1.5, torsoY + r * 0.9 + sway,
+      -r * 1.15, torsoY - r * 0.15 + sway);
+    ctx.quadraticCurveTo(-r * 0.95, torsoY - r * 0.5, -r * 0.7, torsoY - r * 0.35);
+    ctx.stroke();
+  }
+
+  // ---- Legs / feet. ----
+  ctx.fillStyle = furDark;
+  const legSpread = moving ? Math.sin(teacher.hopPhase) * r * 0.22 : r * 0.1;
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.25 - legSpread * 0.3, -r * 0.12 + sit * 0.4, r * 0.3, r * 0.2, 0, 0, Math.PI * 2);
+  ctx.ellipse(r * 0.25 + legSpread * 0.3, -r * 0.12 + sit * 0.4, r * 0.3, r * 0.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ---- Torso. ----
+  ctx.fillStyle = fur;
+  ctx.beginPath();
+  ctx.ellipse(0, torsoY, r * 0.62, r * 0.78, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // lighter chest
+  ctx.fillStyle = furLight;
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath();
+  ctx.ellipse(r * 0.1, torsoY + r * 0.05, r * 0.34, r * 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // ---- Arms. ----
+  ctx.strokeStyle = fur;
+  ctx.lineWidth = r * 0.2;
+  const armSwing = moving ? Math.sin(teacher.hopPhase + Math.PI) * r * 0.3 : 0;
+  ctx.beginPath();
+  ctx.moveTo(-r * 0.4, torsoY - r * 0.3);
+  ctx.lineTo(-r * 0.55 + armSwing * 0.4, torsoY + r * 0.45);
+  ctx.stroke();
+  // Right arm lifts when rewarding — the "good, that one" gesture.
+  ctx.beginPath();
+  ctx.moveTo(r * 0.4, torsoY - r * 0.3);
+  if (rewarding) ctx.lineTo(r * 0.9, torsoY - r * 1.0);
+  else ctx.lineTo(r * 0.55 - armSwing * 0.4, torsoY + r * 0.45);
+  ctx.stroke();
+  if (rewarding) {
+    // sparkle at the lifted hand
+    const sx = r * 0.9, sy = torsoY - r * 1.05 + Math.sin(t * 6) * 2;
+    ctx.strokeStyle = 'rgba(255,215,110,0.95)';
+    ctx.lineWidth = 2;
+    for (const a of [0, Math.PI / 2]) {
+      ctx.beginPath();
+      ctx.moveTo(sx - Math.cos(a) * 7, sy - Math.sin(a) * 7);
+      ctx.lineTo(sx + Math.cos(a) * 7, sy + Math.sin(a) * 7);
+      ctx.stroke();
+    }
+  }
+
+  // ---- Head. ----
+  ctx.fillStyle = fur;
+  ctx.beginPath();
+  ctx.arc(headX, headY, headR, 0, Math.PI * 2);
+  ctx.fill();
+  // ears
+  ctx.fillStyle = furDark;
+  ctx.beginPath();
+  ctx.arc(headX - headR * 0.85, headY - headR * 0.1, headR * 0.28, 0, Math.PI * 2);
+  ctx.fill();
+  // muzzle
+  ctx.fillStyle = muzzleC;
+  ctx.beginPath();
+  ctx.ellipse(headX + headR * 0.35, headY + headR * 0.28, headR * 0.42, headR * 0.32, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // eyes — bright, forward
+  ctx.fillStyle = '#101418';
+  ctx.beginPath();
+  ctx.arc(headX + headR * 0.12, headY - headR * 0.12, headR * 0.11, 0, Math.PI * 2);
+  ctx.arc(headX + headR * 0.52, headY - headR * 0.12, headR * 0.11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(headX + headR * 0.15, headY - headR * 0.15, headR * 0.035, 0, Math.PI * 2);
+  ctx.arc(headX + headR * 0.55, headY - headR * 0.15, headR * 0.035, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ---- The newsboy cap, worn jaunty. ----
+  ctx.save();
+  ctx.translate(headX + headR * 0.05, headY - headR * 0.62);
+  ctx.rotate(-0.22); // the jaunty tilt — never straightened
+  // dome
+  ctx.fillStyle = capC;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, headR * 0.78, headR * 0.42, 0, Math.PI, 0);
+  ctx.fill();
+  // band
+  ctx.fillStyle = capBand;
+  ctx.fillRect(-headR * 0.78, -headR * 0.08, headR * 1.56, headR * 0.14);
+  // brim
+  ctx.fillStyle = capC;
+  ctx.beginPath();
+  ctx.ellipse(headR * 0.62, headR * 0.02, headR * 0.42, headR * 0.13, 0.12, 0, Math.PI * 2);
+  ctx.fill();
+  // button
+  ctx.fillStyle = '#0d0f14';
+  ctx.beginPath();
+  ctx.arc(0, -headR * 0.42, headR * 0.07, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // ---- Demonstration: sound arcs from the mouth. ----
+  if (demonstrating) {
+    const mx = headX + headR * 0.75, my = headY + headR * 0.3;
+    ctx.strokeStyle = 'rgba(255,220,130,0.9)';
+    for (let i = 0; i < 3; i++) {
+      const ph = ((t * 1.6 + i / 3) % 1);
+      ctx.globalAlpha = 0.85 * (1 - ph);
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(mx, my, headR * (0.6 + ph * 1.6), -0.7, 0.7);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.restore();
+}

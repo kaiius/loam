@@ -1,7 +1,7 @@
 // Canvas renderer: sky, parallax hills, platforms, plants, food, eggs,
 // toys, critters, creatures. Camera fits the whole terrarium.
 
-import { drawCreature } from './painter.js';
+import { drawCreature, drawTeacher } from './painter.js';
 import { creatureRadius } from '../sim/creature.js';
 import { ageStage } from '../sim/biochem.js';
 import { timeOfDay, ZONES } from '../sim/world.js';
@@ -163,6 +163,27 @@ export function render(r, world, ui, t) {
     if (ui.selected === c) drawSelectionRing(ctx, c, cy, t);
     drawCreature(ctx, c, cy, t);
     drawLabel(ctx, c, cy, ui);
+  }
+
+  // The Teacher — Sunny's visitor avatar (v0.14 "Voices"). Drawn after the
+  // tanglekins: blue monkey, jaunty newsboy cap, unmistakably not one of them.
+  if (world.teacher) {
+    const te = world.teacher;
+    const tplat = world.platforms[te.platformIndex];
+    const ty = (te.y !== undefined && te.y !== null) ? te.y : tplat.y;
+    if (ui.selected === te) {
+      // the visitor's ring is gold, not white — a guest, not a tanglekin
+      ctx.strokeStyle = 'rgba(255,215,110,0.95)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([8, 6]);
+      ctx.lineDashOffset = -t * 20;
+      ctx.beginPath();
+      ctx.ellipse(te.x, ty - 24, 34, 27, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    drawTeacher(ctx, te, ty, t);
+    drawTeacherLabel(ctx, te, ty, ui);
   }
 
   // Hand-dragged ghost handled by UI overlay (DOM), skip here.
@@ -481,6 +502,20 @@ function drawSelectionRing(ctx, c, groundY, t) {
   ctx.ellipse(c.x, groundY - r * 0.75, r, r * 0.8, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.setLineDash([]);
+}
+
+function drawTeacherLabel(ctx, te, groundY, ui) {
+  if (ui.selected !== te && ui.hover !== te) return;
+  const label = `🧑‍🏫 Sunny ${te.mode === 'possessed' ? '✋' : '🤖'} ${te.actionLabel ? '· ' + te.actionLabel : ''}`;
+  ctx.font = '600 15px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  const w = ctx.measureText(label).width + 18;
+  const y = groundY - 20 * 2.35;
+  ctx.fillStyle = 'rgba(20,28,60,0.78)';
+  roundRect(ctx, te.x - w / 2, y - 20, w, 26, 13);
+  ctx.fill();
+  ctx.fillStyle = '#cfe3ff';
+  ctx.fillText(label, te.x, y);
 }
 
 function drawLabel(ctx, c, groundY, ui) {

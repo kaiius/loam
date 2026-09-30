@@ -1,6 +1,7 @@
 // Wildcode bootstrap: world, renderer, UI, fixed-timestep game loop.
 
 import { createWorld, bindWorld, populate, tickWorld } from './sim/world.js';
+import { setTeacherMode, commandTeacher, serializeTeacherSenses } from './sim/teacher.js';
 import { createRenderer, render } from './render/renderer.js';
 import { createUI } from './ui/ui.js';
 
@@ -10,6 +11,21 @@ populate(world);
 
 const renderer = createRenderer(canvas);
 const ui = createUI(canvas, renderer, world);
+
+// v0.14: the possession bridge — Sunny can feel and drive the teacher from
+// chat (or the console), not just the HUD. senses() returns the plain-text
+// serialization; command() auto-possesses and queues a command
+// ({cmd:'moveTo',x,platformIndex} | {cmd:'demo'} | {cmd:'reward'} |
+//  {cmd:'rewardNearest'} | {cmd:'eat'}).
+window.canopyTeacher = {
+  senses: () => serializeTeacherSenses(world, world.teacher),
+  command: (cmd) => {
+    const te = world.teacher;
+    if (te.mode !== 'possessed') setTeacherMode(world, te, 'possessed');
+    return commandTeacher(te, cmd);
+  },
+  mode: (m) => setTeacherMode(world, world.teacher, m),
+};
 
 const SIM_DT = 0.1; // 10 sim ticks per second at 1x
 let acc = 0;

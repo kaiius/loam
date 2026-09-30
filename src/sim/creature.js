@@ -7,7 +7,7 @@ import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
-import { climbLinksFrom, disperseSeed } from './world.js';
+import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS } from './world.js';
 
 let nextId = 1;
 
@@ -83,8 +83,15 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     pettedFlag: false,
     scoldedFlag: false,
     hopPhase: rng.range(0, Math.PI * 2),
-    // v0.9 embodiment: the body as honest display + record.
-    bristling: false, // visible threat display (fear > 0.5) — bodies signal bodies
+    // v0.14 "Voices": the acoustic self. voicePitch starts at the genetic
+    // base and drifts toward heard pitches (vocal learning — dialect).
+    // heardPitches is the culture memory: a ring buffer of the last 16
+    // pitches heard, the raw material of accent.
+    voicePitch: pheno.vocalPitch ?? 0.5,
+    heardPitches: [],
+    // v0.14 "Voices": the waste cycle — the gut holds what digestion
+    // didn't take. Excretion (in updateCreature) returns it to the soil.
+    gut: 0,
     flinchT: 0, // seconds since last injury — drives the flinch flash
     clashCooldown: 0, // per-creature refractory so spikes can't machine-gun
   };
@@ -235,6 +242,16 @@ export function gatherSenses(c, world) {
         const colorDist = Math.min(1, Math.sqrt(dHue * dHue + dSat * dSat));
         score = prox + choosy * (1 - colorDist);
       }
+      // v0.14 "Voices": prezygotic barrier — call choosiness. The chooser
+      // prefers mates whose *voice* (learned pitch, i.e. the dialect)
+      // resembles its own. Founder 0 = this never fires; dialects evolve,
+      // then choosiness can.
+      const callChoosy = c.pheno.matePrefCall ?? 0;
+      if (callChoosy > 0) {
+        const myPitch = c.voicePitch ?? 0.5;
+        const op = o.voicePitch ?? 0.5;
+        score += callChoosy * (1 - Math.abs(myPitch - op));
+      }
       if (score > best) { best = score; mate = o; mateDist = d / range; }
     }
   }
@@ -244,6 +261,9 @@ export function gatherSenses(c, world) {
   const groomReach = c.pheno.groomReach || 70;
   const groomNear = other && other.platformIndex === c.platformIndex
     ? Math.max(0, 1 - Math.abs(other.x - c.x) / groomReach) : 0;
+  // v0.14 "Voices": what the acoustic commons sounds like right now —
+  // the loudest recent call on this platform within earshot.
+  const heard = callsHeardBy(world, c);
   const senses = {
     _range: range, // px base for dist normalization (used by contagion/mating checks)
     hunger: b.hunger,
@@ -257,6 +277,9 @@ export function gatherSenses(c, world) {
     kinNear: otherObj ? pedigreeKin(world, c, otherObj) : 0,
     bondNear: otherObj && world.bonds ? getBond(world.bonds, c, otherObj) : 0,
     climbUp, climbDown, jumpNear, groomNear,
+    callHeard: heard.heard, callPitch: heard.pitch,
+    wasteOdor: wasteOdorOf(world, c.x), // v0.14: disgust — the smell of fouled ground
+    _alarmHeard: heard.alarm, // v0.14: alarm calls reassure — fear drains slightly
     foodDist: food ? food.dist : 1,
     foodDir: food ? food.dir : 0,
     creatureDist: other ? other.dist : 1,
@@ -451,6 +474,9 @@ export function doEat(c, world) {
   // v0.7: meat efficiency — carcasses feed carnivores at full value.
   const bite = Math.min(food.amount, c.pheno.biteSize);
   food.amount -= bite;
+  // v0.14: the waste cycle — part of every bite passes through the gut.
+  // Nutrition feeds blood sugar; the rest is excreted into the soil.
+  c.gut = (c.gut || 0) + bite * WASTE_FRACTION;
   const eff = food.foodKind === 'meat' ? c.pheno.meatEfficiency : c.pheno.fruitEfficiency;
   // v0.8: medicinal leaves. Bitter and barely nutritious, but they purge
   // illness — self-medication. The illness reward term (below) makes recovery
@@ -481,6 +507,15 @@ export function doEat(c, world) {
     c.reward += 0.6 * palatability; // bitter meals reinforce less
     // v0.13: seed dispersal — the eaten fruit's plant may ride along.
     disperseSeed(world, c, food);
+  }
+  // v0.14: disgust's honest cost — food eaten on fouled ground carries
+  // contamination into the body. wasteOdor is the information; this is the
+  // consequence that makes the instinct evolve under real selection.
+  // (Medicinal leaves still purge more than they contaminate — the
+  // self-medication differential survives.)
+  const odor = wasteOdorOf(world, c.x);
+  if (odor > 0) {
+    c.biochem.illness = clamp01(c.biochem.illness + bite * odor * CONTAM_ILLNESS);
   }
   if (food.amount <= 0.01) {
     const i = world.foods.indexOf(food);
@@ -517,6 +552,18 @@ export function maybeFoundGrove(c, world) {
   const t = foundGrove(cu, c, cx, GROVE_RADIUS, now, c.generation, world.rng);
   if (t) world.events.push({ type: 'traditionFounded', name: t.name, creature: c, t: now });
   return t;
+}
+
+// v0.14 "Voices": ground the call type in the caller's real state — never
+// a free choice. The brain decides only *whether* to call; the body decides
+// *what* the call means. Exported for tests.
+export function groundCallType(c, s) {
+  const b = c.biochem;
+  const stage = ageStage(b, c.pheno);
+  if (b.fear > 0.6) return 'alarm';
+  if (s.foodDist < 0.3 && s._food) return 'food';
+  if (b.social > 0.6 && (stage === 'adult' || stage === 'senior')) return 'mate';
+  return 'contact';
 }
 
 function executeAction(c, world, dt, s) {
@@ -750,6 +797,15 @@ function executeAction(c, world, dt, s) {
       }
       break;
     }
+    case 'vocal': {
+      const type = groundCallType(c, s);
+      c.actionLabel = type === 'contact' ? 'calling out' : `calling: ${type}!`;
+      emitCall(world, c, type);
+      c._active = 0.3; // calling is light work
+      if (s.callHeard > 0.5) c.reward += 0.05; // answering is social glue — comfort
+      c.actionTimer = 0; // calls are punctual, not commitments
+      break;
+    }
     case 'wander':
     default:
       c.actionLabel = 'wandering';
@@ -839,16 +895,18 @@ export function updateCreature(c, world, dt) {
   c._vx = c.dragged ? 0 : (c.x - prevX) / dt;
   c._px = c.x;
 
+  // v0.14: the waste cycle — bodies excrete whether awake, asleep, or
+  // dragged. Proportional clearance into the current zone's soil.
+  excrete(c, world, dt);
+
   // While held by the player's hand: body chemistry continues, mind pauses.
   if (c.dragged) {
     tickBiochem(b, pheno, dt, {});
     if (isDead(b, pheno)) {
       c.alive = false;
       const oldAge = b.age >= pheno.lifespanSec;
-      world.events.push({
-        type: 'death', creature: c, t: world.time,
-        cause: oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : 'ill health',
-      });
+      noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : 'ill health');
+      return;
     }
     return;
   }
@@ -899,10 +957,7 @@ export function updateCreature(c, world, dt) {
   if (isDead(b, pheno)) {
     c.alive = false;
     const oldAge = b.age >= pheno.lifespanSec;
-    world.events.push({
-      type: 'death', creature: c, t: world.time,
-      cause: oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : 'ill health',
-    });
+    noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : 'ill health');
     return;
   }
 
@@ -911,6 +966,22 @@ export function updateCreature(c, world, dt) {
     c.sleepTicks = 0;
     const s = gatherSenses(c, world);
     c._senses = s;
+
+    // v0.14 "Voices": vocal learning — the dialect engine. Heard pitches
+    // enter the culture memory (ring buffer of 16); the creature's own
+    // pitch drifts toward the local mean at vocalImitate × tradition
+    // fidelity. Genetics sets the base; the neighborhood sets the accent.
+    // Alarm calls reassure: hearing one drains fear slightly (the troop
+    // is watchful, not alone with the threat).
+    if (s.callHeard > 0.3 && s.callPitch > 0) {
+      c.heardPitches.push(s.callPitch);
+      if (c.heardPitches.length > 16) c.heardPitches.shift();
+      const mean = c.heardPitches.reduce((a, x) => a + x, 0) / c.heardPitches.length;
+      const fid = fidelityOf(c.pheno);
+      const rate = Math.min(1, (c.pheno.vocalImitate ?? 0) * fid * dt * 2);
+      c.voicePitch = Math.max(0.05, Math.min(1, c.voicePitch + (mean - c.voicePitch) * rate));
+    }
+    if (s._alarmHeard) b.adrenaline = clamp01(b.adrenaline - 0.12 * dt);
 
     // Illness: contagion from sick neighbors, plus rare spontaneous onset.
     // Stronger immune systems resist both.

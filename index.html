@@ -69,6 +69,9 @@
   }
   .p-actions button:hover { background: rgba(255,255,255,0.22); }
   .hint2 { opacity: 0.7; margin-top: 8px; line-height: 1.5; }
+  .senses { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.12); }
+  .sense { font-size: 13px; line-height: 1.55; opacity: 0.92; }
+  .l-title { font-size: 12px; opacity: 0.65; margin-bottom: 4px; }
 
   #toasts { position: absolute; left: 12px; bottom: 44px; display: flex;
     flex-direction: column; gap: 6px; max-width: 320px; }
@@ -84,6 +87,44 @@
     font-size: 12px; opacity: 0.65; background: rgba(16,16,32,0.5);
     padding: 6px 14px; border-radius: 20px; white-space: nowrap;
   }
+
+  /* v0.14: family tree + evolution tracker panels */
+  .bigpanel {
+    position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
+    width: min(760px, calc(100% - 48px)); max-height: calc(100% - 130px);
+    overflow-y: auto; background: rgba(16, 16, 32, 0.88); backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 14px;
+    padding: 14px; font-size: 13px; pointer-events: auto;
+  }
+  .bigpanel.hidden { display: none; }
+  .bp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .bp-head h2 { font-size: 16px; flex: 1; }
+  .bp-head button { background: none; border: none; color: #aaa; font-size: 14px; cursor: pointer; }
+  .tdetail { font-size: 12px; opacity: 0.85; margin-bottom: 8px; }
+  .tsvg { background: rgba(255,255,255,0.03); border-radius: 10px; overflow: hidden; }
+  .tnote { font-size: 11px; opacity: 0.6; margin-top: 6px; }
+  .estrip { margin: 10px 0; }
+  .etitle { font-size: 12px; font-weight: 600; opacity: 0.85; margin-bottom: 2px; }
+  .emarkers { margin-bottom: 4px; }
+  .elegend { font-size: 11px; opacity: 0.85; margin: 4px 0; }
+  .elegend span { margin-right: 10px; }
+
+  /* Chronicle — the world's official record */
+  .ch-chapter { margin: 16px 0 6px; }
+  .ch-title { font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+  .ch-blurb { font-size: 11px; opacity: 0.6; margin-bottom: 8px; font-style: italic; }
+  .ch-empty { font-size: 12px; opacity: 0.5; font-style: italic; margin-bottom: 4px; }
+  .ch-entry { display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px;
+    border-radius: 10px; background: rgba(255,255,255,0.04); margin-bottom: 6px; line-height: 1.45; }
+  .ch-day { flex: none; width: 46px; font-size: 10px; opacity: 0.55; padding-top: 3px; }
+  .ch-icon { flex: none; font-size: 14px; padding-top: 1px; }
+  .ch-text { flex: 1; font-size: 13px; }
+  .ch-jumps { flex: none; display: flex; gap: 4px; }
+  .ch-jumps button {
+    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 7px; color: inherit; font-size: 12px; padding: 2px 6px; cursor: pointer;
+  }
+  .ch-jumps button:hover { background: rgba(255,255,255,0.2); }
 </style>
 </head>
 <body>

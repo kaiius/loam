@@ -19,6 +19,8 @@ const MODULES = [
   'src/sim/social.js',
   'src/sim/creature.js',
   'src/sim/world.js',
+  'src/sim/teacher.js',
+  'src/sim/chronicle.js',
   'src/render/painter.js',
   'src/render/renderer.js',
   'src/ui/ui.js',

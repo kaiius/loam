@@ -2,12 +2,13 @@
 // and the day/night cycle. Owns the tick orchestration.
 
 import { createRng } from './rng.js';
-import { randomGenome, inherit } from './genome.js';
+import { randomGenome, inherit, genomeDistance } from './genome.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius } from './creature.js';
 import { ageStage } from './biochem.js';
 import { createCulture, sampleCulture, pruneExtinct, adoptTradition, fidelityOf } from './culture.js';
 import { createBonds, tickBonds, detectTribes, nudgeBond } from './social.js';
+import { createTeacher, tickTeacher } from './teacher.js';
 
 export const DAY_LENGTH = 300; // seconds per full day/night cycle
 
@@ -62,11 +63,40 @@ export function createWorld(seed = 1) {
     novelParents: new Set(), // ids of living creatures with novel genomes
     divergenceLog: [], // { t, zones: { key: { trait: S } } } — Eliza's S per biome
     founderMeans: null, // { trait: mean } recorded at populate — the S baseline
+    dupEvents: [], // v0.14: gene duplication/deletion events { t, kind, key, parents }
+    speciesPrev: [], // v0.14: previous species-clustering snapshot for overlap matching
+    speciesLog: [], // v0.14: species snapshots + split events for the evolution tracker
+    speciesSeq: 0, // v0.14: running species id counter
+    lineageKids: new Map(), // v0.14: parent id → [child ids] for the family tree
+    // v0.14 "Voices": the acoustic commons. calls is the live registry
+    // (decays over ~2s); zoneCalls is the per-zone dialect archive
+    // ({ t, pitch, type }[], capped per zone) — the divergence tooling
+    // reads it for dialect drift.
+    calls: [],
+    zoneCalls: {},
+    // v0.14 "Voices": the Teacher — Sunny's in-sim avatar. A visitor, not
+    // a tanglekin: no hunger, no mating, no death. teachLog records teaching
+    // events as cultural inflection points for the evolution tracker.
+    // The teacher draws from its OWN rng stream (v0.9 decorRng lesson):
+    // a visitor must never shift the main stream's sequence.
+    teacher: null,
+    teacherRng: createRng(seed * 101 + 13),
+    teachLog: [],
+    // v0.14 "Voices": the waste cycle — digestion's byproduct returns to
+    // the soil. soil[zone] = { waste, fertility }. Excretion feeds waste;
+    // decomposition feeds fertility; fertility feeds plant growth. The loop
+    // that turns a food chain into a cycle.
+    soil: {
+      verdant: { waste: 0, fertility: 0.5 },
+      arid: { waste: 0, fertility: 0.5 },
+      highland: { waste: 0, fertility: 0.5 },
+    },
   };
   // Climb links: pairs of platforms whose x-ranges overlap and whose
   // vertical gap is climbable (60–240px). Computed once at worldgen —
   // the canopy's vertical roads.
   world.climbLinks = computeClimbLinks(world.platforms);
+  world.teacher = createTeacher(world, 800, 0);
   return world;
 }
 
@@ -233,12 +263,22 @@ export function addPebble(world, x, platformIndex) {
   });
 }
 
-export function layEgg(world, x, platformIndex, genome, parents = null, gen = 0, traditionIds = [], gestMult = 1) {
+// v0.14: postzygotic barrier — hybrid viability falls as the parents'
+// genome distance exceeds the threshold. Within-population matings
+// (distance ~0.1) are untouched; genuinely divergent lineages produce
+// weaker offspring. Exported for tests.
+export const HYBRID_THRESHOLD = 0.30;
+export function hybridViability(dist) {
+  if (dist <= HYBRID_THRESHOLD) return 1;
+  return Math.max(0.3, 1 - Math.min(0.7, (dist - HYBRID_THRESHOLD) * 2));
+}
+export function layEgg(world, x, platformIndex, genome, parents = null, gen = 0, traditionIds = [], gestMult = 1, parentDist = 0) {
   const plat = world.platforms[platformIndex];
   world.eggs.push({
     kind: 'egg', id: oid(), x, y: plat.y, platformIndex, genome, parents,
     gen, traditionIds, // v0.7: pedigree depth + vertical cultural inheritance
     timer: (18 + world.rng.range(0, 10)) * gestMult, wobble: 0, // v2 (L): gestation scales
+    parentDist, // v0.14: parental genome distance — the hybrid penalty input
   });
 }
 
@@ -285,9 +325,17 @@ export function tryMate(a, b) {
   // hatchlings inherit their parents' traditions (the "N+1 contains N" half).
   const childGen = Math.max(a.generation || 0, b.generation || 0) + 1;
   const parentTraditions = [...new Set([...(mom.traditions || []), ...(dad.traditions || [])])];
+  // v0.14: parental genome distance — the postzygotic barrier input.
+  const parentDist = genomeDistance(mom.genome, dad.genome);
   for (let i = 0; i < nEggs; i++) {
     const eg = inherit(mom.genome, dad.genome, world.rng);
-    layEgg(world, (a.x + b.x) / 2 + world.rng.range(-30, 30), a.platformIndex, eg, [mom.id, dad.id], childGen, parentTraditions, gestMult);
+    // v0.14: gene duplication/deletion events enter the world's record —
+    // the evolution tracker marks them on the timeline.
+    for (const e of eg.dupLog || []) {
+      world.dupEvents.push({ t: world.time, kind: e.kind, key: e.key, parents: [mom.id, dad.id] });
+    }
+    if (world.dupEvents.length > 200) world.dupEvents.splice(0, world.dupEvents.length - 200);
+    layEgg(world, (a.x + b.x) / 2 + world.rng.range(-30, 30), a.platformIndex, eg, [mom.id, dad.id], childGen, parentTraditions, gestMult, parentDist);
     mom.children.push('egg');
     dad.children.push('egg');
   }
@@ -323,9 +371,21 @@ export function recordLineage(world, c) {
     parents: c.parents ? [...c.parents] : null,
     generation: c.generation || 0,
     bornAt: world.time,
+    diedAt: null, // v0.14: closed by noteDeath
+    cause: null,
     zone: zoneAt(c.x).key, // v0.11: birth biome
+    speciesId: c.speciesId ?? null, // v0.14: species at birth (may split later)
     traits,
   });
+  // v0.14: children index — the family tree walks down without scanning.
+  if (c.parents) {
+    for (const pid of c.parents) {
+      if (typeof pid !== 'number') continue;
+      let kids = world.lineageKids.get(pid);
+      if (!kids) { kids = []; world.lineageKids.set(pid, kids); }
+      if (kids.length < 60) kids.push(c.id);
+    }
+  }
   // Soft cap: forget the oldest records beyond 5000 (ancestor chains for
   // living creatures are walked at view time, so pruning the deep past is safe).
   if (world.lineage.size > 5000) {
@@ -334,13 +394,24 @@ export function recordLineage(world, c) {
   }
 }
 
-// v0.13: compact genome hash for the beautiful-mutant watch (iggy's idea).
+// v0.14: death bookkeeping — the event for toasts, and the lineage record
+// for the family tree (diedAt + cause close the creature's arc).
+export function noteDeath(world, c, cause) {
+  world.events.push({ type: 'death', creature: c, t: world.time, cause });
+  const rec = world.lineage.get(c.id);
+  if (rec) { rec.diedAt = world.time; rec.cause = cause; }
+}
 // Two creatures share a hash only if every allele matches to 3 decimals.
 export function genomeHash(genome) {
   const parts = [];
   for (const key of Object.keys(genome.alleles).sort()) {
     const [a, b] = genome.alleles[key];
     parts.push(a.toFixed(3) + '/' + b.toFixed(3));
+  }
+  // v0.14: duplicated copies are part of identity.
+  for (const key of Object.keys(genome.extra || {}).sort()) {
+    const [a, b] = genome.extra[key];
+    parts.push('x' + key + ':' + a.toFixed(3) + '/' + b.toFixed(3));
   }
   let h = 0;
   const s = parts.join('|');
@@ -368,10 +439,115 @@ export function checkNovelGenome(world, c) {
   return true;
 }
 
+// v0.14 "Voices": emit a grounded call into the acoustic commons.
+// Pitch = vocalPitch × (1 ± vocalRange × noise); earshot scales with
+// vocalVolume. Calls live ~2 sim-seconds; the zone archive keeps the last
+// 300 per zone for dialect measurement.
+export function emitCall(world, c, type) {
+  const p = c.pheno;
+  // The LEARNED pitch is what's heard: genetics sets the base voicePitch
+  // at birth, imitation drifts it, and the accent is audible. This is what
+  // makes dialects real — a zone's accent lives in ears, not just genes.
+  const base = c.voicePitch ?? p.vocalPitch ?? 0.5;
+  const range = p.vocalRange ?? 0.3;
+  const pitch = Math.max(0.05, Math.min(1, base * (1 + (world.rng.next() * 2 - 1) * range)));
+  const volume = p.vocalVolume ?? 0.5;
+  const earshot = 200 + volume * 400;
+  const zkey = zoneAt(c.x).key;
+  world.calls.push({
+    t: world.time, type, pitch, volume, earshot,
+    platformIndex: c.platformIndex, x: c.x, zone: zkey, callerId: c.id,
+  });
+  let log = world.zoneCalls[zkey];
+  if (!log) { log = []; world.zoneCalls[zkey] = log; }
+  log.push({ t: world.time, pitch, type });
+  if (log.length > 300) log.splice(0, log.length - 300);
+}
+
+// v0.14: what does creature c hear right now? The loudest recent call on
+// the same platform within earshot. Returns { heard: 0..1, pitch, alarm }.
+export function callsHeardBy(world, c) {
+  let best = null, bestScore = 0;
+  for (const call of world.calls || []) {
+    if (call.platformIndex !== c.platformIndex || call.callerId === c.id) continue;
+    const d = Math.abs(call.x - c.x);
+    if (d > call.earshot) continue;
+    const age = world.time - call.t;
+    const score = call.volume * Math.max(0, 1 - age / 2);
+    if (score > bestScore) { bestScore = score; best = call; }
+  }
+  if (!best) return { heard: 0, pitch: 0, alarm: false };
+  return { heard: Math.min(1, bestScore * 2), pitch: best.pitch, alarm: best.type === 'alarm' };
+}
+
+// ---- v0.14 "Voices": the waste cycle ----
+// Digestion's byproduct, lawfully. A bite's mass splits: nutrition feeds
+// blood sugar (doEat → _ate → tickBiochem), the rest becomes gut waste.
+// Excretion is proportional clearance into the creature's current zone —
+// no timers, no dice, and the gut can never go negative. Decomposition
+// converts raw waste into fertility; fertility relaxes toward the 0.5
+// baseline (leaching) so the soil is a dynamic equilibrium, not a battery.
+// Fertility feeds plant growth: 0.5 → neutral ×1.0.
+export const WASTE_FRACTION = 0.35; // of each bite's mass becomes gut waste
+export const EXCRETE_RATE = 0.6; // per-second proportional gut clearance
+// Soil dynamics (retuned v0.14-disgust): decomposition must OUTPACE fouling
+// or odor pegs at 1.0 everywhere inhabited and the smell carries no
+// information. SOIL_DECAY=0.1 → waste half-life ~7s; typical inhabited zones
+// sit at waste 0.5–1.5 (odor 0.1–0.4, a gradient), only true crowding hits
+// full stink. Fertility equilibrium: fert − 0.5 = 0.5 × waste — empty ground
+// 0.5, typical ground 0.75–1.25, rich ground caps at 1.5.
+export const SOIL_DECAY = 0.1; // per-second proportional waste→fertility
+export const SOIL_CONV_EFF = 0.02; // fertility gained per unit waste decomposed
+export const SOIL_LEACH = 0.004; // per-second relaxation of fertility to 0.5
+export const SOIL_FERT_MAX = 1.5;
+export const WASTE_ODOR_SCALE = 4; // soil-waste units that read as full stink
+export const CONTAM_ILLNESS = 0.15; // illness per unit bite at full contamination
+
+// v0.14: disgust's information channel — how fouled the ground smells here,
+// 0 (clean) to 1 (full stink). Tolerates stub worlds without soil (see the
+// jumpNear range-gate test). The sense the instinct reads.
+export function wasteOdorOf(world, x) {
+  const soil = world.soil;
+  const s = soil && soil[zoneAt(x).key];
+  return s ? Math.min(1, s.waste / WASTE_ODOR_SCALE) : 0;
+}
+
+export function excrete(c, world, dt) {
+  if (!c.gut || c.gut <= 0 || !world.soil) return;
+  const dep = Math.min(c.gut, c.gut * EXCRETE_RATE * dt);
+  if (dep <= 0) return;
+  c.gut -= dep;
+  const s = world.soil[zoneAt(c.x).key];
+  if (s) s.waste += dep;
+}
+
+export function tickSoil(world, dt) {
+  if (!world.soil) return;
+  for (const z of ZONES) {
+    const s = world.soil[z.key];
+    if (!s) continue;
+    // Decomposition: raw waste becomes fertility.
+    const conv = Math.min(s.waste, s.waste * SOIL_DECAY * dt);
+    s.waste -= conv;
+    s.fertility = Math.min(SOIL_FERT_MAX, s.fertility + conv * SOIL_CONV_EFF);
+    // Leaching: unused fertility washes out toward the baseline.
+    s.fertility += (0.5 - s.fertility) * Math.min(1, SOIL_LEACH * dt);
+  }
+}
+
+// Plant growth multiplier from soil fertility. Exported for tests and UI.
+export function soilGrowthMul(world, zoneKey) {
+  const soil = world.soil || {};
+  const s = soil[zoneKey];
+  const f = s ? s.fertility : 0.5;
+  return 0.7 + 0.6 * f;
+}
+// S = μ_zone(adults now) − μ_founders. Positive S = the biome selected
+// upward on that trait; negative = downward. Computed every 6 sim-minutes.
 // v0.13: divergence metric (Eliza's S). Per biome, per tracked trait:
 // S = μ_zone(adults now) − μ_founders. Positive S = the biome selected
 // upward on that trait; negative = downward. Computed every 6 sim-minutes.
-export const DIVERGENCE_CREATURE_TRAITS = ['instHomeSeek', 'size', 'bulk', 'curiosity', 'boldness'];
+export const DIVERGENCE_CREATURE_TRAITS = ['instHomeSeek', 'size', 'bulk', 'curiosity', 'boldness', 'vocalPitch'];
 export const DIVERGENCE_PLANT_TRAITS = ['waterRet', 'coldTol', 'bitterness', 'yield'];
 
 export function recordFounderMeans(world) {
@@ -423,11 +599,101 @@ export function computeDivergence(world) {
   return snap;
 }
 
+// ---- v0.14 "Voices": speciation ----
+// Species are detected, never assigned — single-linkage clustering of
+// adults by genome distance. Cluster ids persist across snapshots by member
+// overlap; a cluster whose members split into two viable groups is a
+// speciation event, logged for the evolution tracker and announced.
+export const SPECIES_DIST = 0.25; // below this distance: same species
+export function computeSpecies(world) {
+  const adults = world.creatures.filter((c) => {
+    if (!c.alive || !c.genome) return false;
+    const st = ageStage(c.biochem, c.pheno);
+    return st === 'adult' || st === 'senior';
+  });
+  const clusters = [];
+  outer: for (const c of adults) {
+    for (const cl of clusters) {
+      // Single linkage: close to ANY member — sample 8 for speed.
+      const n = Math.min(cl.length, 8);
+      for (let i = 0; i < n; i++) {
+        if (genomeDistance(c.genome, cl[i].genome) < SPECIES_DIST) { cl.push(c); continue outer; }
+      }
+    }
+    clusters.push([c]);
+  }
+  // Match clusters to the previous snapshot by member overlap → stable ids.
+  const prev = world.speciesPrev || [];
+  const used = new Set();
+  const idOf = new Map();
+  for (let i = 0; i < clusters.length; i++) {
+    const ids = clusters[i].map((c) => c.id);
+    let best = -1, bestOv = 0;
+    for (let j = 0; j < prev.length; j++) {
+      if (used.has(j)) continue;
+      let ov = 0;
+      for (const id of ids) if (prev[j].ids.has(id)) ov++;
+      if (ov > bestOv) { bestOv = ov; best = j; }
+    }
+    if (best >= 0 && bestOv >= 2) { used.add(best); idOf.set(i, prev[best].id); }
+    else idOf.set(i, ++world.speciesSeq);
+  }
+  for (let i = 0; i < clusters.length; i++) {
+    const id = idOf.get(i);
+    for (const c of clusters[i]) c.speciesId = id;
+  }
+  // Speciation: a previous cluster (≥6 members) whose members now live in
+  // ≥2 current clusters of ≥3 each has split.
+  for (const p of prev) {
+    if (p.ids.size < 6) continue;
+    const dist = new Map(); // current species id → member count from p
+    for (let i = 0; i < clusters.length; i++) {
+      let n = 0;
+      for (const c of clusters[i]) if (p.ids.has(c.id)) n++;
+      if (n >= 3) dist.set(idOf.get(i), n);
+    }
+    if (dist.size >= 2) {
+      const ev = { type: 'speciation', t: world.time, from: p.id, to: [...dist.keys()], sizes: [...dist.values()] };
+      world.events.push(ev);
+      world.speciesLog.push({ t: world.time, kind: 'split', ...ev });
+    }
+  }
+  // The snapshot the evolution tracker draws: per-cluster size, mean voice
+  // pitch (the dialect signature), and home zone.
+  const snap = {
+    t: world.time,
+    kind: 'snapshot',
+    clusters: clusters.map((cl, i) => {
+      let pitch = 0;
+      const zones = {};
+      for (const c of cl) {
+        pitch += c.voicePitch ?? 0.5;
+        const zk = zoneAt(c.x).key;
+        zones[zk] = (zones[zk] || 0) + 1;
+      }
+      const home = Object.keys(zones).sort((a, b) => zones[b] - zones[a])[0] || '?';
+      return { id: idOf.get(i), size: cl.length, meanPitch: cl.length ? pitch / cl.length : 0.5, zone: home };
+    }),
+  };
+  world.speciesLog.push(snap);
+  if (world.speciesLog.length > 500) world.speciesLog.splice(0, world.speciesLog.length - 500);
+  world.speciesPrev = clusters.map((cl, i) => ({ id: idOf.get(i), ids: new Set(cl.map((c) => c.id)) }));
+  return snap;
+}
+
 function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg.platformIndex, world.rng, {
     parents: egg.parents,
     generation: egg.gen || 0,
   });
   c.name = uniqueName(world, c.name);
+  // v0.14: postzygotic barrier. A hatchling of divergent parents carries
+  // the cost in its body — shorter life, less time to breed. The record
+  // goes on the creature for the family tree.
+  const hv = hybridViability(egg.parentDist || 0);
+  if (hv < 1) {
+    c.pheno.lifespanSec *= hv;
+    c.hybrid = { dist: egg.parentDist, viability: hv };
+  }
   // v0.7 vertical transmission: the hatchling inherits its parents'
   // traditions with fidelity-scaled loyalty — knowledge, not DNA.
   const fid = fidelityOf(c.pheno);
@@ -466,7 +732,10 @@ export function tickWorld(world, dt) {
   // Plants grow fruit.
   for (const p of world.plants) {
     // v0.13: growth rate from the plant genome.
-    p.growth = Math.min(1, p.growth + (dt / 150) * (0.5 + (p.pheno ? p.pheno.growthRate : 0.5)));
+    // v0.14: the waste cycle closes the loop — soil fertility (fed by
+    // excretion, built by decomposition) scales growth. Fertile ground
+    // grows faster; exhausted ground stalls.
+    p.growth = Math.min(1, p.growth + (dt / 150) * (0.5 + (p.pheno ? p.pheno.growthRate : 0.5)) * soilGrowthMul(world, p.zone));
     p.sway += dt;
     if (p.growth >= 1) {
       p.fruitTimer -= dt;
@@ -524,6 +793,10 @@ export function tickWorld(world, dt) {
       }
     }
   }
+
+  // v0.14: the waste cycle — decomposition and leaching run on the soil,
+  // once per tick, after the plants have eaten from it.
+  tickSoil(world, dt);
 
   // Food rots (only nest-cache fruit has a timer; plant fruit lasts).
   for (let i = world.foods.length - 1; i >= 0; i--) {
@@ -594,9 +867,22 @@ export function tickWorld(world, dt) {
 
   // Creatures.
   rebuildSpatialIndex(world);
+  // v0.14: calls older than 2 sim-seconds fade from the acoustic commons.
+  if (world.calls.length) {
+    const cutoff = world.time - 2;
+    let w = 0;
+    for (let i = 0; i < world.calls.length; i++) {
+      if (world.calls[i].t >= cutoff) world.calls[w++] = world.calls[i];
+    }
+    world.calls.length = w;
+  }
   for (const c of world.creatures) {
     updateCreature(c, world, dt);
   }
+  // v0.14 "Voices": the Teacher — Sunny's visitor avatar. Ticks after the
+  // creatures; its calls land in the 2s acoustic registry and are heard on
+  // the next tick. A visitor, never interleaved with creature update order.
+  if (world.teacher) tickTeacher(world, world.teacher, dt);
   // v0.12: bond dynamics run on the fresh positions — familiarity,
   // play-together, decay, and pruning of the dead.
   tickBonds(world, dt);
@@ -606,8 +892,10 @@ export function tickWorld(world, dt) {
     world.tribes = detectTribes(world);
   }
   // v0.13: divergence snapshot every 6 sim-minutes — Eliza's S per biome.
+  // v0.14: species clustering rides the same snapshot.
   if (Math.floor(world.time / 360) !== Math.floor((world.time - dt) / 360)) {
     computeDivergence(world);
+    computeSpecies(world);
   }
   // Remove the dead (UI reads events first).
   // v0.7: the dead leave carcasses — meat for the diet gene's new niche.

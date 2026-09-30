@@ -4,11 +4,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { GENES, randomGenome, inherit, phenotype, markLocus } from '../src/sim/genome.js';
+import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, DUP_RATE, DEL_RATE, MAX_EXTRA } from '../src/sim/genome.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from '../src/sim/brain.js';
 import { createBiochem, tickBiochem, mood } from '../src/sim/biochem.js';
 import { createRng } from '../src/sim/rng.js';
-import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS } from '../src/sim/world.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
   memoryCapacity, RECALL_BUDGET,
@@ -17,11 +17,12 @@ import {
   createCulture, foundGrove, adoptTradition, traditionVotes, groveTarget,
   pruneExtinct, sampleCulture, ratchetIndex, fidelityOf,
 } from '../src/sim/culture.js';
-import { finalizeEpisode, maybeFoundGrove, doEat, createCreature, creatureRadius, stepPhysics, gatherSenses, GRAVITY, FALL_HURT_V, JUMP_V_BASE, JUMP_V_GAIN } from '../src/sim/creature.js';
+import { finalizeEpisode, maybeFoundGrove, doEat, createCreature, updateCreature, groundCallType, creatureRadius, stepPhysics, gatherSenses, GRAVITY, FALL_HURT_V, JUMP_V_BASE, JUMP_V_GAIN } from '../src/sim/creature.js';
 import { createBonds, getBond, nudgeBond, tickBonds, pedigreeKin, detectTribes, socialStats } from '../src/sim/social.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant, plantMeiosis, PLANT_GENES } from '../src/sim/plantgenome.js';
+import { createTeacher, tickTeacher, commandTeacher, setTeacherMode, teacherDemo, teacherReward, teacherRewardNearest, emitTeacherCall, TEACHER_MOTIF, TEACHER_PITCH, IMITATION_WINDOW, gatherTeacherSenses, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, foodFlavor } from '../src/sim/teacher.js';
 
-const N_SENSES = 21; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear
+const N_SENSES = 24; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor
 
 function testPheno(seed, overrides = {}) {
   const p = phenotype(randomGenome(createRng(seed)));
@@ -50,7 +51,7 @@ const MID_SENSES = {
 
 test('instinct genes map to valid sense/action indices', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 17); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump
+  assert.equal(inst.length, 20); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee
   for (const g of inst) {
     assert.ok(g.sense >= 0 && g.sense < N_SENSES, g.key);
     assert.ok(g.action >= 0 && g.action < ACTIONS.length, g.key);
@@ -366,13 +367,13 @@ test('memory capacity is set by an evolvable gene', () => {
 
 test('v0.5: mate finally has an instinct pathway', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 17); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump
+  assert.equal(inst.length, 20); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee
   const g = GENES.find((g) => g.key === 'instLonelyMate');
   assert.ok(g, 'instLonelyMate is a registered gene');
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 178); // 43 + v2's 135 (132 across 9 families + matePref's 3)
+  assert.equal(GENES.length, 186); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -913,7 +914,7 @@ test('v0.8: leaves are bitter — weak reward when healthy', () => {
 
 test('v0.8: illness is the 15th brain input', () => {
   const v = senseVector({ ...MID_SENSES, illness: 0.7 });
-  assert.equal(v.length, 22, 'twenty-two entries: 21 senses + bias');
+  assert.equal(v.length, 25, 'twenty-five entries: 24 senses + bias');
   assert.equal(v[13], 0.7, 'illness rides at index 13');
   assert.equal(v[14], 0, 'homeDist defaults to 0');
   assert.equal(v[15], 0, 'kinNear defaults to 0');
@@ -922,7 +923,10 @@ test('v0.8: illness is the 15th brain input', () => {
   assert.equal(v[18], 0, 'climbDown defaults to 0');
   assert.equal(v[19], 0, 'groomNear defaults to 0');
   assert.equal(v[20], 0, 'jumpNear defaults to 0');
-  assert.equal(v[21], 1, 'bias still last');
+  assert.equal(v[21], 0, 'callHeard defaults to 0');
+  assert.equal(v[22], 0, 'callPitch defaults to 0');
+  assert.equal(v[23], 0, 'wasteOdor defaults to 0');
+  assert.equal(v[24], 1, 'bias still last');
 });
 
 test('v0.8: the illness instinct points at food-seeking', () => {
@@ -1282,6 +1286,10 @@ test('v0.12: starving overrides homesickness', () => {
   // chooses seekHome — the override must still convert it to seekFood.
   for (const g of GENES) if (g.sense !== undefined) c.pheno[g.key] = 0;
   c.pheno.instHomeSeek = 1;
+  // Pin the hunger readout: hunger = 1 - bloodSugar, so 0.05 blood sugar
+  // reads as 0.95 hunger — deterministically over the 0.8 override line,
+  // independent of rng-stream luck on the drive-tuning genes.
+  c.pheno.driveGainHunger = 1; c.pheno.driveBaseHunger = 0;
   c.pheno.curiosity = 0; c.pheno.boldness = 0; // minimize exploration noise
   c.brain = createBrain(c.pheno, world.rng);
   // Zero the random hidden weights: the decision must come from instincts
@@ -1521,6 +1529,10 @@ test('canopy: prolonged starvation writes an epigenetic mark', () => {
   world.plants.length = 0; world.foods.length = 0; // no food anywhere
   const c = addTestCreature(world, 500);
   c.biochem.bloodSugar = 0.05; // starving: hunger > 0.85
+  // Pin the hunger readout (gain 1, baseline 0) so 0.05 blood sugar reads
+  // as 0.95 hunger — deterministically over the 0.85 marking line,
+  // independent of rng-stream luck on the drive-tuning genes.
+  c.pheno.driveGainHunger = 1; c.pheno.driveBaseHunger = 0;
   const rateBefore = c.pheno.hungerRate;
   // 61 sim-seconds of hunger trips the 60s scarcity threshold. Pin health:
   // this test is about the marking mechanism, not about surviving famine.
@@ -1970,4 +1982,1018 @@ test('v0.13.1: non-finite eligibility traces reset instead of spreading', () => 
   brain.traces.e[0][0] = NaN; // simulate a poisoned trace
   learn(brain, pheno, 0.8);
   assert.deepEqual(allFiniteBrain(brain), [], 'poisoned traces must reset, not spread');
+});
+
+// ---- v0.14 "Voices": speech ----
+
+test('v0.14: vocal is the 13th action; voice genes are registered', () => {
+  assert.equal(ACTIONS[12], 'vocal', 'vocal appended, never renumbered');
+  assert.equal(ACTIONS.length, 13);
+  for (const k of ['vocalPitch', 'vocalRange', 'vocalVolume', 'vocalImitate', 'matePrefCall']) {
+    assert.ok(GENES.find((g) => g.key === k), `${k} is a registered gene`);
+  }
+  const hv = GENES.find((g) => g.key === 'instHeardVocal');
+  assert.equal(hv.sense, 21, 'hearing calls drives vocalizing');
+  assert.equal(hv.action, 12, 'onto the vocal action');
+  const lv = GENES.find((g) => g.key === 'instLonelyVocal');
+  assert.equal(lv.sense, 3, 'loneliness drives vocalizing');
+  assert.equal(lv.action, 12, 'onto the vocal action');
+});
+
+test('v0.14: the vocal action emits a grounded call', () => {
+  const world = bindWorld(createWorld(1401));
+  populate(world);
+  const c = world.creatures[0];
+  c.biochem.hunger = 0.2; c.biochem.energy = 0.9; c.biochem.adrenaline = 0;
+  c.action = 'vocal'; c.actionTimer = 100;
+  const n0 = world.calls.length;
+  updateCreature(c, world, 0.1);
+  assert.ok(world.calls.length > n0, 'vocal action registers a call');
+  const call = world.calls[world.calls.length - 1];
+  assert.ok(['alarm', 'food', 'mate', 'contact'].includes(call.type), `grounded type, got ${call.type}`);
+  assert.ok(call.pitch > 0 && call.pitch <= 1, 'pitch in (0,1]');
+});
+
+test('v0.14: call type is grounded in real state', () => {
+  const world = bindWorld(createWorld(1402));
+  populate(world);
+  const c = world.creatures[0];
+  c.biochem.fear = 0.9;
+  assert.equal(groundCallType(c, { foodDist: 1, _food: null }), 'alarm', 'terror means alarm');
+  c.biochem.fear = 0;
+  c.biochem.social = 0.2;
+  assert.equal(groundCallType(c, { foodDist: 0.1, _food: { x: 1 } }), 'food', 'near food means a food call');
+  // Mate call needs a lonely adult: age into adulthood.
+  c.biochem.age = c.pheno.lifespanSec * 0.5;
+  c.biochem.social = 0.9;
+  assert.equal(groundCallType(c, { foodDist: 1, _food: null }), 'mate', 'lonely adult means a mate call');
+  c.biochem.social = 0.2;
+  assert.equal(groundCallType(c, { foodDist: 1, _food: null }), 'contact', 'otherwise contact');
+});
+
+test('v0.14: nearby listeners hear the call — callHeard/callPitch senses', () => {
+  const world = bindWorld(createWorld(1403));
+  populate(world);
+  const a = world.creatures[0];
+  const b = world.creatures[1];
+  b.platformIndex = a.platformIndex; // same branch
+  b.x = a.x + 50; // well within earshot
+  a.voicePitch = 0.75;
+  a.pheno.vocalRange = 0; // clean signal
+  emitCall(world, a, 'contact');
+  const s = gatherSenses(b, world);
+  assert.ok(s.callHeard > 0.3, `listener hears the call (${s.callHeard.toFixed(2)})`);
+  assert.ok(Math.abs(s.callPitch - 0.75) < 0.05, `pitch carried, got ${s.callPitch.toFixed(2)}`);
+  // Far away on another branch: silence.
+  const far = world.creatures[2];
+  far.platformIndex = (a.platformIndex + 4) % world.platforms.length;
+  const sf = gatherSenses(far, world);
+  assert.equal(sf.callHeard, 0, 'out of earshot hears nothing');
+});
+
+test('v0.14: answering a heard call is rewarding (social glue)', () => {
+  const world = bindWorld(createWorld(1404));
+  populate(world);
+  const a = world.creatures[0];
+  const b = world.creatures[1];
+  b.platformIndex = a.platformIndex;
+  b.x = a.x + 50;
+  for (const c of [a, b]) { c.biochem.hunger = 0.2; c.biochem.energy = 0.9; c.biochem.adrenaline = 0; }
+  a.action = 'vocal'; a.actionTimer = 100;
+  updateCreature(a, world, 0.1); // a calls
+  b.action = 'vocal'; b.actionTimer = 100;
+  b.reward = 0;
+  updateCreature(b, world, 0.1); // b answers
+  assert.ok(b.reward > 0, `answering comforts (${b.reward.toFixed(3)})`);
+});
+
+test('v0.14: alarm calls reassure listeners — fear drains', () => {
+  const world = bindWorld(createWorld(1405));
+  populate(world);
+  const a = world.creatures[0];
+  const b = world.creatures[1];
+  b.platformIndex = a.platformIndex;
+  b.x = a.x + 50;
+  a.voicePitch = 0.5; a.pheno.vocalRange = 0;
+  emitCall(world, a, 'alarm');
+  b.biochem.adrenaline = 0.5;
+  const before = b.biochem.adrenaline;
+  for (let t = 0; t < 10; t++) { b.action = 'wander'; b.actionTimer = 100; updateCreature(b, world, 0.1); }
+  assert.ok(b.biochem.adrenaline < before, `alarm heard: adrenaline ${before.toFixed(2)} → ${b.biochem.adrenaline.toFixed(2)}`);
+});
+
+test('v0.14: vocal learning — pitch drifts toward heard pitches', () => {
+  const world = bindWorld(createWorld(1406));
+  populate(world);
+  const learner = world.creatures[0];
+  const tutor = world.creatures[1];
+  tutor.platformIndex = learner.platformIndex;
+  tutor.x = learner.x + 50;
+  learner.voicePitch = 0.5;
+  learner.pheno.vocalImitate = 1; // maximal learner
+  learner.pheno.vocalRange = 0;
+  tutor.voicePitch = 0.9;
+  tutor.pheno.vocalRange = 0; // tutor holds its pitch
+  tutor.pheno.vocalImitate = 0;
+  for (const c of [learner, tutor]) { c.biochem.hunger = 0.2; c.biochem.energy = 0.9; }
+  for (let t = 0; t < 200; t++) {
+    tutor.action = 'vocal'; tutor.actionTimer = 100;
+    learner.action = 'wander'; learner.actionTimer = 100;
+    tickWorld(world, 0.1);
+    if (learner.voicePitch > 0.75) break;
+  }
+  assert.ok(learner.voicePitch > 0.6, `learner drifted toward tutor (${learner.voicePitch.toFixed(2)})`);
+  assert.ok(learner.heardPitches.length > 0, 'heard pitches logged to culture memory');
+});
+
+test('v0.14: isolated zones develop distinct dialects from identical genomes', () => {
+  const world = bindWorld(createWorld(1407));
+  const rng = world.rng;
+  const mk = (voice, imitate, x, pi) => {
+    const g = randomGenome(rng);
+    g.alleles.vocalPitch = [0.5, 0.5];
+    const c = createCreature(g, x, pi, rng);
+    c.voicePitch = voice;
+    c.pheno.vocalPitch = 0.5; // identical genetics
+    c.pheno.vocalImitate = imitate;
+    c.pheno.vocalRange = 0; // clean signal
+    c.biochem.hunger = 0.2; c.biochem.energy = 0.9;
+    world.creatures.push(c);
+    return c;
+  };
+  // Zone A (platform 1): low tutor + learner. Zone B (platform 3): high tutor + learner.
+  const t1 = mk(0.2, 0, 400, 1);
+  const l1 = mk(0.5, 1, 450, 1);
+  const t2 = mk(0.9, 0, 1400, 3);
+  const l2 = mk(0.5, 1, 1450, 3);
+  for (let t = 0; t < 400; t++) {
+    for (const c of [t1, t2]) { c.action = 'vocal'; c.actionTimer = 100; }
+    tickWorld(world, 0.1);
+  }
+  assert.ok(l1.voicePitch < 0.4, `zone-A learner drifted low (${l1.voicePitch.toFixed(2)})`);
+  assert.ok(l2.voicePitch > 0.6, `zone-B learner drifted high (${l2.voicePitch.toFixed(2)})`);
+  // The zone call archives record the dialects.
+  const mean = (z) => {
+    const l = world.zoneCalls[z] || [];
+    return l.reduce((s, e) => s + e.pitch, 0) / Math.max(1, l.length);
+  };
+  const za = zoneAt(t1.x).key, zb = zoneAt(t2.x).key;
+  assert.notEqual(za, zb, 'tutors live in different zones');
+  const ma = mean(za), mb = mean(zb);
+  assert.ok(Math.abs(ma - mb) > 0.2, `zone archives diverge (${ma.toFixed(2)} vs ${mb.toFixed(2)})`);
+});
+
+test('v0.14: vocalPitch joins the divergence traits (Eliza\'s S)', () => {
+  assert.ok(DIVERGENCE_CREATURE_TRAITS.includes('vocalPitch'), 'vocalPitch is a tracked divergence trait');
+  const world = bindWorld(createWorld(1408));
+  populate(world);
+  recordFounderMeans(world);
+  assert.ok(typeof world.founderMeans.vocalPitch === 'number', 'founder mean recorded');
+  const snap = computeDivergence(world);
+  const z0 = Object.keys(snap.zones)[0];
+  assert.ok(typeof snap.zones[z0].vocalPitch === 'number', 'S computed for vocalPitch');
+});
+
+// ---- v0.14: gene duplication — evolvable genome complexity ----
+
+test('v0.14: duplication fires rarely, caps at one copy per gene and six per genome', () => {
+  const rng = createRng(1410);
+  const mom = randomGenome(rng), dad = randomGenome(rng);
+  let sawDup = 0;
+  for (let i = 0; i < 300; i++) {
+    const child = inherit(mom, dad, rng);
+    const keys = Object.keys(child.extra);
+    assert.ok(keys.length <= 6, `cap respected (${keys.length})`);
+    assert.equal(new Set(keys).size, keys.length, 'one copy per gene');
+    for (const k of keys) {
+      const gene = GENES.find((g) => g.key === k);
+      assert.notEqual(gene.kind, 'choice', 'choice genes never duplicate (no dead genes)');
+      assert.equal(child.extra[k].length, 2, 'extra copy is a diploid pair');
+    }
+    sawDup += child.dupLog.filter((e) => e.kind === 'duplication').length;
+  }
+  assert.ok(sawDup > 0, `duplications occurred (${sawDup} in 300 inheritances)`);
+  assert.ok(sawDup < 120, `duplication stays rare (${sawDup} in 300 inheritances)`);
+});
+
+test('v0.14: a duplicated copy expresses by dosage and diverges by mutation', () => {
+  const rng = createRng(1411);
+  const g = randomGenome(rng);
+  g.alleles.vocalPitch = [0.1, 0.1];
+  g.extra.vocalPitch = [0.9, 0.9];
+  const p = phenotype(g);
+  // Dosage: mean of base mean (0.1) and copy mean (0.9) = 0.5.
+  assert.ok(Math.abs(p.vocalPitch - 0.5) < 0.01, `dosage average, got ${p.vocalPitch.toFixed(3)}`);
+  // A newborn copy is an identical twin — then mutation diverges it.
+  const mom = randomGenome(rng), dad = randomGenome(rng);
+  mom.extra.vocalPitch = [0.5, 0.5];
+  dad.extra.vocalPitch = [0.5, 0.5];
+  let diverged = 0;
+  // 200 trials: per-child divergence odds ~7%, so P(none) ≈ 2e-7 — robust
+  // to rng-stream shifts from later gene additions, unlike a 50-trial coin flip.
+  for (let i = 0; i < 200; i++) {
+    const child = inherit(mom, dad, rng, 0.05); // high mutation to see divergence
+    const xc = child.extra.vocalPitch;
+    if (xc && (Math.abs(xc[0] - 0.5) > 0.01 || Math.abs(xc[1] - 0.5) > 0.01)) diverged++;
+  }
+  assert.ok(diverged > 0, 'extra copies mutate independently');
+});
+
+test('v0.14: extra copies segregate ~50/50 in meiosis', () => {
+  const rng = createRng(1412);
+  const mom = randomGenome(rng), dad = randomGenome(rng);
+  mom.extra.size = [0.5, 0.5];
+  let passed = 0;
+  for (let i = 0; i < 200; i++) {
+    const child = inherit(mom, dad, rng);
+    if (child.extra.size) passed++;
+  }
+  assert.ok(passed > 60 && passed < 140, `~half the children carry the copy (${passed}/200)`);
+});
+
+test('v0.14: deletion prunes extra copies', () => {
+  const rng = createRng(1413);
+  const mom = randomGenome(rng), dad = randomGenome(rng);
+  // Ten carried copies → ~5 segregate per child → expected deletions over
+  // 500 inheritances ≈ 5 (P(none) < 1%). The old 2-copy/300-trial version
+  // was a coin flip (expected 0.6) that passed on seed luck alone.
+  for (const k of ['size', 'fur', 'vocalPitch', 'tradition', 'curiosity',
+                   'sociability', 'boldness', 'immunity', 'memory', 'hungerRate']) {
+    mom.extra[k] = [0.5, 0.5];
+  }
+  let sawDel = 0;
+  for (let i = 0; i < 500; i++) {
+    const child = inherit(mom, dad, rng);
+    sawDel += child.dupLog.filter((e) => e.kind === 'deletion').length;
+  }
+  assert.ok(sawDel > 0, `deletions occurred (${sawDel} in 500 inheritances)`);
+});
+
+test('v0.14: genomeDistance is 0 for identical genomes, grows with divergence', () => {
+  const rng = createRng(1414);
+  const g = randomGenome(rng);
+  assert.equal(genomeDistance(g, g), 0, 'identical genomes: distance 0');
+  const h = randomGenome(rng);
+  const d = genomeDistance(g, h);
+  assert.ok(d > 0.05 && d < 0.3, `random pair distance sane (${d.toFixed(2)})`);
+  // Copy-number differences register in the distance.
+  const g2 = { alleles: g.alleles, marks: g.marks, extra: { size: [0.9, 0.9] } };
+  assert.ok(genomeDistance(g, g2) > 0, 'a duplicated copy adds distance');
+  assert.ok(genomeDistance(g, g2) < d, 'less than a fully random genome');
+});
+
+// ---- v0.14: speciation — prezygotic + postzygotic barriers ----
+
+test('v0.14: matePrefCall makes the chooser prefer a similar voice', () => {
+  const world = bindWorld(createWorld(1420));
+  populate(world);
+  const chooser = world.creatures[0];
+  const near = world.creatures[1];
+  const far = world.creatures[2];
+  for (const c of [chooser, near, far]) {
+    c.biochem.age = c.pheno.lifespanSec * 0.5; // adults
+    c.mateCooldown = 0;
+    c.platformIndex = chooser.platformIndex;
+    c.x = chooser.x; c.y = chooser.y;
+    c.biochem.hunger = 0.2; c.biochem.energy = 0.9;
+  }
+  chooser.sex = 'F'; near.sex = 'M'; far.sex = 'M';
+  chooser.pheno.matePrefChoosy = 0; // isolate the call criterion
+  chooser.pheno.matePrefCall = 1; // maximally choosy about voices
+  chooser.voicePitch = 0.5;
+  near.voicePitch = 0.52; // same dialect
+  far.voicePitch = 0.95; // foreign dialect
+  const s = gatherSenses(chooser, world);
+  assert.ok(s._mate, 'a mate is sensed');
+  assert.equal(s._mate.id, near.id, 'the similar voice wins');
+  // Founder-silent: without choosiness, voice doesn't decide.
+  chooser.pheno.matePrefCall = 0;
+  const s0 = gatherSenses(chooser, world);
+  assert.ok(s0._mate, 'still mates without call choosiness');
+});
+
+test('v0.14: hybridViability penalizes only genuinely divergent parents', () => {
+  assert.equal(hybridViability(0.1), 1, 'within-population: full viability');
+  assert.equal(hybridViability(0.30), 1, 'at threshold: full viability');
+  const hv = hybridViability(0.5);
+  assert.ok(hv < 1 && hv > 0.3, `divergent parents: reduced (${hv.toFixed(2)})`);
+  assert.ok(Math.abs(hybridViability(2) - 0.3) < 1e-9, 'penalty floors at 0.3');
+});
+
+test('v0.14: hatchlings of divergent parents carry the cost in lifespan', () => {
+  const world = bindWorld(createWorld(1421));
+  populate(world);
+  const g = randomGenome(createRng(99));
+  const before = world.creatures.length;
+  layEgg(world, 400, 1, g, null, 0, [], 0.01, 0.5); // divergent parents
+  for (let t = 0; t < 60 && world.eggs.length > 0; t++) tickWorld(world, 0.1);
+  assert.ok(world.creatures.length > before, 'the egg hatched');
+  const baby = world.creatures[world.creatures.length - 1];
+  assert.ok(baby.hybrid, 'hybrid record on the creature');
+  assert.equal(baby.hybrid.dist, 0.5);
+  const expected = hybridViability(0.5);
+  const unscaled = g ? null : null;
+  assert.ok(baby.pheno.lifespanSec < 3000, `lifespan scaled (${baby.pheno.lifespanSec.toFixed(0)}s)`);
+  // Control: low parent distance → no penalty, no record.
+  layEgg(world, 400, 1, randomGenome(createRng(100)), null, 0, [], 0.01, 0.1);
+  const n0 = world.creatures.length;
+  for (let t = 0; t < 60 && world.eggs.length > 0; t++) tickWorld(world, 0.1);
+  const baby2 = world.creatures[world.creatures.length - 1];
+  assert.equal(baby2.hybrid, undefined, 'no hybrid record for close parents');
+});
+
+test('v0.14: computeSpecies clusters adults by genome distance', () => {
+  const world = bindWorld(createWorld(1422));
+  populate(world);
+  const rng = createRng(77);
+  const mkGroup = (val, n) => {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const g = randomGenome(rng);
+      for (const gene of GENES) if (gene.kind === 'float') g.alleles[gene.key] = [val, val];
+      const c = createCreature(g, 400 + world.rng.range(-50, 50), 1, rng);
+      c.biochem.age = c.pheno.lifespanSec * 0.5;
+      world.creatures.push(c);
+      out.push(c);
+    }
+    return out;
+  };
+  const ga = mkGroup(0.1, 4);
+  const gb = mkGroup(0.9, 4);
+  const snap = computeSpecies(world);
+  assert.equal(snap.clusters.length, 2, `two species detected, got ${snap.clusters.length}`);
+  const sizes = snap.clusters.map((c) => c.size).sort();
+  assert.deepEqual(sizes, [4, 4]);
+  for (const c of [...ga, ...gb]) assert.ok(typeof c.speciesId === 'number', 'speciesId assigned');
+});
+
+test('v0.14: a lineage split fires a speciation event', () => {
+  const world = bindWorld(createWorld(1423));
+  populate(world);
+  const rng = createRng(78);
+  const group = [];
+  for (let i = 0; i < 8; i++) {
+    const g = randomGenome(rng);
+    for (const gene of GENES) if (gene.kind === 'float') g.alleles[gene.key] = [0.3, 0.3];
+    const c = createCreature(g, 400, 1, rng);
+    c.biochem.age = c.pheno.lifespanSec * 0.5;
+    world.creatures.push(c);
+    group.push(c);
+  }
+  computeSpecies(world); // one species
+  const nEvents0 = world.events.filter((e) => e.type === 'speciation').length;
+  // Half the lineage drifts far away genetically.
+  for (let i = 0; i < 4; i++) {
+    for (const gene of GENES) if (gene.kind === 'float') group[i].genome.alleles[gene.key] = [0.95, 0.95];
+  }
+  computeSpecies(world);
+  const evs = world.events.filter((e) => e.type === 'speciation');
+  assert.equal(evs.length, nEvents0 + 1, 'a speciation event fired');
+  assert.deepEqual(evs[evs.length - 1].sizes.sort(), [4, 4]);
+  const splits = world.speciesLog.filter((e) => e.kind === 'split');
+  assert.ok(splits.length >= 1, 'split recorded in the species log');
+});
+
+test('v0.14: randSparse never hangs at maximal wiring density', () => {
+  const rng = createRng(1424);
+  const g = randomGenome(rng);
+  g.alleles.bpSparsity = [0, 0]; // density 1.0 — the old code hung here
+  const c = createCreature(g, 400, 1, rng); // must return, not spin
+  assert.ok(c.brain.layers[0].idx.length > 0, 'brain wired');
+});
+
+// ---- v0.14 "Voices": the Teacher — Sunny's in-sim avatar ----
+
+test('v0.14: the Teacher exists — a visitor, not a creature', () => {
+  const world = bindWorld(createWorld(9001));
+  const te = world.teacher;
+  assert.ok(te, 'world has a teacher');
+  assert.equal(te.kind, 'teacher');
+  assert.equal(te.name, 'Sunny');
+  assert.equal(te.mode, 'autonomous');
+  assert.ok(!world.creatures.includes(te), 'the teacher is not in the creature list');
+  assert.ok(!('biochem' in te), 'no biochemistry — no hunger to tick');
+  assert.ok(!('genome' in te), 'no genome — not bred, not culled');
+  assert.ok(Array.isArray(world.teachLog), 'teachLog exists');
+});
+
+test('v0.14: teacher demo emits exact-pitch calls into the acoustic commons', () => {
+  const world = bindWorld(createWorld(9002));
+  const te = world.teacher;
+  teacherDemo(world, te, [0.62, 0.7]);
+  tickWorld(world, 0.1); // first demo call emits immediately
+  const heard = world.calls.filter((c) => c.fromTeacher);
+  assert.ok(heard.length >= 1, 'teacher calls are in the commons');
+  assert.equal(heard[0].pitch, 0.62, 'exact pitch — a clear model, no jitter');
+  assert.equal(heard[0].callerId, 'teacher');
+  assert.ok(heard[0].volume > 0.8, 'loud and clear');
+  // The zone dialect archive keeps the lesson too.
+  const zlog = Object.values(world.zoneCalls).flat();
+  assert.ok(zlog.some((e) => e.fromTeacher && e.pitch === 0.62), 'demo seeded the zone archive');
+  const ev = world.teachLog[world.teachLog.length - 1];
+  assert.equal(ev.kind, 'demo');
+  assert.deepEqual(ev.pitches, [0.62, 0.7]);
+});
+
+test('v0.14: tanglekins hear the Teacher\u2019s demonstration', () => {
+  const world = bindWorld(createWorld(9003));
+  populate(world);
+  const te = world.teacher;
+  const listener = world.creatures[0];
+  te.platformIndex = listener.platformIndex;
+  te.x = listener.x + 60; // well within the teacher's earshot
+  teacherDemo(world, te, [0.7]);
+  tickTeacher(world, te, 0.1); // the teacher alone — the students hold still
+  const s = gatherSenses(listener, world);
+  assert.ok(s.callHeard > 0.3, `listener hears the demonstration (${s.callHeard.toFixed(2)})`);
+  assert.ok(Math.abs(s.callPitch - 0.7) < 0.05, `motif pitch carried (${s.callPitch.toFixed(2)})`);
+});
+
+test('v0.14: the teacher rewards imitators, not strangers', () => {
+  const world = bindWorld(createWorld(9004));
+  populate(world);
+  const te = world.teacher;
+  const copier = world.creatures[0];
+  const stranger = world.creatures[1];
+  for (const c of [copier, stranger]) {
+    c.platformIndex = te.platformIndex;
+    c.x = te.x + 80;
+    c.reward = 0;
+  }
+  copier.voicePitch = TEACHER_PITCH; // has copied the motif
+  stranger.voicePitch = 0.05; // far from the motif
+  const n = teacherReward(world, te, TEACHER_PITCH);
+  assert.ok(n >= 1, 'at least the copier was rewarded');
+  assert.ok(copier.reward > 0, `copier rewarded (${copier.reward.toFixed(3)})`);
+  assert.equal(stranger.reward, 0, 'the stranger gets nothing');
+  assert.equal(world.teachLog[world.teachLog.length - 1].kind, 'reward');
+});
+
+test('v0.14: possessed mode — moveTo, demo, and reward-nearest commands', () => {
+  const world = bindWorld(createWorld(9005));
+  populate(world);
+  const te = world.teacher;
+  assert.ok(setTeacherMode(world, te, 'possessed'), 'possession engages');
+  assert.equal(te.mode, 'possessed');
+  assert.equal(world.teachLog[world.teachLog.length - 1].kind, 'mode');
+
+  // moveTo: the teacher walks where it's told.
+  const x0 = te.x;
+  assert.ok(commandTeacher(te, { cmd: 'moveTo', x: 300, platformIndex: 1 }), 'moveTo accepted');
+  for (let i = 0; i < 120; i++) tickWorld(world, 0.1);
+  assert.ok(te.x < x0, `teacher moved toward the target (${x0.toFixed(0)} → ${te.x.toFixed(0)})`);
+  assert.equal(te.platformIndex, 1, 'hopped to the commanded branch');
+
+  // demo: the motif sounds on command.
+  const callsBefore = world.calls.length;
+  assert.ok(commandTeacher(te, { cmd: 'demo' }), 'demo accepted');
+  for (let i = 0; i < 10; i++) tickWorld(world, 0.1);
+  const demos = world.calls.filter((c) => c.fromTeacher);
+  assert.ok(demos.length > callsBefore || demos.length > 0, 'demonstration calls emitted');
+
+  // rewardNearest: the closest creature gets the tap.
+  const near = world.creatures.reduce((a, b) =>
+    Math.abs(a.x - te.x) < Math.abs(b.x - te.x) ? a : b);
+  near.platformIndex = te.platformIndex;
+  near.x = te.x + 30;
+  near.reward = 0;
+  assert.ok(commandTeacher(te, { cmd: 'rewardNearest' }), 'rewardNearest accepted');
+  tickWorld(world, 0.1);
+  assert.ok(near.reward > 0, 'nearest creature rewarded');
+});
+
+test('v0.14: possessed commands are validated — garbage never crashes the sim', () => {
+  const world = bindWorld(createWorld(9006));
+  const te = world.teacher;
+  assert.equal(commandTeacher(te, null), false);
+  assert.equal(commandTeacher(te, { cmd: 'moveTo' }), false, 'moveTo needs x and platform');
+  assert.equal(commandTeacher(te, { cmd: 'demo', pitches: 'no' }), false, 'demo pitches must be numbers');
+  assert.ok(commandTeacher(te, { cmd: 'bogus-command' }), 'unknown commands queue');
+  setTeacherMode(world, te, 'possessed');
+  for (let i = 0; i < 20; i++) tickWorld(world, 0.1); // unknown command ignored, no crash
+  assert.equal(te.mode, 'possessed');
+});
+
+test('v0.14: autonomous policy teaches — demo, listen, reward', () => {
+  const world = bindWorld(createWorld(9007));
+  populate(world);
+  const te = world.teacher;
+  // Put the teacher where the students are.
+  te.platformIndex = world.creatures[0].platformIndex;
+  te.x = world.creatures[0].x + 100;
+  for (let i = 0; i < 600; i++) tickWorld(world, 0.1);
+  const kinds = world.teachLog.map((e) => e.kind);
+  assert.ok(kinds.includes('demo'), `autonomous teacher demonstrated (${kinds.join(',')})`);
+  assert.ok(kinds.includes('reward'), `autonomous teacher rewarded imitators (${kinds.join(',')})`);
+});
+
+test('v0.14: the Teacher is not mortal — no hunger, mating, or death', () => {
+  const world = bindWorld(createWorld(9008));
+  populate(world);
+  const te = world.teacher;
+  // Starve the world: no food anywhere.
+  world.foods.length = 0;
+  world.plants.length = 0;
+  for (let i = 0; i < 2000; i++) tickWorld(world, 0.1);
+  assert.ok(world.teacher === te, 'the teacher persists');
+  assert.ok(!world.creatures.includes(te), 'never entered the mortal list');
+  const deaths = world.events.filter((e) => e.type === 'death' && e.creature && e.creature.name === 'Sunny');
+  assert.equal(deaths.length, 0, 'no death event for the visitor');
+  assert.ok(!world.lineage.has('teacher'), 'no lineage record — it was never born');
+});
+
+test('v0.14: teachLog is bounded — teaching history never grows forever', () => {
+  const world = bindWorld(createWorld(9009));
+  const te = world.teacher;
+  for (let i = 0; i < 260; i++) teacherDemo(world, te, [0.6]);
+  assert.ok(world.teachLog.length <= 200, `teachLog capped at 200 (got ${world.teachLog.length})`);
+  assert.equal(world.teachLog[world.teachLog.length - 1].kind, 'demo', 'newest events survive');
+});
+
+test('v0.14: teacherRewardNearest picks the closest creature', () => {
+  const world = bindWorld(createWorld(9010));
+  populate(world);
+  const te = world.teacher;
+  const a = world.creatures[0];
+  const b = world.creatures[1];
+  a.platformIndex = b.platformIndex = te.platformIndex;
+  a.x = te.x + 40; b.x = te.x + 300;
+  a.reward = 0; b.reward = 0;
+  const got = teacherRewardNearest(world, te);
+  assert.equal(got, a, 'the nearest creature is rewarded');
+  assert.ok(a.reward > 0 && b.reward === 0, 'only the nearest');
+});
+
+test('v0.14: setTeacherMode rejects nonsense, keeps the current mode', () => {
+  const world = bindWorld(createWorld(9011));
+  const te = world.teacher;
+  assert.equal(setTeacherMode(world, te, 'dance'), false);
+  assert.equal(te.mode, 'autonomous');
+  assert.ok(setTeacherMode(world, te, 'possessed'));
+  assert.ok(setTeacherMode(world, te, 'possessed'), 're-setting the same mode is fine');
+});
+
+// ---- v0.14 \"Voices\": the teacher's senses — felt, not decorative ----
+
+test('v0.14: teacher senses see creatures and fruit', () => {
+  const world = bindWorld(createWorld(14001));
+  populate(world);
+  const te = world.teacher;
+  const c = world.creatures[0];
+  te.platformIndex = c.platformIndex;
+  te.x = c.x + 100; // 100px east of a creature
+  world.foods.length = 0; // clear populate's scatter — what follows is ours
+  addFood(world, c.x + 200, c.platformIndex, 'fruit', 2);
+  const s = gatherTeacherSenses(world, te);
+  assert.ok(s.seeCreatures >= 1, 'sees tanglekins');
+  assert.ok(s.seeNearest && s.seeNearest.dist <= 120, 'nearest is close by');
+  assert.ok(s.seeFruit >= 1, 'sees fruit');
+  assert.ok(s.seeRipe && s.seeRipe.dir === 'east', 'sees ripe fruit east');
+  assert.ok(s.smellFruit > 0 && s.smellFruitDir === 'east', 'smells fruit east');
+  assert.ok(s.smellRipe, 'smells it ripe');
+});
+
+test('v0.14: teacher hears tanglekin calls through the same ears', () => {
+  const world = bindWorld(createWorld(14002));
+  populate(world);
+  const te = world.teacher;
+  const c = world.creatures[0];
+  te.platformIndex = c.platformIndex;
+  te.x = c.x + 60;
+  emitCall(world, c, 'contact');
+  const s = gatherTeacherSenses(world, te);
+  assert.ok(s.hearCall > 0, 'hears the call');
+  assert.equal(s.hearType, 'contact', 'hears its meaning');
+  assert.equal(s.hearDir, 'west', 'hears it from the west');
+  // The teacher never hears its own demos.
+  world.calls.length = 0;
+  emitTeacherCall(world, te, 'contact', 0.62);
+  const s2 = gatherTeacherSenses(world, te);
+  assert.equal(s2.hearCall, 0, 'own calls are not heard');
+});
+
+test('v0.14: teacherEat consumes the fruit and reports the taste', () => {
+  const world = bindWorld(createWorld(14003));
+  populate(world);
+  const te = world.teacher;
+  const plat = 0;
+  te.platformIndex = plat;
+  te.x = 400;
+  world.foods.length = 0; // clear populate's scatter — what follows is ours
+  const n0 = world.foods.length;
+  addFood(world, 430, plat, 'fruit', 1, 0, { bitterness: 0, nutrition: 1.2 });
+  const flavor = teacherEat(world, te);
+  assert.equal(flavor, 'sweet', 'tastes the sweetness honestly');
+  assert.equal(te.taste.flavor, 'sweet', 'taste memory recorded');
+  assert.ok(world.foods.length <= n0, 'the fruit was eaten, not conjured');
+  assert.ok(world.teachLog.some((e) => e.kind === 'taste'), 'tasting is logged');
+});
+
+test('v0.14: a good taste becomes a food lesson — consequences, not adjectives', () => {
+  const world = bindWorld(createWorld(14004));
+  populate(world);
+  const te = world.teacher;
+  te.platformIndex = 0;
+  te.x = 400;
+  const calls0 = world.calls.length;
+  addFood(world, 430, 0, 'fruit', 1, 0, { bitterness: 0, nutrition: 1.2 });
+  teacherEat(world, te);
+  // The demo emits 'food'-typed calls into the shared acoustic commons.
+  for (let i = 0; i < 40; i++) tickTeacher(world, te, 0.1);
+  const foodCalls = world.calls.slice(calls0).filter((c) => c.type === 'food' && c.callerId === 'teacher');
+  assert.ok(foodCalls.length >= 1, 'sweet fruit is taught as food');
+});
+
+test('v0.14: bitter fruit is tasted honestly and never taught', () => {
+  const world = bindWorld(createWorld(14005));
+  populate(world);
+  const te = world.teacher;
+  te.platformIndex = 0;
+  te.x = 400;
+  world.foods.length = 0; // clear populate's scatter — what follows is ours
+  addFood(world, 430, 0, 'fruit', 1, 0, { bitterness: 0.9, nutrition: 0.5 });
+  const flavor = teacherEat(world, te);
+  assert.equal(flavor, 'bitter', 'bitterness is tasted, not hidden');
+  assert.equal(te.demoQueue.length, 0, 'no food lesson for bitter fruit');
+});
+
+test('v0.14: petting warms the teacher — touch with consequences', () => {
+  const world = bindWorld(createWorld(14006));
+  populate(world);
+  const te = world.teacher;
+  const c0 = petTeacher(world, te);
+  assert.ok(c0 > 0, 'comfort rises when petted');
+  const s = gatherTeacherSenses(world, te);
+  assert.ok(s.touch > 0.9, 'the touch is fresh');
+  assert.ok(s.comfort > 0, 'comfort is sensed');
+  // Comfort decays — it is memory, not a flag.
+  for (let i = 0; i < 100; i++) tickTeacher(world, te, 1);
+  assert.ok(te.comfort < c0, 'comfort fades with time');
+});
+
+test('v0.14: the autonomous teacher answers heard calls', () => {
+  const world = bindWorld(createWorld(14007));
+  populate(world);
+  const te = world.teacher;
+  const c = world.creatures[0];
+  te.platformIndex = c.platformIndex;
+  te.x = c.x + 60;
+  te.state = 'perch';
+  te.stateT = 100;
+  const demos0 = world.teachLog.filter((e) => e.kind === 'demo').length;
+  emitCall(world, c, 'contact');
+  tickTeacher(world, te, 0.1);
+  const demos1 = world.teachLog.filter((e) => e.kind === 'demo').length;
+  assert.ok(demos1 > demos0, 'a heard call is answered with a demo');
+});
+
+test('v0.14: the autonomous teacher follows the smell of ripe fruit', () => {
+  const world = bindWorld(createWorld(14008));
+  populate(world);
+  const te = world.teacher;
+  te.platformIndex = 0;
+  te.x = 200;
+  te.state = 'perch';
+  te.stateT = 100;
+  world.foods.length = 0; // clear populate's scatter — what follows is ours
+  addFood(world, 350, 0, 'fruit', 2, 0, { bitterness: 0, nutrition: 1.2 }); // 150px, strong smell
+  tickTeacher(world, te, 0.1);
+  assert.equal(te.state, 'travel', 'smell redirects the policy to travel');
+  assert.ok(Math.abs(te.targetX - 350) < 1, 'travel target is the fruit');
+});
+
+test('v0.14: sense lines speak plainly, serialization carries the state', () => {
+  const world = bindWorld(createWorld(14009));
+  populate(world);
+  const te = world.teacher;
+  const c = world.creatures[0];
+  te.platformIndex = c.platformIndex;
+  te.x = c.x + 100;
+  emitCall(world, c, 'alarm');
+  te.senses = gatherTeacherSenses(world, te);
+  const lines = teacherSenseLines(world, te);
+  assert.ok(lines.some((l) => /tanglekin/.test(l) && /view/.test(l)), 'sight rendered');
+  assert.ok(lines.some((l) => /alarm call/.test(l) && /west/.test(l)), 'hearing rendered plainly');
+  const text = serializeTeacherSenses(world, te);
+  assert.ok(text.includes('Sunny (teacher)'), 'serialization names the avatar');
+  assert.ok(text.includes('commands:'), 'serialization lists possessed commands');
+  assert.ok(text.split('\n').length >= 4, 'serialization is multi-line, not a stub');
+});
+
+test('v0.14: possessed eat command queues and runs', () => {
+  const world = bindWorld(createWorld(14010));
+  populate(world);
+  const te = world.teacher;
+  te.platformIndex = 0;
+  te.x = 400;
+  world.foods.length = 0; // clear populate's scatter — what follows is ours
+  addFood(world, 430, 0, 'fruit', 1, 0, { bitterness: 0, nutrition: 1 });
+  setTeacherMode(world, te, 'possessed');
+  const ok = commandTeacher(te, { cmd: 'eat' });
+  assert.equal(ok, true, 'eat is a valid possessed command');
+  tickTeacher(world, te, 0.1);
+  assert.ok(te.taste && te.taste.flavor === 'sweet', 'possessed eating tastes');
+});
+
+// ---- v0.14 "Voices": the waste cycle — digestion → excretion → soil → plants ----
+
+test('v0.14: eating fills the gut — digestion has a byproduct', () => {
+  const world = bindWorld(createWorld(14101));
+  populate(world);
+  const c = addTestCreature(world, 500);
+  addFood(world, c.x, c.platformIndex, 'fruit', 1, 0, { plantId: 0, bitterness: 0, nutrition: 1 });
+  const food = world.foods[world.foods.length - 1];
+  c._senses = { _food: food };
+  const gutBefore = c.gut;
+  assert.ok(doEat(c, world), 'the creature ate');
+  assert.ok(c.gut > gutBefore, `gut grew ${gutBefore} -> ${c.gut}`);
+  assert.ok(c.gut <= 1 * WASTE_FRACTION + 1e-9, 'gut waste is a fraction of the bite');
+});
+
+test('v0.14: excretion moves gut waste into the zone soil', () => {
+  const world = bindWorld(createWorld(14102));
+  populate(world);
+  const c = addTestCreature(world, 200); // verdant zone
+  const zone = zoneAt(c.x).key;
+  const soilBefore = world.soil[zone].waste;
+  c.gut = 1;
+  excrete(c, world, 1.0);
+  const expected = Math.min(1, 1 * EXCRETE_RATE * 1.0);
+  assert.ok(Math.abs(c.gut - (1 - expected)) < 1e-9, `gut drained proportionally, got ${c.gut}`);
+  assert.ok(world.soil[zone].waste - soilBefore > 0, 'soil waste grew');
+  // Full clearance never overshoots — the gut can't go negative.
+  c.gut = 0.01;
+  excrete(c, world, 1000);
+  assert.ok(c.gut >= 0, `gut never negative, got ${c.gut}`);
+});
+
+test('v0.14: decomposition converts waste to fertility; leaching relaxes it', () => {
+  const world = bindWorld(createWorld(14103));
+  const s = world.soil.verdant;
+  s.waste = 10; s.fertility = 0.5;
+  tickSoil(world, 100); // dt=100s: conv = 10 * min(1, 0.03*100) = 10
+  assert.ok(s.waste < 10, `waste decomposed, now ${s.waste.toFixed(3)}`);
+  assert.ok(s.fertility > 0.5, `fertility rose, now ${s.fertility.toFixed(3)}`);
+  assert.ok(s.fertility <= SOIL_FERT_MAX, `fertility capped at ${SOIL_FERT_MAX}`);
+  // Leaching: rich soil with no waste drifts back toward 0.5.
+  s.waste = 0; s.fertility = 1.2;
+  tickSoil(world, 1000);
+  assert.ok(s.fertility < 1.2 && s.fertility >= 0.5, `fertility relaxed to ${s.fertility.toFixed(3)}`);
+});
+
+test('v0.14: fertility scales plant growth around a neutral baseline', () => {
+  const world = bindWorld(createWorld(14104));
+  assert.equal(soilGrowthMul(world, 'verdant'), 1.0, '0.5 fertility is neutral');
+  world.soil.verdant.fertility = 0;
+  assert.ok(soilGrowthMul(world, 'verdant') < 1.0, 'exhausted soil stalls growth');
+  world.soil.verdant.fertility = SOIL_FERT_MAX;
+  assert.ok(soilGrowthMul(world, 'verdant') > 1.0, 'rich soil speeds growth');
+});
+
+test('v0.14: the full loop — a meal eventually feeds the plants', () => {
+  const world = bindWorld(createWorld(14105));
+  populate(world);
+  world.creatures.length = 0;
+  world.foods.length = 0;
+  const c = addTestCreature(world, 200); // verdant
+  c.sleeping = false;
+  addFood(world, c.x, c.platformIndex, 'fruit', 2, 0, { plantId: 0, bitterness: 0, nutrition: 1 });
+  const food = world.foods[world.foods.length - 1];
+  c._senses = { _food: food };
+  doEat(c, world);
+  assert.ok(c.gut > 0, 'the meal left waste in the gut');
+  // Let the cycle run: excretion → soil waste → decomposition → fertility.
+  for (let i = 0; i < 600; i++) tickWorld(world, 0.5);
+  const s = world.soil[zoneAt(c.x).key];
+  assert.ok(s.waste > 0 || s.fertility > 0.5, `soil received the waste (waste ${s.waste.toFixed(3)}, fertility ${s.fertility.toFixed(3)})`);
+  assert.ok(s.fertility > 0.5, `fertility rose above baseline: ${s.fertility.toFixed(3)}`);
+});
+
+// ---- v0.14 "Voices": disgust — evolvable waste avoidance ----
+
+test('v0.14: disgust — wasteOdor sense smells the soil', () => {
+  const world = bindWorld(createWorld(14109));
+  populate(world);
+  const c = addTestCreature(world, 200);
+  const clean = gatherSenses(c, world);
+  assert.equal(clean.wasteOdor, 0, 'clean ground has no odor');
+  world.soil[zoneAt(c.x).key].waste = WASTE_ODOR_SCALE / 2;
+  const half = gatherSenses(c, world);
+  assert.ok(Math.abs(half.wasteOdor - 0.5) < 1e-9, `half stink reads 0.5, got ${half.wasteOdor}`);
+  world.soil[zoneAt(c.x).key].waste = WASTE_ODOR_SCALE * 3;
+  const full = gatherSenses(c, world);
+  assert.equal(full.wasteOdor, 1, 'odor saturates at 1');
+});
+
+test('v0.14: disgust — the instinct gene is wired waste-odor → flee', () => {
+  const g = GENES.find((g) => g.key === 'instWasteFlee');
+  assert.ok(g, 'instWasteFlee exists');
+  assert.equal(g.sense, 23, 'sense 23 = wasteOdor (appended, never renumbered)');
+  assert.equal(g.action, 5, 'action 5 = flee');
+  assert.ok(g.founder > 0.5, `founder ${g.founder} is excitatory, not inhibitory`);
+  // Founder genomes lean disgusted, on average.
+  const rng = createRng(14110);
+  let sum = 0;
+  const N = 200;
+  for (let i = 0; i < N; i++) sum += phenotype(randomGenome(rng)).instWasteFlee;
+  const mean = sum / N;
+  assert.ok(mean > 0.5 && mean < 0.9, `mean instWasteFlee ${mean.toFixed(3)}`);
+});
+
+test('v0.14: disgust — the instinct steers decisions when it stinks', () => {
+  const rng = createRng(14111);
+  const pheno = testPheno(14111);
+  for (const g of GENES) if (g.sense !== undefined) pheno[g.key] = 0.5; // neutral instincts
+  pheno.sociability = 0; // silence the groom bias
+  pheno.instWasteFlee = 1; // full disgust
+  const brain = silenceBrain(createBrain(pheno, rng));
+  const stink = {
+    hunger: 0, tiredness: 0, boredom: 0, loneliness: 0, fear: 0, light: 0,
+    foodDist: 1, foodDir: 0, creatureDist: 1, creatureDir: 0,
+    toyDist: 1, toyDir: 0, isAdult: 1, illness: 0, wasteOdor: 1,
+  };
+  const d = decide(brain, senseVector(stink), 0, rng);
+  assert.equal(d.action, 'flee', `full disgust + stink → flee, got ${d.action}`);
+  const clean = { ...stink, wasteOdor: 0 };
+  const d2 = decide(brain, senseVector(clean), 0, rng);
+  assert.notEqual(d2.action, 'flee', 'no stink → no flee');
+});
+
+test('v0.14: disgust — food eaten on fouled ground contaminates', () => {
+  const world = bindWorld(createWorld(14112));
+  populate(world);
+  const c = addTestCreature(world, 200);
+  world.soil[zoneAt(c.x).key].waste = WASTE_ODOR_SCALE; // full stink
+  addFood(world, c.x, c.platformIndex, 'fruit', 1, 0, { plantId: 0, bitterness: 0, nutrition: 1 });
+  c._senses = { _food: world.foods[world.foods.length - 1] };
+  c.biochem.illness = 0;
+  doEat(c, world);
+  assert.ok(c.biochem.illness > 0, `fouled food sickens: illness ${c.biochem.illness.toFixed(4)}`);
+  // Clean ground: the same meal is harmless.
+  const world2 = bindWorld(createWorld(14113));
+  populate(world2);
+  const c2 = addTestCreature(world2, 200);
+  addFood(world2, c2.x, c2.platformIndex, 'fruit', 1, 0, { plantId: 0, bitterness: 0, nutrition: 1 });
+  c2._senses = { _food: world2.foods[world2.foods.length - 1] };
+  c2.biochem.illness = 0;
+  doEat(c2, world2);
+  assert.equal(c2.biochem.illness, 0, 'clean food does not sicken');
+});
+
+test('v0.14: disgust — medicinal leaves still heal on fouled ground', () => {
+  const world = bindWorld(createWorld(14114));
+  populate(world);
+  const c = addTestCreature(world, 200);
+  world.soil[zoneAt(c.x).key].waste = WASTE_ODOR_SCALE; // full stink
+  addFood(world, c.x, c.platformIndex, 'leaf', 1, 0, {});
+  c._senses = { _food: world.foods[world.foods.length - 1] };
+  c.biochem.illness = 0.8;
+  doEat(c, world);
+  assert.ok(c.biochem.illness < 0.8, `leaf purges more than the ground contaminates: ${c.biochem.illness.toFixed(3)}`);
+});
+
+// ---- Chronicle: the world's official record (event-sourced narrative) ----
+import { buildChronicle, CHAPTERS } from '../src/sim/chronicle.js';
+
+function chronWorld(seed = 601) {
+  const world = bindWorld(createWorld(seed));
+  populate(world);
+  world.creatures.length = 0;
+  world.plants.length = 0; world.foods.length = 0;
+  world.events.length = 0;
+  world.lineage.clear(); world.lineageKids.clear();
+  world.teachLog.length = 0;
+  world.dupEvents.length = 0;
+  world.divergenceLog.length = 0;
+  world.speciesLog.length = 0;
+  return world;
+}
+function chronCreature(world, name, x, parents, bornAt) {
+  const c = createCreature(randomGenome(world.rng), x, 0, world.rng);
+  c.name = name; c.parents = parents; c.generation = parents ? 1 : 0;
+  world.creatures.push(c);
+  const t = world.time; world.time = bornAt;
+  recordLineage(world, c);
+  world.time = t;
+  return c;
+}
+const chronChapter = (chs, id) => chs.find((c) => c.id === id);
+
+test('chronicle: six chapters in the canonical order', () => {
+  const chs = buildChronicle(chronWorld());
+  assert.deepEqual(chs.map((c) => c.id), ['genesis', 'spread', 'words', 'split', 'teacher', 'present']);
+  for (const ch of chs) assert.ok(Array.isArray(ch.entries), `${ch.id} has entries`);
+});
+
+test('chronicle: genesis records founder hatches from the event log', () => {
+  const world = chronWorld();
+  const a = chronCreature(world, 'Ash', 100, null, 0);
+  const b = chronCreature(world, 'Birch', 200, null, 5);
+  world.events.push({ type: 'hatch', creature: a, t: 0 }, { type: 'hatch', creature: b, t: 5 });
+  const gen = chronChapter(buildChronicle(world), 'genesis');
+  assert.equal(gen.entries.length, 2);
+  assert.ok(gen.entries[0].text.includes('Ash'), 'prose names the founder');
+  assert.ok(gen.entries[0].text.includes('Verdant Valley'), 'prose names the birth biome from lineage');
+  assert.ok(gen.entries[0].jumps.some((j) => j.tab === 'tree' && j.creatureId === a.id), 'tree jump targets the founder');
+});
+
+test('chronicle: events sort into their thematic chapters', () => {
+  const world = chronWorld();
+  const a = chronCreature(world, 'Ash', 100, null, 0);
+  world.events.push({ type: 'speciation', t: 400, from: 3, to: [5, 6], sizes: [12, 9] });
+  world.events.push({ type: 'traditionFounded', name: 'Dawn Chorus', creature: a, t: 200 });
+  world.teachLog.push({ t: 300, kind: 'demo', type: 'contact', zone: 'arid', listeners: 4 });
+  world.dupEvents.push({ t: 500, kind: 'duplication', key: 'legLength', parents: [a.id, a.id] });
+  const chs = buildChronicle(world);
+  const split = chronChapter(chs, 'split');
+  assert.ok(split.entries.some((e) => e.icon === '💥'), 'speciation lands in The Split');
+  assert.ok(split.entries.some((e) => e.icon === '🧬'), 'duplication lands in The Split');
+  assert.ok(chronChapter(chs, 'teacher').entries.some((e) => e.icon === '🎓'), 'demo lands in The Teacher');
+  assert.ok(chronChapter(chs, 'words').entries.some((e) => e.text.includes('Dawn Chorus')), 'tradition lands in First Words');
+});
+
+test('chronicle: prose is sourced — numbers and names come from the logs', () => {
+  const world = chronWorld();
+  const a = chronCreature(world, 'Ash', 100, null, 0);
+  world.events.push({ type: 'speciation', t: 400, from: 3, to: [5, 6], sizes: [12, 9] });
+  world.teachLog.push(
+    { t: 100, kind: 'mode', mode: 'autonomous' },
+    { t: 300, kind: 'reward', pitch: 0.42, n: 3, zone: 'verdant' },
+  );
+  const chs = buildChronicle(world);
+  const splitText = chronChapter(chs, 'split').entries.find((e) => e.icon === '💥').text;
+  assert.ok(splitText.includes('#3') && splitText.includes('#5 (12)') && splitText.includes('#6 (9)'),
+    `speciation prose carries the logged ids and sizes: ${splitText}`);
+  const teach = chronChapter(chs, 'teacher').entries;
+  assert.ok(teach[0].text.includes('arrived'), 'first teachLog entry reads as the arrival');
+  const reward = teach.find((e) => e.icon === '🌟').text;
+  assert.ok(reward.includes('3') && reward.includes('0.42') && reward.includes('Verdant Valley'),
+    `reward prose carries n, pitch and zone name: ${reward}`);
+  void a;
+});
+
+test('chronicle: every jump target resolves against the world', () => {
+  const world = chronWorld();
+  const a = chronCreature(world, 'Ash', 100, null, 0);
+  world.events.push({ type: 'hatch', creature: a, t: 0 });
+  world.events.push({ type: 'speciation', t: 400, from: 3, to: [5], sizes: [12] });
+  world.teachLog.push({ t: 100, kind: 'mode', mode: 'autonomous' });
+  world.divergenceLog.push({ t: 200, zones: { verdant: { vocalPitch: 0.7 } } });
+  for (const ch of buildChronicle(world)) {
+    for (const e of ch.entries) {
+      for (const j of e.jumps) {
+        if (j.tab === 'tree') assert.ok(world.lineage.has(j.creatureId), `tree jump resolves: ${j.creatureId}`);
+        if (j.tab === 'evo') assert.equal(typeof j.time, 'number', 'evo jump carries a time');
+        if (j.tab === 'world') {
+          const ok = j.teacher || world.creatures.some((c) => c.id === j.creatureId);
+          assert.ok(ok, 'world jump targets the live creature or the Teacher');
+        }
+      }
+    }
+  }
+});
+
+test('chronicle: the Spread derives first-birth milestones per biome from lineage', () => {
+  const world = chronWorld();
+  chronCreature(world, 'Ash', 100, null, 0);    // verdant
+  chronCreature(world, 'Dune', 700, null, 50);  // arid
+  chronCreature(world, 'Peak', 1200, null, 100); // highland
+  const entries = chronChapter(buildChronicle(world), 'spread').entries;
+  assert.equal(entries.length, 3);
+  assert.ok(entries[0].text.includes('Verdant Valley') && entries[0].text.includes('Ash'));
+  assert.ok(entries[1].text.includes('Arid Stretch') && entries[1].text.includes('Dune'));
+  assert.ok(entries[2].text.includes('Highland') && entries[2].text.includes('Peak'));
+  assert.ok(entries[0].t < entries[1].t && entries[1].t < entries[2].t, 'milestones ordered by first birth');
+});
+
+test('chronicle: dialect divergence crosses into First Words with the real S value', () => {
+  const world = chronWorld();
+  world.divergenceLog.push({ t: 200, zones: { arid: { vocalPitch: -0.62 } } });
+  const words = chronChapter(buildChronicle(world), 'words').entries;
+  const d = words.find((e) => e.icon === '🎵');
+  assert.ok(d, 'a dialect milestone was written');
+  assert.ok(d.text.includes('Arid Stretch') && d.text.includes('-0.62'), `prose carries zone and S: ${d.text}`);
+});
+
+test('chronicle: the Living Present favors recent notable history', () => {
+  const world = chronWorld();
+  const a = chronCreature(world, 'Ash', 100, null, 0);
+  const k = chronCreature(world, 'Kit', 150, [a.id, a.id], 900);
+  world.events.push({ type: 'hatch', creature: a, t: 0 });
+  world.events.push({ type: 'hatch', creature: k, t: 900 });
+  a.biochem.age = a.pheno.lifespanSec * 0.8; // an elder
+  world.events.push({ type: 'death', creature: a, t: 1200, cause: 'old age' });
+  world.events.push({ type: 'jumped', creature: k, t: 1300 }); // noise: not notable
+  const present = chronChapter(buildChronicle(world), 'present').entries;
+  assert.ok(present.some((e) => e.text.includes('Kit') && e.icon === '🐣'), 'recent birth is noted');
+  assert.ok(present.some((e) => e.text.includes('Elder Ash')), 'elder death is noted');
+  assert.ok(!present.some((e) => e.text.includes('jumped')), 'noise stays out of the record');
+  assert.ok(present.length <= 14, 'the present is capped');
+});
+
+test('chronicle: an empty young world builds without crashing', () => {
+  const world = bindWorld(createWorld(602)); // no populate, no events
+  const chs = buildChronicle(world);
+  assert.equal(chs.length, 6);
+  for (const ch of chs) assert.deepEqual(ch.entries, [], `${ch.id} is empty but well-formed`);
 });

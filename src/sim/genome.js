@@ -101,16 +101,18 @@ export const GENES = [
 // Append-only: everything below is new. The original 43 loci keep their
 // indices. Choice vocabularies shared by the families:
 export const CHEM5 = ['bloodSugar', 'fatigue', 'oxytocin', 'endorphin', 'adrenaline'];
-// The 21 real senses (bias excluded) — mirrors brain.js senseVector order.
-export const SENSE21 = [
+// The 24 real senses (bias excluded) — mirrors brain.js senseVector order.
+export const SENSE24 = [
   'hunger', 'tiredness', 'boredom', 'loneliness', 'fear', 'light',
   'foodDist', 'foodDir', 'creatureDist', 'creatureDir', 'toyDist', 'toyDir',
   'isAdult', 'illness', 'homeDist', 'kinNear', 'bondNear',
   'climbUp', 'climbDown', 'groomNear', 'jumpNear',
+  'callHeard', 'callPitch',
+  'wasteOdor', // v0.14: disgust — the smell of fouled ground
 ];
-export const ACT12 = [
+export const ACT13 = [
   'seekFood', 'eat', 'sleep', 'play', 'approach', 'flee',
-  'mate', 'wander', 'seekHome', 'climb', 'groom', 'jump',
+  'mate', 'wander', 'seekHome', 'climb', 'groom', 'jump', 'vocal',
 ];
 // Stimulus events that actually occur in the tick (rain/thunder were cut —
 // Canopy has no weather; fed-by-other was cut — no food-sharing mechanic).
@@ -139,7 +141,7 @@ const _c = (key, choices, founder) => ({ key, kind: 'choice', choices, founder }
 {
   const senses = [0, 3, 1, 4, 13, 2]; // hunger, loneliness, tiredness, fear, illness, boredom
   for (let i = 0; i < 6; i++) {
-    GENES.push(_c(`rc${i}chem`, CHEM5, i % 5), _c(`rc${i}sense`, SENSE21, senses[i]),
+    GENES.push(_c(`rc${i}chem`, CHEM5, i % 5), _c(`rc${i}sense`, SENSE24, senses[i]),
       _s(`rc${i}gain`, 0), _f(`rc${i}thr`, 0.5));
   }
 }
@@ -149,7 +151,7 @@ const _c = (key, choices, founder) => ({ key, kind: 'choice', choices, founder }
 {
   const trig = [1, 2, 3, 10, 5, 6]; // eat, sleep, play, groom, flee, mate
   for (let i = 0; i < 6; i++) {
-    GENES.push(_c(`em${i}trig`, ACT12, trig[i]), _c(`em${i}chem`, CHEM5, (i * 2) % 5),
+    GENES.push(_c(`em${i}trig`, ACT13, trig[i]), _c(`em${i}chem`, CHEM5, (i * 2) % 5),
       _f(`em${i}amt`, 0.05));
   }
 }
@@ -223,7 +225,37 @@ for (let i = 0; i < 4; i++) {
 for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) {
   GENES.push(_f(`drv${d}Gain`, 0.5), _f(`drv${d}Base`, 0.5));
 }
-// === end GENOME v2 ========================================================
+// === GENOME v0.14 "Voices": the voice family (append-only) ================
+// Speech — Paul's v0.15, converged early. Tanglekins emit grounded calls
+// (type from real state, never free choice) with an evolvable pitch.
+// vocalImitate × tradition fidelity drives vocal learning: the young nudge
+// their pitch toward heard pitches, so zones grow DIALECTS — the substrate
+// Paul's v0.16 stories build on. matePrefCall is the prezygotic speciation
+// gene: choosiness on call-pattern similarity, so divergent dialects
+// reduce cross-mating (founder 0 → nearest/color wins, exactly as before).
+GENES.push(
+  _f('vocalPitch', 0.5), // base call pitch (0..1)
+  _f('vocalRange', 0.3), // pitch variation around the base
+  _f('vocalVolume', 0.5), // loudness — earshot radius
+  _f('vocalImitate', 0.3), // pull of heard pitches on own pitch (dialect engine)
+  _f('matePrefCall', 0), // prezygotic: choosiness on call similarity
+  // Instincts (Paul's v0.5 rule: every new action needs one). sense 21 =
+  // callHeard, sense 22 = callPitch, action 12 = vocal.
+  { key: 'instHeardVocal', kind: 'float', sense: 21, action: 12, founder: 0.4 },
+  { key: 'instLonelyVocal', kind: 'float', sense: 3, action: 12, founder: 0.3 },
+);
+// === end GENOME v0.14 =====================================================
+// === GENOME v0.14 "Voices": disgust — the waste cycle's sense and instinct =
+// wasteOdor (sense 23) smells fouled ground. instWasteFlee (→ flee, action 5)
+// is the honest precursor to disease avoidance: food eaten on fouled ground
+// carries contamination (see doEat), so lineages that flee the stink stay
+// healthier — and the instinct evolves under real selection. Flee runs from
+// the nearest creature; waste concentrates where creatures congregate, so
+// fleeing the crowd is fleeing the foulest ground.
+GENES.push(
+  { key: 'instWasteFlee', kind: 'float', sense: 23, action: 5, founder: 0.7 },
+);
+// === end GENOME v0.14 disgust =============================================
 
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
@@ -270,6 +302,7 @@ export const CHROMOSOMES = [
    'instCreatureDistApproach', 'instToyDistPlay', 'instLonelyMate',
    'instIllnessSeek', 'instHomeSeek', 'instClimbUp', 'instClimbDown', 'instLonelyGroom',
    'instJump',
+   'instWasteFlee', // v0.14: disgust — waste-odor → flee
    ..._chrS],
   // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
   [..._chrD, ..._chrC],
@@ -278,8 +311,10 @@ export const CHROMOSOMES = [
   // 7 — Life history (v2: longevity, maturation, fertility, senescence)
   ['longScale', 'longAging', 'matTime', 'matBoost', 'ferPeak', 'ferLitter',
    'ferGest', 'senOnset', 'senRate'],
-  // 8 — Culture
-  ['tradition'],
+  // 8 — Culture (+ v0.14 voice: speech is learned culture's acoustic half)
+  ['tradition',
+   'vocalPitch', 'vocalRange', 'vocalVolume', 'vocalImitate', 'matePrefCall',
+   'instHeardVocal', 'instLonelyVocal'],
 ];
 
 const MUTATION_RATE = 0.008; // per allele
@@ -310,9 +345,18 @@ export function randomAllele(gene, rng) {
   return rng.next();
 }
 
-// A genome is { alleles: { key: [a, b] }, marks: { key: 0.5..1.5 } }.
+// A genome is { alleles: { key: [a, b] }, marks: { key: 0.5..1.5 },
+//   extra: { key: [a, b] } }.
 // Marks are epigenetic: they scale float-gene expression and fade toward 1
 // each generation. Life writes them; time erases them.
+// v0.14 "Voices": extra holds DUPLICATED gene copies — at most one extra
+// pair per gene, MAX_EXTRA per genome. Copies express by dosage-averaging
+// with the base pair and mutate independently, so genome *complexity* is
+// evolvable, not just allele values. Speech is the first selection pressure
+// for new loci (vocal learning, dialect memory).
+export const DUP_RATE = 0.001; // per gene per generation: whole-gene duplication
+export const DEL_RATE = 0.002; // per extra copy per generation: deletion (prunes the neutral)
+export const MAX_EXTRA = 6; // cap on duplicated copies per genome
 export function randomGenome(rng) {
   const alleles = {};
   const marks = {};
@@ -320,7 +364,7 @@ export function randomGenome(rng) {
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
     marks[gene.key] = 1.0;
   }
-  return { alleles, marks };
+  return { alleles, marks, extra: {} };
 }
 
 function mutateAllele(gene, value, rng, rate = MUTATION_RATE) {
@@ -377,7 +421,13 @@ export function meiosis(genome, rng) {
       gameteMarks[key] = 1.0 + (m - 1.0) * 0.5;
     }
   }
-  return { gamete, gameteMarks };
+  // v0.14: duplicated copies segregate like presence/absence alleles linked
+  // to the base locus — each copy passes to the gamete with 50% chance.
+  const gameteExtra = {};
+  for (const key of Object.keys(genome.extra || {})) {
+    if (rng.chance(0.5)) gameteExtra[key] = genome.extra[key].slice();
+  }
+  return { gamete, gameteMarks, gameteExtra };
 }
 
 export function inherit(momGenome, dadGenome, rng, mutationRate = MUTATION_RATE) {
@@ -389,7 +439,38 @@ export function inherit(momGenome, dadGenome, rng, mutationRate = MUTATION_RATE)
     alleles[gene.key] = [mutateAllele(gene, m.gamete[gene.key], rng, mutationRate), mutateAllele(gene, d.gamete[gene.key], rng, mutationRate)];
     marks[gene.key] = 1.0 + (((m.gameteMarks[gene.key] || 1) + (d.gameteMarks[gene.key] || 1)) / 2 - 1.0);
   }
-  return { alleles, marks };
+  // v0.14: gene duplication — the evolvable-complexity machinery.
+  // Extra copies from both gametes combine (at most one per gene: two
+  // incoming copies resolve to one by drift). Deletion prunes copies;
+  // duplication copies the child's own fresh base pair. Choice genes are
+  // excluded — a second choice allele pair has no expression path, which
+  // would be a dead gene by construction.
+  const extra = {};
+  for (const key of Object.keys(m.gameteExtra || {})) extra[key] = m.gameteExtra[key].slice();
+  for (const key of Object.keys(d.gameteExtra || {})) {
+    if (!extra[key] || rng.chance(0.5)) extra[key] = d.gameteExtra[key].slice();
+  }
+  const dupLog = [];
+  for (const key of Object.keys(extra)) {
+    if (rng.chance(DEL_RATE)) { delete extra[key]; dupLog.push({ kind: 'deletion', key }); }
+  }
+  if (Object.keys(extra).length < MAX_EXTRA) {
+    for (const gene of GENES) {
+      if (gene.kind === 'choice' || extra[gene.key]) continue;
+      if (rng.chance(DUP_RATE)) {
+        extra[gene.key] = alleles[gene.key].slice(); // the newborn copy
+        dupLog.push({ kind: 'duplication', key: gene.key });
+        if (Object.keys(extra).length >= MAX_EXTRA) break;
+      }
+    }
+  }
+  // The copies mutate independently from birth — divergence starts now.
+  for (const key of Object.keys(extra)) {
+    const gene = GENE_MAP[key];
+    if (!gene) { delete extra[key]; continue; }
+    extra[key] = extra[key].map((a) => mutateAllele(gene, a, rng, mutationRate));
+  }
+  return { alleles, marks, extra, dupLog };
 }
 
 // Nudge an epigenetic mark on one locus (0.5–1.5×). Called by life events:
@@ -410,12 +491,20 @@ export function phenotype(genome) {
     const mark = (genome.marks && genome.marks[gene.key]) || 1.0;
     if (gene.kind === 'choice') {
       p[gene.key] = gene.choices[a];
-    } else if (gene.kind === 'exp') {
-      p[gene.key] = Math.max(0.05, ((a + b) / 2) * mark); // never capped above
+      continue;
+    }
+    // v0.14: duplicated copies average in by dosage — a newborn copy is an
+    // identical twin of the base pair, then diverges by independent
+    // mutation. Every copy is wired into expression from birth: no dead genes.
+    let mean = (a + b) / 2;
+    const xc = genome.extra && genome.extra[gene.key];
+    if (xc) mean = (mean + (xc[0] + xc[1]) / 2) / 2;
+    if (gene.kind === 'exp') {
+      p[gene.key] = Math.max(0.05, mean * mark); // never capped above
     } else if (gene.kind === 'sym') {
-      p[gene.key] = Math.max(-1, Math.min(1, ((a + b) / 2) * mark));
+      p[gene.key] = Math.max(-1, Math.min(1, mean * mark));
     } else {
-      p[gene.key] = clamp01(((a + b) / 2) * mark);
+      p[gene.key] = clamp01(mean * mark);
     }
   }
   // Derived, game-ready values (kept from v0.12):
@@ -461,25 +550,53 @@ export function phenotype(genome) {
 }
 
 // Fraction of alleles shared with another genome (0..1) — for family UI.
+// v0.14: duplicated copies count — two genomes sharing a diverged copy are
+// closer than two where one side carries a copy the other lacks.
 export function relatedness(g1, g2) {
   let same = 0;
   let total = 0;
   for (const gene of GENES) {
     const [a1, b1] = g1.alleles[gene.key];
     const [a2, b2] = g2.alleles[gene.key];
+    let s0;
     if (gene.kind === 'choice') {
-      same += (a1 === a2 ? 0.5 : 0) + (b1 === b2 ? 0.5 : 0);
+      s0 = (a1 === a2 ? 0.5 : 0) + (b1 === b2 ? 0.5 : 0);
     } else if (gene.kind === 'sym') {
       // Signed alleles span [-1, 1]: normalize the distance by the range.
-      same += (1 - Math.abs(a1 - a2) / 2) * 0.5 + (1 - Math.abs(b1 - b2) / 2) * 0.5;
+      s0 = (1 - Math.abs(a1 - a2) / 2) * 0.5 + (1 - Math.abs(b1 - b2) / 2) * 0.5;
     } else if (gene.kind === 'exp') {
       // Unbounded loci compare relatively — absolute distance is meaningless.
       const rel = (x, y) => 1 - Math.min(1, Math.abs(x - y) / Math.max(x, y, 1e-6));
-      same += rel(a1, a2) * 0.5 + rel(b1, b2) * 0.5;
+      s0 = rel(a1, a2) * 0.5 + rel(b1, b2) * 0.5;
     } else {
-      same += (1 - Math.abs(a1 - a2)) * 0.5 + (1 - Math.abs(b1 - b2)) * 0.5;
+      s0 = (1 - Math.abs(a1 - a2)) * 0.5 + (1 - Math.abs(b1 - b2)) * 0.5;
+    }
+    // v0.14: copy-number-aware. Shared copies compare allele-by-allele and
+    // average with the base; a copy only one side carries discounts similarity.
+    const x1 = g1.extra && g1.extra[gene.key];
+    const x2 = g2.extra && g2.extra[gene.key];
+    if (x1 && x2) {
+      let se;
+      if (gene.kind === 'sym') {
+        se = (1 - Math.abs(x1[0] - x2[0]) / 2) * 0.5 + (1 - Math.abs(x1[1] - x2[1]) / 2) * 0.5;
+      } else if (gene.kind === 'exp') {
+        const rel = (x, y) => 1 - Math.min(1, Math.abs(x - y) / Math.max(x, y, 1e-6));
+        se = rel(x1[0], x2[0]) * 0.5 + rel(x1[1], x2[1]) * 0.5;
+      } else {
+        se = (1 - Math.abs(x1[0] - x2[0])) * 0.5 + (1 - Math.abs(x1[1] - x2[1])) * 0.5;
+      }
+      same += (s0 + se) / 2;
+    } else if (x1 || x2) {
+      same += s0 * 0.75;
+    } else {
+      same += s0;
     }
     total += 1;
   }
   return same / total;
+}
+
+// v0.14: genome distance — the speciation metric. 0 = identical, 1 = nothing shared.
+export function genomeDistance(g1, g2) {
+  return 1 - relatedness(g1, g2);
 }
