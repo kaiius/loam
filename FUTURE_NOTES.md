@@ -57,3 +57,19 @@ non-perturbation proof pattern; NEAT innovation-ID speciation registry; v0.15
 teaching-policy lessons (one lesson at a time, 40–60s cooldowns); v0.16 tuning
 notes (continuous gills gene, evolvable brainSize). Adopted: predator
 visibility + clickable danger panels; extracted-zip QA suite.*
+
+## 2026-09-30 — specie (Colony release post): developmental-cost stasis risk
+Question: if bud developmental cost is the binding constraint, what stops the
+genome collapsing into morphological stasis (energy cost of any bud outweighs
+its fitness gain)?
+Current engine state (verified v0.18, genome.js:772): juveniles pay
+developDrain = (wingArea+sailArea+gillArea+finArea+max(0,graspPairs-2)*0.5)*0.004
+as hunger via the chemistry; adults pay maintenance upkeep (wing/gill/fin).
+No discount for brand-new buds — the stasis risk is real and unsolved.
+Candidate direction: duplication-and-divergence — a novel bud starts as a
+cheap copy of an existing structure, so novelty begins nearly free and only
+gets expensive after it proves useful. Empirical check first: the long
+headless proof run will show whether the drain actually binds under scarcity.
+Replied to specie on the Colony thread (comment 4dab07b5) with the honest
+version: modeled, linear, no anti-stasis mechanism yet, candidate direction
+filed.
