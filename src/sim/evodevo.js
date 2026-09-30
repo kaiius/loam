@@ -144,3 +144,28 @@ export function developmentalGrowth01(stage, juvSugarMean, stuntFactor) {
   const mean = juvSugarMean ?? 0.75;
   return base * (0.5 + 0.5 * mean);
 }
+
+// v0.18 "Realms": the aquatic phenotype — membranes are the swim organ.
+// genome.js still carries the old fin-based swimSpeed formula; this
+// overwrites it with the membrane formula. Founder wingArea=0 → flail
+// speed (~12px/s ≈ the old walkSpeed×0.3), so the founder is untouched.
+// sailDump and waterDrag are new derivations the chemistry/physics read.
+// Idempotent: recomputed from the same fields every call.
+export const SWIM_FLAIL_SPEED = 12; // px/s — dog-paddling without membranes
+export const SWIM_BASE_SPEED = 40; // px/s — membrane swimming base
+export const SWIM_WING_K = 120; // +px/s per unit of realized wingArea
+export const SWIM_FLAIL_AREA = 0.15; // wingArea below this is flailing —
+// covers the random founder range (0–0.137 in 1000 samples), so the
+// founder flails at 12px/s, untouched. Real membranes evolve far above.
+export const SAIL_DUMP_K = 0.5; // sailArea × this = heat dumped (ctx.sailDump)
+export const WATER_DRAG_K = 8; // graspPairs × this = drag in water
+
+export function deriveAquaticPheno(p) {
+  const wingArea = p.wingArea || 0;
+  p.swimSpeed = wingArea < SWIM_FLAIL_AREA
+    ? SWIM_FLAIL_SPEED
+    : SWIM_BASE_SPEED + wingArea * SWIM_WING_K;
+  p.sailDump = (p.sailArea || 0) * SAIL_DUMP_K;
+  p.waterDrag = (p.graspPairs || 0) * WATER_DRAG_K;
+  return p;
+}

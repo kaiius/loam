@@ -4,14 +4,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, DUP_RATE, DEL_RATE, MAX_EXTRA, EVO17_KEYS, CHROMOSOMES, SENSE28, SENSE24, ACT17, ACT13 } from '../src/sim/genome.js';
+import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, DUP_RATE, DEL_RATE, MAX_EXTRA, EVO17_KEYS, CHROMOSOMES, SENSE32, SENSE24, ACT20, ACT13 } from '../src/sim/genome.js';
 import { budPotentials, expressBuds, developmentalGrowth01, BUD_SITES, BUD_TYPES, BUD_ERUPT, BUD_NUB_HI } from '../src/sim/evodevo.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from '../src/sim/brain.js';
 import { createBiochem, tickBiochem, mood, ageStage } from '../src/sim/biochem.js';
 import { createRng } from '../src/sim/rng.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
-import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams } from '../src/sim/world.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
   memoryCapacity, RECALL_BUDGET,
@@ -170,7 +170,7 @@ test('v0.16: troop census clusters shared words every 30s', () => {
   assert.ok(Array.isArray(world.troopWords), 'census ran');
 });
 
-const N_SENSES = 28; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor + v0.17's airborne, farLedge, submerged, waterNear
+const N_SENSES = 32; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor + v0.17's airborne, farLedge, submerged, waterNear + v0.18's thirst, cold, heat, buriedNear
 
 function testPheno(seed, overrides = {}) {
   const p = phenotype(randomGenome(createRng(seed)));
@@ -199,7 +199,7 @@ const MID_SENSES = {
 
 test('instinct genes map to valid sense/action indices', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 25); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts
+  assert.equal(inst.length, 29); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts + v0.18's 4 realms instincts
   for (const g of inst) {
     assert.ok(g.sense >= 0 && g.sense < N_SENSES, g.key);
     assert.ok(g.action >= 0 && g.action < ACTIONS.length, g.key);
@@ -338,10 +338,16 @@ test('illness spreads between close creatures', () => {
   const world = bindWorld(createWorld(123));
   populate(world);
   const [a, b] = world.creatures;
+  // v0.18: keep only the pair — the bigger brain (N_IN 29→33) shifted the
+  // world RNG stream, and bystander wander paths are not what this test is
+  // about. Contagion is.
+  world.creatures.length = 0;
+  world.creatures.push(a, b);
   b.pheno.immunity = 0; // maximally susceptible
   let infected = false;
-  for (let t = 0; t < 300 && !infected; t++) {
+  for (let t = 0; t < 600 && !infected; t++) {
     a.biochem.illness = 1; // keep the source contagious
+    a.biochem.health = 1; // and alive — the illness would kill it first
     b.x = a.x + 50; // keep them side by side
     b.platformIndex = a.platformIndex;
     tickWorld(world, 0.1);
@@ -515,13 +521,13 @@ test('memory capacity is set by an evolvable gene', () => {
 
 test('v0.5: mate finally has an instinct pathway', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 25); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts
+  assert.equal(inst.length, 29); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts + v0.18's 4 realms instincts
   const g = GENES.find((g) => g.key === 'instLonelyMate');
   assert.ok(g, 'instLonelyMate is a registered gene');
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 217); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci
+  assert.equal(GENES.length, 223); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -804,9 +810,15 @@ function v07world(seed) {
   return world;
 }
 
+// v0.18 "Realms": legacy test coordinates (the pre-Realms 1600px world)
+// map into the scaled jungle — x' = 1200 + 0.375x, the same mapping
+// populate uses. Coordinates already in the new world (x >= 1200) pass
+// through untouched.
+const mx = (x) => (x < 1200 ? 1200 + x * 0.375 : x);
+
 function makeCarrier(world, x = 700) {
   const c = world.creatures[0];
-  c.x = x;
+  c.x = mx(x); // v0.18: legacy coords map into the scaled jungle
   c.platformIndex = 0;
   c.traditions = [];
   c.traditionAim = {};
@@ -868,7 +880,7 @@ test('v0.7: witnesses adopt traditions horizontally, near-lossless', () => {
   const world = v07world(23);
   const demo = makeCarrier(world, 700);
   const witness = world.creatures[1];
-  witness.x = 750; witness.platformIndex = 0;
+  witness.x = demo.x + 20; witness.platformIndex = 0; // within sight of the demo
   witness.traditions = [];
   witness._senses = { platformIndex: 0 };
   const t = foundGrove(world.culture, demo, 700, 150, 0, 0, world.rng);
@@ -967,7 +979,7 @@ test('v0.7: tradition votes nudge hungry carriers toward seekFood', () => {
   void t;
 });
 
-test('v0.7: meat efficiency follows diet; the dead leave carcasses', () => {
+test('v0.7: meat efficiency follows diet; the dead leave corpses', () => {
   const g = randomGenome(createRng(3));
   g.alleles.diet = [2, 2];
   assert.equal(phenotype(g).meatEfficiency, 1.0, 'carnivores eat meat fully');
@@ -977,12 +989,13 @@ test('v0.7: meat efficiency follows diet; the dead leave carcasses', () => {
   assert.equal(phenotype(g).meatEfficiency, 0.7, 'omnivores in between');
   const world = v07world(27);
   const before = world.foods.length;
-  world.creatures[0].alive = false;
-  tickWorld(world, 0.1);
-  const meats = world.foods.filter((f) => f.foodKind === 'meat');
-  assert.ok(world.foods.length > before || meats.length > 0, 'a carcass was dropped');
-  assert.ok(meats.length > 0, 'carcass is meat');
-  assert.ok(meats[0].rotsAt > 0, 'carcasses rot');
+  // v0.18 §13.4: noteDeath leaves the corpse — one per death, however caused.
+  noteDeath(world, world.creatures[0], 'test');
+  const corpses = world.foods.filter((f) => f.foodKind === 'corpse');
+  assert.ok(world.foods.length > before || corpses.length > 0, 'a corpse was dropped');
+  assert.ok(corpses.length > 0, 'the dead leave a corpse');
+  assert.ok(corpses[0].rotsAt > 0, 'corpses rot');
+  assert.ok(corpses[0].rotsAt >= CORPSE_ROT, 'rot time is at least the base (cold preserves)');
 });
 
 test('v0.7: the ratchet census records repertoire over time', () => {
@@ -1062,7 +1075,7 @@ test('v0.8: leaves are bitter — weak reward when healthy', () => {
 
 test('v0.8: illness is the 15th brain input', () => {
   const v = senseVector({ ...MID_SENSES, illness: 0.7 });
-  assert.equal(v.length, 29, 'twenty-nine entries: 28 senses + bias');
+  assert.equal(v.length, 33, 'thirty-three entries: 32 senses + bias');
   assert.equal(v[13], 0.7, 'illness rides at index 13');
   assert.equal(v[14], 0, 'homeDist defaults to 0');
   assert.equal(v[15], 0, 'kinNear defaults to 0');
@@ -1078,7 +1091,11 @@ test('v0.8: illness is the 15th brain input', () => {
   assert.equal(v[25], 0, 'farLedge defaults to 0');
   assert.equal(v[26], 0, 'submerged defaults to 0');
   assert.equal(v[27], 0, 'waterNear defaults to 0');
-  assert.equal(v[28], 1, 'bias still last');
+  assert.equal(v[28], 0, 'thirst defaults to 0');
+  assert.equal(v[29], 0, 'cold defaults to 0');
+  assert.equal(v[30], 0, 'heat defaults to 0');
+  assert.equal(v[31], 0, 'buriedNear defaults to 0');
+  assert.equal(v[32], 1, 'bias still last');
 });
 
 test('v0.8: the illness instinct points at food-seeking', () => {
@@ -1099,7 +1116,14 @@ function v09world(seed) {
 }
 
 function addTestCreature(world, x, opts = {}) {
-  const c = createCreature(randomGenome(world.rng), x, 0, world.rng);
+  // v0.18 "Realms": legacy test coordinates (the pre-Realms 1600px world)
+  // map into the scaled jungle — x' = 1200 + 0.375x, the same mapping
+  // populate uses — and the platform defaults to whatever covers the
+  // position, via platformIndexAt. Tests that need another biome pass
+  // explicit world coordinates and/or platformIndex.
+  const jx = mx(x);
+  const pi = opts.platformIndex !== undefined ? opts.platformIndex : platformIndexAt(world, jx, 800);
+  const c = createCreature(randomGenome(world.rng), jx, pi, world.rng);
   c.biochem.age = c.pheno.lifespanSec * 0.5; // adult
   c.pheno.spikes = 0; // no accidental clashes unless the test wants them
   Object.assign(c, opts);
@@ -1181,10 +1205,10 @@ test('v0.9: injury slows movement', () => {
   world.pebbles.length = 0; // clean track: measure injury, not pebbles
   world.plants.length = 0; // v0.11: no biome flora dropping distraction fruit
   world.foods.length = 0; // v0.11: starter fruit positions shifted with the RNG stream
-  addFood(world, 700, 0, 'fruit', 1); // inside the 420px sense range
+  addFood(world, 1550, 0, 'fruit', 1); // inside the 420px sense range, on the jungle floor
   const genome = randomGenome(world.rng); // one genome for both — injury is the only variable
   const mk = (injury) => {
-    const c = createCreature(genome, 400, 0, world.rng);
+    const c = createCreature(genome, 1350, 0, world.rng); // jungle floor
     c.biochem.age = c.pheno.lifespanSec * 0.5; // adult
     c.pheno.spikes = 0;
     c.biochem.injury = injury;
@@ -1210,17 +1234,17 @@ test('v0.9: fear bristles the body; bristling frightens close neighbors', () => 
   const f0 = b.biochem.fear;
   for (let i = 0; i < 20; i++) {
     a.biochem.adrenaline = 0.9; // keep the display up
-    a.x = 500; b.x = 560; // hold them up close: this test is about the
-    // contagion mechanism, not about locomotion (a's urgent re-decide may
-    // otherwise scatter the pair — a new action like groom changes which
-    // approach action the brain picks, and that's fine)
+    a.x = 1387; b.x = 1447; // hold them up close on the jungle floor: this
+    // test is about the contagion mechanism, not about locomotion (a's
+    // urgent re-decide may otherwise scatter the pair — a new action like
+    // groom changes which approach action the brain picks, and that's fine)
     tickWorld(world, 0.1);
   }
   assert.ok(b.biochem.fear > f0 + 0.02,
     `bristling is contagious up close (${f0.toFixed(3)} -> ${b.biochem.fear.toFixed(3)})`);
   for (let i = 0; i < 200; i++) {
     a.biochem.adrenaline = 0.9; // keep the display up for 20 more seconds
-    a.x = 500; b.x = 560; // hold them up close (see above)
+    a.x = 1387; b.x = 1447; // hold them up close (see above)
     tickWorld(world, 0.1);
   }
   assert.ok(b.biochem.fear <= 0.46,
@@ -1232,15 +1256,15 @@ test('v0.9: creatures shove pebbles; pebbles persist', () => {
   const world = v09world(34);
   world.creatures.length = 0;
   world.pebbles.length = 0;
-  addPebble(world, 500, 0);
+  addPebble(world, 1372, 0); // jungle floor, in the walker's path
   const pb = world.pebbles[0];
-  const c = addTestCreature(world, 460, { action: 'seekFood', actionTimer: 100, facing: 1 });
-  addFood(world, 800, 0, 'fruit', 1); // inside sense range: steady +x walk
+  const c = addTestCreature(world, 1330, { action: 'seekFood', actionTimer: 100, facing: 1 }); // already world coords: passes through
+  addFood(world, 1500, 0, 'fruit', 1); // inside sense range: steady +x walk
   const x0 = pb.x;
   for (let i = 0; i < 40; i++) tickWorld(world, 0.1);
   assert.ok(pb.x > x0 + 1, `pebble shoved +x (${x0.toFixed(1)} -> ${pb.x.toFixed(1)})`);
   assert.equal(world.pebbles.length, 1, 'pebbles persist');
-  assert.ok(c.x < 900, 'the world pushes back — the pusher is resisted');
+  assert.ok(c.x < 1500, 'the world pushes back — the pusher is resisted');
 });
 
 test('v0.9: populate scatters pebbles on their own RNG stream', () => {
@@ -1299,34 +1323,43 @@ test('v0.10: lineage chains resolve through dead ancestors', () => {
 });
 
 test('v0.11: zoneAt slices the world into three biomes', () => {
-  assert.strictEqual(zoneAt(0).key, 'verdant');
-  assert.strictEqual(zoneAt(532).key, 'verdant');
-  assert.strictEqual(zoneAt(533).key, 'arid');
-  assert.strictEqual(zoneAt(1065).key, 'arid');
-  assert.strictEqual(zoneAt(1066).key, 'highland');
-  assert.strictEqual(zoneAt(1600).key, 'highland');
-  assert.strictEqual(ZONES.length, 3, 'three zones');
+  // v0.18: zoneAt is a legacy alias over the biome map — verdant→jungle,
+  // arid→desert, highland→mountains, over the old cores. The founder-neutral
+  // core keeps the v0.15 fruiting pressures (jungle 0.6, desert 2.2,
+  // mountains 1.2), so founder behavior in old territory is unchanged.
+  assert.strictEqual(zoneAt(1200).key, 'jungle');
+  assert.strictEqual(zoneAt(1500).key, 'jungle');
+  assert.strictEqual(zoneAt(1799).key, 'jungle');
+  assert.strictEqual(zoneAt(2400).key, 'desert');
+  assert.strictEqual(zoneAt(2999).key, 'desert');
+  assert.strictEqual(zoneAt(600).key, 'mountains');
+  assert.strictEqual(zoneAt(1199).key, 'mountains');
+  assert.strictEqual(ZONES.length, 3, 'three legacy zones');
+  assert.strictEqual(zoneAt(1500).fruitMul, 0.6, 'jungle keeps the verdant fruiting pressure');
+  assert.strictEqual(zoneAt(2700).fruitMul, 2.2, 'desert keeps the arid fruiting pressure');
 });
 
 test('v0.11: plants are tagged with their biome zone', () => {
   const world = v09world(51);
+  const keys = new Set(BIOMES.map((b) => b.key));
   for (const p of world.plants) {
-    assert.ok(['verdant', 'arid', 'highland'].includes(p.zone), `plant zone ${p.zone}`);
+    assert.ok(keys.has(p.zone), `plant zone ${p.zone}`);
   }
-  const zones = new Set(world.plants.map((p) => p.zone));
-  assert.ok(zones.has('verdant') && zones.has('arid') && zones.has('highland'), 'flora spans all three biomes');
+  // The legacy battery spawns in the jungle — all flora carries the jungle key.
+  assert.ok(world.plants.every((p) => p.zone === 'jungle'), 'legacy flora is jungle-tagged');
 });
 
 test('v0.11: arid fruiting is slower than verdant (scarcity is zonal)', () => {
   const world = bindWorld(createWorld(52));
-  // Two mature plants, one per zone, forced to fruit now.
+  // Two mature plants, one per zone, forced to fruit now. v0.18: the old
+  // verdant/arid cores are jungle/desert at the mapped coordinates.
   world.plants.length = 0;
   const mk = (x) => {
-    const p = { kind: 'plant', id: 1, x, platformIndex: 0, y: 800, growth: 1, fruitTimer: 0, sway: 0, zone: zoneAt(x).key };
+    const p = { kind: 'plant', id: 1, x, platformIndex: 0, y: 800, growth: 1, fruitTimer: 0, sway: 0, zone: biomeKeyAt(x) };
     world.plants.push(p);
     return p;
   };
-  const v = mk(100), a = mk(800);
+  const v = mk(1400), a = mk(2700);
   // Sample the interval the tick assigns: run one tick and read fruitTimer.
   tickWorld(world, 0.1);
   // Both fruited (timer reset to a fresh interval); arid interval must be larger.
@@ -1337,7 +1370,7 @@ test('v0.11: crowding slows fruiting (density-dependent scarcity)', () => {
   const mkWorld = (n) => {
     const w = bindWorld(createWorld(53));
     w.plants.length = 0;
-    w.plants.push({ kind: 'plant', id: 1, x: 100, platformIndex: 0, y: 800, growth: 1, fruitTimer: 0, sway: 0, zone: 'verdant' });
+    w.plants.push({ kind: 'plant', id: 1, x: 100, platformIndex: 0, y: 800, growth: 1, fruitTimer: 0, sway: 0, zone: 'jungle' });
     for (let i = 0; i < n; i++) addTestCreature(w, 100 + i);
     return w;
   };
@@ -1353,7 +1386,7 @@ test('v0.11: lineage records the birth biome', () => {
   const world = v09world(54);
   const c = world.creatures[0];
   const rec = world.lineage.get(c.id);
-  assert.ok(['verdant', 'arid', 'highland'].includes(rec.zone), `birth zone recorded: ${rec.zone}`);
+  assert.ok(BIOMES.some((b) => b.key === rec.zone), `birth zone recorded: ${rec.zone}`);
 });
 
 test('v0.11: no eat-livelock — the eat action approaches distant sensed food', () => {
@@ -1362,8 +1395,8 @@ test('v0.11: no eat-livelock — the eat action approaches distant sensed food',
   world.plants.length = 0;
   world.foods.length = 0;
   world.pebbles.length = 0;
-  addFood(world, 700, 0, 'fruit', 1);
-  const c = addTestCreature(world, 400);
+  addFood(world, 1750, 0, 'fruit', 1); // jungle branch, within walking distance
+  const c = addTestCreature(world, 400); // maps to the jungle floor at 1350
   c.biochem.hunger = 0.9;
   c.action = 'eat'; c.actionTimer = 100; // brain committed to eat, food out of bite range
   const x0 = c.x;
@@ -1380,7 +1413,7 @@ test('v0.12: creatures imprint on their birthplace as home', () => {
   const world = v09world(71);
   world.creatures.length = 0;
   const c = addTestCreature(world, 420);
-  assert.equal(c.homeX, 420, 'homeX imprinted at creation x');
+  assert.equal(c.homeX, 1357.5, 'homeX imprinted at creation x (legacy 420 maps to jungle 1357.5)');
   assert.equal(c.homePlatform, 0, 'home platform recorded');
 });
 
@@ -1388,14 +1421,14 @@ test('v0.12: homeDist sense is 0 at home, 1 far away', () => {
   const world = v09world(72);
   world.creatures.length = 0;
   const c = addTestCreature(world, 400);
-  c.x = 400;
+  c.x = c.homeX;
   let s = { ...MID_SENSES };
   // gatherSenses is internal; emulate the homeDist computation via a tick.
   c.biochem.energy = 1; c.biochem.hunger = 0; c.sleeping = false;
   const { tickWorld: tw } = { tickWorld };
   tw(world, 0.1);
   assert.ok(c._senses.homeDist < 0.05, `at home: homeDist ~0 (got ${c._senses.homeDist})`);
-  c.x = 1200; // 800px from home
+  c.x = c.homeX + 800; // 800px from home (out on the plains)
   tw(world, 0.1);
   assert.ok(c._senses.homeDist > 0.95, `800px away: homeDist ~1 (got ${c._senses.homeDist})`);
 });
@@ -1405,7 +1438,7 @@ test('v0.12: seekHome walks the creature back toward home', () => {
   world.creatures.length = 0;
   world.plants.length = 0; world.foods.length = 0;
   const c = addTestCreature(world, 400);
-  c.x = 900; // 500px from home
+  c.x = 1600; // 250px from home, still on the jungle floor
   c.biochem.hunger = 0; c.biochem.energy = 1;
   c.action = 'seekHome'; c.actionTimer = 100; // committed, no re-decide
   const x0 = c.x;
@@ -1426,11 +1459,12 @@ test('v0.12: starving overrides homesickness', () => {
   const world = v09world(74);
   world.creatures.length = 0;
   world.plants.length = 0; world.foods.length = 0;
-  // Food far from home (home 400, creature 900, food 1300): a starving
-  // creature must walk AWAY from home toward the food.
-  addFood(world, 1300, 0, 'fruit', 1);
+  // Food far from home (home 1350, creature 1550, food 1750): a starving
+  // creature must walk AWAY from home toward the food. The 200px gap is
+  // not closed in 50 ticks, so the walk is the whole story.
+  addFood(world, 1750, 0, 'fruit', 1);
   const c = addTestCreature(world, 400);
-  c.x = 900; // away from home: homeDist = 0.625, the homeward drive is real
+  c.x = 1550; // away from home: homeDist = 0.25, the homeward drive is real
   // Canopy: hunger is the bloodSugar readout — pin the chemical.
   c.biochem.bloodSugar = 0.05; // starving
   c.biochem.fatigue = 0; // → energy 1
@@ -1449,7 +1483,7 @@ test('v0.12: starving overrides homesickness', () => {
   silenceBrain(c.brain);
   c.action = 'wander'; c.actionTimer = 0; // about to re-decide
   const x0 = c.x;
-  for (let i = 0; i < 100; i++) tickWorld(world, 0.1);
+  for (let i = 0; i < 50; i++) tickWorld(world, 0.1);
   assert.ok(c.x > x0 + 30, `starving creature walks to food, not home (${x0.toFixed(0)} -> ${c.x.toFixed(0)}, home ${c.homeX})`);
 });
 
@@ -1491,7 +1525,7 @@ test('v0.12: mating forms a pair bond; bonds decay without contact', () => {
   // and wait: the bond must fade without contact.
   const v0 = getBond(world.bonds, a, b);
   for (let i = 0; i < 900; i++) {
-    a.x = 500; b.x = 1400;
+    a.x = 1300; b.x = 1700; // both on the jungle floor, 400px apart
     tickWorld(world, 0.1);
   }
   assert.ok(getBond(world.bonds, a, b) < v0 * 0.6, `bonds decay without contact (${v0.toFixed(2)} -> ${getBond(world.bonds, a, b).toFixed(2)})`);
@@ -1567,7 +1601,7 @@ test('v0.12: kinNear/bondNear senses read the nearest creature', () => {
   assert.equal(a._senses.kinNear, 1, `nearest is kin (got ${a._senses.kinNear})`);
   assert.ok(Math.abs(a._senses.bondNear - 0.6) < 0.05, `bond sensed (got ${a._senses.bondNear.toFixed(2)})`);
   // A lone creature senses no kin and no bond.
-  b.x = 1500; b.homeX = 1500;
+  b.x = 2100; b.homeX = 2100; // out on the plains, far beyond sense range
   for (let i = 0; i < 5; i++) tickWorld(world, 0.1);
   assert.equal(a._senses.kinNear, 0, 'no creature in range: kin 0');
   assert.equal(a._senses.bondNear, 0, 'no creature in range: bond 0');
@@ -1786,13 +1820,15 @@ test('physics: directed feet walk off the edge; wanderers turn around', () => {
   world.creatures.length = 0;
   world.foods.length = 0;
   // The walker: food past the branch tip pulls it off the edge.
-  addFood(world, 900, 4, 'fruit', 1);
-  const walker = physCreature(world, 690, 4, { action: 'seekFood', actionTimer: 100, facing: 1 });
+  // v0.18: mid branch 4 is x 1290–1450, y 470. The walker starts 5px from
+  // the tip — the old test's geometry, byte for byte.
+  addFood(world, 1490, 4, 'fruit', 1);
+  const walker = physCreature(world, 1445, 4, { action: 'seekFood', actionTimer: 100, facing: 1 });
   for (let i = 0; i < 4; i++) tickWorld(world, 0.1);
   assert.ok(!walker.grounded, 'walked off the mid branch — the fall begins');
   assert.equal(walker.platformIndex, 4, 'still registered to the branch mid-fall');
   // The wanderer: pinned hunger/energy so it only ever wanders, near the edge.
-  const drifter = physCreature(world, 650, 4, { action: 'wander', actionTimer: 100000 });
+  const drifter = physCreature(world, 1400, 4, { action: 'wander', actionTimer: 100000 });
   for (let i = 0; i < 200; i++) {
     tickWorld(world, 0.1);
     drifter.biochem.hunger = 0; drifter.biochem.energy = 1;
@@ -1808,13 +1844,14 @@ test('physics: falling onto a lower platform lands you standing on it', () => {
   // stream-dependent path is not what this test is about. Gravity is.
   world.creatures.length = 0;
   world.foods.length = 0;
-  const c = physCreature(world, 800, 4);
-  // Below the lower branch (y=640) at x=800 — only the floor underneath.
-  c.y = 660; c.vy = 0; c.vx = 0; c.grounded = false;
+  const c = physCreature(world, 1450, 4);
+  // Below mid branch 4 (y=470) at x=1450 — lower branch 2 (x 1320–1560, y=640)
+  // is the only platform underneath.
+  c.y = 500; c.vy = 0; c.vx = 0; c.grounded = false;
   for (let i = 0; i < 30 && !c.grounded; i++) tickWorld(world, 0.1);
   assert.ok(c.grounded, 'touched down');
-  assert.equal(c.platformIndex, 0, 'landed on the forest floor');
-  assert.equal(c.y, 800, 'standing on it, not through it');
+  assert.equal(c.platformIndex, 2, 'landed on the lower branch');
+  assert.equal(c.y, 640, 'standing on it, not through it');
 });
 
 test('physics: jump launches with legPower-scaled impulse, grounded only', () => {
@@ -1839,8 +1876,8 @@ test('physics: jump launches with legPower-scaled impulse, grounded only', () =>
 
 test('physics: jumpNear sees a leapable ledge, and only that', () => {
   const world = v09world(54);
-  const c = physCreature(world, 300, 0); // forest floor, y=800
-  // Lower branch 1: x 60–520, y=650 — 150px above, right overhead.
+  const c = physCreature(world, 1400, 0); // jungle floor, y=800
+  // Lower branch 2: x 1320–1560, y=640 — 160px above, right overhead.
   let s = gatherSenses(c, world);
   assert.ok(s.jumpNear > 0, `ledge overhead registers (jumpNear=${s.jumpNear.toFixed(2)})`);
   // Far from any higher platform: nothing to leap at. A stub world with one
@@ -1854,7 +1891,7 @@ test('physics: jumpNear sees a leapable ledge, and only that', () => {
   s = gatherSenses(cs, stub);
   assert.equal(s.jumpNear, 0, 'a ledge 300px up is not jumpable — no signal');
   // On the top branch (y=290): nothing above at all.
-  const top = physCreature(world, 500, 7);
+  const top = physCreature(world, 1420, 7);
   s = gatherSenses(top, world);
   assert.equal(s.jumpNear, 0, 'the sky is not a ledge');
 });
@@ -1937,7 +1974,7 @@ test('v0.13: plants fruit from their genome — yield, interval, zone stress', (
   const g = randomPlantGenome(rng);
   g.alleles.yield = [0.95, 0.95]; // ~3 fruits per cycle
   g.alleles.interval = [0.05, 0.05]; // fast fruiting
-  addPlant(world, 200, 1, g); // verdant zone (x<533)
+  addPlant(world, 1300, 1, g); // jungle zone
   const p = world.plants[world.plants.length - 1];
   p.growth = 1; p.fruitTimer = 0.01;
   tickWorld(world, 0.1);
@@ -1956,8 +1993,8 @@ test('v0.13: arid zone stresses thirsty plants, spares water-retainers', () => {
     g.alleles.interval = [0.5, 0.5];
     return g;
   };
-  addPlant(world, 700, 2, mk(0.05)); // arid, thirsty
-  addPlant(world, 750, 2, mk(0.95)); // arid, water-retaining
+  addPlant(world, 2700, 26, mk(0.05)); // desert, thirsty
+  addPlant(world, 2750, 26, mk(0.95)); // desert, water-retaining
   const thirsty = world.plants[world.plants.length - 2];
   const retainer = world.plants[world.plants.length - 1];
   thirsty.growth = 1; thirsty.fruitTimer = 0.01;
@@ -2017,8 +2054,8 @@ test('v0.13: homesickness — comfort drains far from home for homebodies', () =
   homebody.pheno.instHomeSeek = 0.9;
   const wanderer = addTestCreature(world, 500);
   wanderer.pheno.instHomeSeek = 0.05;
-  // Teleport both 700px from home (homeDist ~0.875).
-  homebody.x = 1200; wanderer.x = 1200;
+  // Teleport both 700px from home (homeDist ~0.875) — out on the plains.
+  homebody.x = 2087.5; wanderer.x = 2087.5;
   homebody.biochem.comfort = 0.8; wanderer.biochem.comfort = 0.8;
   for (let i = 0; i < 20; i++) tickWorld(world, 0.5);
   assert.ok(homebody.biochem.comfort < wanderer.biochem.comfort,
@@ -2032,8 +2069,8 @@ test('v0.13: divergence metric — S measured per biome against founders', () =>
   assert.ok(world.founderMeans.instHomeSeek !== undefined, 'creature traits baselined');
   assert.ok(world.founderMeans.plant_waterRet !== undefined, 'plant traits baselined');
   const snap = computeDivergence(world);
-  assert.ok(snap && snap.zones.verdant && snap.zones.arid && snap.zones.highland, 'all three zones reported');
-  assert.ok(typeof snap.zones.arid.instHomeSeek === 'number', 'S is a number');
+  assert.ok(snap && snap.zones.jungle && snap.zones.desert && snap.zones.mountains, 'the legacy cores are reported');
+  assert.ok(typeof snap.zones.desert.instHomeSeek === 'number', 'S is a number');
   assert.equal(world.divergenceLog.length, 1, 'snapshot logged');
 });
 
@@ -2145,7 +2182,7 @@ test('v0.13.1: non-finite eligibility traces reset instead of spreading', () => 
 
 test('v0.14: vocal is the 13th action; voice genes are registered', () => {
   assert.equal(ACTIONS[12], 'vocal', 'vocal appended, never renumbered');
-  assert.equal(ACTIONS.length, 17); // v0.14's 13 + v0.17's glide, brachiate, swim, dive
+  assert.equal(ACTIONS.length, 20); // v0.14's 13 + v0.17's glide, brachiate, swim, dive + v0.18's drink, bask, dig
   for (const k of ['vocalPitch', 'vocalRange', 'vocalVolume', 'vocalImitate', 'matePrefCall']) {
     assert.ok(GENES.find((g) => g.key === k), `${k} is a registered gene`);
   }
@@ -2275,17 +2312,32 @@ test('v0.14: isolated zones develop distinct dialects from identical genomes', (
     c.pheno.vocalPitch = 0.5; // identical genetics
     c.pheno.vocalImitate = imitate;
     c.pheno.vocalRange = 0; // clean signal
+    c.pheno.size = 0; // v0.18: neutral body size — the dialect anchors are
+    // the voice pitches, and sizePitchFactor scales what the ear receives.
+    // (The bigger brain shifted the world RNG stream; tutor body sizes are
+    // not what this test is about.)
     c.biochem.hunger = 0.2; c.biochem.energy = 0.9;
     world.creatures.push(c);
     return c;
   };
-  // Zone A (platform 1): low tutor + learner. Zone B (platform 3): high tutor + learner.
-  const t1 = mk(0.2, 0, 400, 1);
-  const l1 = mk(0.5, 1, 450, 1);
-  const t2 = mk(0.9, 0, 1400, 3);
-  const l2 = mk(0.5, 1, 1450, 3);
+  // Cohort A (jungle platform 1): low tutor + learner.
+  // Cohort B (plains platform 24): high tutor + learner. 650px apart —
+  // no call crosses the gap, so the archives stay isolated.
+  const t1 = mk(0.2, 0, 1300, 1);
+  const l1 = mk(0.5, 1, 1350, 1);
+  const t2 = mk(0.9, 0, 2000, 24);
+  const l2 = mk(0.5, 1, 2050, 24);
   for (let t = 0; t < 400; t++) {
     for (const c of [t1, t2]) { c.action = 'vocal'; c.actionTimer = 100; }
+    // v0.18: pin the learners in place — the bigger brain (N_IN 29→33)
+    // shifted the world RNG stream and the learners' wander brains now
+    // climb to other branches mid-test, changing what they hear. x alone
+    // does not pin a climber; hold the branch too. Locomotion is not what
+    // this test is about. Dialects are.
+    for (const [l, x, pi] of [[l1, 1350, 1], [l2, 2050, 24]]) {
+      l.x = x; l.y = world.platforms[pi].y; l.platformIndex = pi;
+      l.vx = 0; l.vy = 0; l.action = 'eat'; l.actionTimer = 100;
+    }
     tickWorld(world, 0.1);
   }
   assert.ok(l1.voicePitch < 0.4, `zone-A learner drifted low (${l1.voicePitch.toFixed(2)})`);
@@ -2295,8 +2347,8 @@ test('v0.14: isolated zones develop distinct dialects from identical genomes', (
     const l = world.zoneCalls[z] || [];
     return l.reduce((s, e) => s + e.pitch, 0) / Math.max(1, l.length);
   };
-  const za = zoneAt(t1.x).key, zb = zoneAt(t2.x).key;
-  assert.notEqual(za, zb, 'tutors live in different zones');
+  const za = biomeKeyAt(t1.x), zb = biomeKeyAt(t2.x);
+  assert.notEqual(za, zb, 'tutors live in different biomes');
   const ma = mean(za), mb = mean(zb);
   assert.ok(Math.abs(ma - mb) > 0.2, `zone archives diverge (${ma.toFixed(2)} vs ${mb.toFixed(2)})`);
 });
@@ -2903,7 +2955,7 @@ test('v0.14: excretion moves gut waste into the zone soil', () => {
 
 test('v0.14: decomposition converts waste to fertility; leaching relaxes it', () => {
   const world = bindWorld(createWorld(14103));
-  const s = world.soil.verdant;
+  const s = world.soil.jungle;
   s.waste = 10; s.fertility = 0.5;
   tickSoil(world, 100); // dt=100s: conv = 10 * min(1, 0.03*100) = 10
   assert.ok(s.waste < 10, `waste decomposed, now ${s.waste.toFixed(3)}`);
@@ -2917,11 +2969,11 @@ test('v0.14: decomposition converts waste to fertility; leaching relaxes it', ()
 
 test('v0.14: fertility scales plant growth around a neutral baseline', () => {
   const world = bindWorld(createWorld(14104));
-  assert.equal(soilGrowthMul(world, 'verdant'), 1.0, '0.5 fertility is neutral');
-  world.soil.verdant.fertility = 0;
-  assert.ok(soilGrowthMul(world, 'verdant') < 1.0, 'exhausted soil stalls growth');
-  world.soil.verdant.fertility = SOIL_FERT_MAX;
-  assert.ok(soilGrowthMul(world, 'verdant') > 1.0, 'rich soil speeds growth');
+  assert.equal(soilGrowthMul(world, 'jungle'), 1.0, '0.5 fertility is neutral');
+  world.soil.jungle.fertility = 0;
+  assert.ok(soilGrowthMul(world, 'jungle') < 1.0, 'exhausted soil stalls growth');
+  world.soil.jungle.fertility = SOIL_FERT_MAX;
+  assert.ok(soilGrowthMul(world, 'jungle') > 1.0, 'rich soil speeds growth');
 });
 
 test('v0.14: the full loop — a meal eventually feeds the plants', () => {
@@ -3061,13 +3113,13 @@ test('chronicle: six chapters in the canonical order', () => {
 
 test('chronicle: genesis records founder hatches from the event log', () => {
   const world = chronWorld();
-  const a = chronCreature(world, 'Ash', 100, null, 0);
-  const b = chronCreature(world, 'Birch', 200, null, 5);
+  const a = chronCreature(world, 'Ash', 1300, null, 0); // Emerald Jungle
+  const b = chronCreature(world, 'Birch', 1350, null, 5);
   world.events.push({ type: 'hatch', creature: a, t: 0 }, { type: 'hatch', creature: b, t: 5 });
   const gen = chronChapter(buildChronicle(world), 'genesis');
   assert.equal(gen.entries.length, 2);
   assert.ok(gen.entries[0].text.includes('Ash'), 'prose names the founder');
-  assert.ok(gen.entries[0].text.includes('Verdant Valley'), 'prose names the birth biome from lineage');
+  assert.ok(gen.entries[0].text.includes('Emerald Jungle'), 'prose names the birth biome from lineage');
   assert.ok(gen.entries[0].jumps.some((j) => j.tab === 'tree' && j.creatureId === a.id), 'tree jump targets the founder');
 });
 
@@ -3076,7 +3128,7 @@ test('chronicle: events sort into their thematic chapters', () => {
   const a = chronCreature(world, 'Ash', 100, null, 0);
   world.events.push({ type: 'speciation', t: 400, from: 3, to: [5, 6], sizes: [12, 9] });
   world.events.push({ type: 'traditionFounded', name: 'Dawn Chorus', creature: a, t: 200 });
-  world.teachLog.push({ t: 300, kind: 'demo', type: 'contact', zone: 'arid', listeners: 4 });
+  world.teachLog.push({ t: 300, kind: 'demo', type: 'contact', zone: 'desert', listeners: 4 });
   world.dupEvents.push({ t: 500, kind: 'duplication', key: 'legLength', parents: [a.id, a.id] });
   const chs = buildChronicle(world);
   const split = chronChapter(chs, 'split');
@@ -3092,7 +3144,7 @@ test('chronicle: prose is sourced — numbers and names come from the logs', () 
   world.events.push({ type: 'speciation', t: 400, from: 3, to: [5, 6], sizes: [12, 9] });
   world.teachLog.push(
     { t: 100, kind: 'mode', mode: 'autonomous' },
-    { t: 300, kind: 'reward', pitch: 0.42, n: 3, zone: 'verdant' },
+    { t: 300, kind: 'reward', pitch: 0.42, n: 3, zone: 'jungle' },
   );
   const chs = buildChronicle(world);
   const splitText = chronChapter(chs, 'split').entries.find((e) => e.icon === '💥').text;
@@ -3101,7 +3153,7 @@ test('chronicle: prose is sourced — numbers and names come from the logs', () 
   const teach = chronChapter(chs, 'teacher').entries;
   assert.ok(teach[0].text.includes('arrived'), 'first teachLog entry reads as the arrival');
   const reward = teach.find((e) => e.icon === '🌟').text;
-  assert.ok(reward.includes('3') && reward.includes('0.42') && reward.includes('Verdant Valley'),
+  assert.ok(reward.includes('3') && reward.includes('0.42') && reward.includes('Emerald Jungle'),
     `reward prose carries n, pitch and zone name: ${reward}`);
   void a;
 });
@@ -3112,7 +3164,7 @@ test('chronicle: every jump target resolves against the world', () => {
   world.events.push({ type: 'hatch', creature: a, t: 0 });
   world.events.push({ type: 'speciation', t: 400, from: 3, to: [5], sizes: [12] });
   world.teachLog.push({ t: 100, kind: 'mode', mode: 'autonomous' });
-  world.divergenceLog.push({ t: 200, zones: { verdant: { vocalPitch: 0.7 } } });
+  world.divergenceLog.push({ t: 200, zones: { jungle: { vocalPitch: 0.7 } } });
   for (const ch of buildChronicle(world)) {
     for (const e of ch.entries) {
       for (const j of e.jumps) {
@@ -3129,24 +3181,24 @@ test('chronicle: every jump target resolves against the world', () => {
 
 test('chronicle: the Spread derives first-birth milestones per biome from lineage', () => {
   const world = chronWorld();
-  chronCreature(world, 'Ash', 100, null, 0);    // verdant
-  chronCreature(world, 'Dune', 700, null, 50);  // arid
-  chronCreature(world, 'Peak', 1200, null, 100); // highland
+  chronCreature(world, 'Ash', 1300, null, 0);   // jungle
+  chronCreature(world, 'Dune', 2700, null, 50); // desert
+  chronCreature(world, 'Peak', 680, null, 100); // mountains
   const entries = chronChapter(buildChronicle(world), 'spread').entries;
   assert.equal(entries.length, 3);
-  assert.ok(entries[0].text.includes('Verdant Valley') && entries[0].text.includes('Ash'));
-  assert.ok(entries[1].text.includes('Arid Stretch') && entries[1].text.includes('Dune'));
-  assert.ok(entries[2].text.includes('Highland') && entries[2].text.includes('Peak'));
+  assert.ok(entries[0].text.includes('Emerald Jungle') && entries[0].text.includes('Ash'));
+  assert.ok(entries[1].text.includes('Sunscorch Desert') && entries[1].text.includes('Dune'));
+  assert.ok(entries[2].text.includes('Skyreach Mountains') && entries[2].text.includes('Peak'));
   assert.ok(entries[0].t < entries[1].t && entries[1].t < entries[2].t, 'milestones ordered by first birth');
 });
 
 test('chronicle: dialect divergence crosses into First Words with the real S value', () => {
   const world = chronWorld();
-  world.divergenceLog.push({ t: 200, zones: { arid: { vocalPitch: -0.62 } } });
+  world.divergenceLog.push({ t: 200, zones: { desert: { vocalPitch: -0.62 } } });
   const words = chronChapter(buildChronicle(world), 'words').entries;
   const d = words.find((e) => e.icon === '🎵');
   assert.ok(d, 'a dialect milestone was written');
-  assert.ok(d.text.includes('Arid Stretch') && d.text.includes('-0.62'), `prose carries zone and S: ${d.text}`);
+  assert.ok(d.text.includes('Sunscorch Desert') && d.text.includes('-0.62'), `prose carries zone and S: ${d.text}`);
 });
 
 test('chronicle: the Living Present favors recent notable history', () => {
@@ -3177,17 +3229,18 @@ test('chronicle: an empty young world builds without crashing', () => {
 test('v0.14.1: rot composts — expired food mass enters the soil, not the void', () => {
   const world = bindWorld(createWorld(14110));
   populate(world);
-  const zone = zoneAt(500).key;
+  const x = 2700; // desert — plant and rot in the same biome
+  const zone = biomeKeyAt(x);
   const s = world.soil[zone];
   s.waste = 0; s.fertility = 0.5;
-  // A carcass: 1.2 meat at nutrition 1, rotting now.
-  addFood(world, 500, 2, 'meat', 1.2, 0.01, { nutrition: 1 });
+  // A corpse: 1.2 of remains at nutrition 1, rotting now.
+  addFood(world, x, 26, 'corpse', 1.2, 0.01, { nutrition: 1 });
   const carcass = world.foods[world.foods.length - 1];
   const wasteBefore = s.waste;
   world.time += 1; // past rotsAt
   compostRot(world);
-  assert.ok(!world.foods.includes(carcass), 'the carcass is gone as an item');
-  assert.ok(Math.abs(s.waste - wasteBefore - 1.2) < 1e-9, `soil waste gained the carcass mass, got ${s.waste}`);
+  assert.ok(!world.foods.includes(carcass), 'the corpse is gone as an item');
+  assert.ok(Math.abs(s.waste - wasteBefore - 1.2) < 1e-9, `soil waste gained the corpse mass, got ${s.waste}`);
 });
 
 test('v0.14.1: eating drops scraps — messy eaters litter', () => {
@@ -3244,7 +3297,7 @@ test('v0.14.1: plants shed litter — the unused parts feed the ground', () => {
 test('v0.14.1: rich ground enters the chronicle — the land remembers', () => {
   const world = bindWorld(createWorld(14114));
   populate(world);
-  const s = world.soil.verdant;
+  const s = world.soil.jungle;
   s.waste = 0; s.fertility = 0.99; s.richNoted = false;
   tickSoil(world, 0.5); // no waste: leaching pulls DOWN — no event
   assert.ok(!world.events.some((e) => e.type === 'soilRich'), 'lean soil writes no history');
@@ -3252,7 +3305,7 @@ test('v0.14.1: rich ground enters the chronicle — the land remembers', () => {
   tickSoil(world, 0.001);
   const ev = world.events.find((e) => e.type === 'soilRich');
   assert.ok(ev, 'first richness is noted');
-  assert.equal(ev.zone, 'verdant');
+  assert.equal(ev.zone, 'jungle');
   tickSoil(world, 10);
   assert.equal(world.events.filter((e) => e.type === 'soilRich').length, 1, 'noted once per enrichment');
   const chs = buildChronicle(world);
@@ -3407,42 +3460,53 @@ function evoGenome(rng, overrides) {
 }
 
 test('v0.17: 217 loci, 9 chromosomes — the evo-devo 25 ride together', () => {
-  assert.equal(GENES.length, 217);
+  assert.equal(GENES.length, 223);
   assert.equal(EVO17_KEYS.size, 25);
-  assert.equal(new Set(GENES.map((g) => g.key)).size, 217, 'no duplicate keys');
+  assert.equal(new Set(GENES.map((g) => g.key)).size, 223, 'no duplicate keys');
   assert.equal(CHROMOSOMES.length, 9);
   for (const k of EVO17_KEYS) {
     assert.ok(CHROMOSOMES[8].includes(k), `${k} rides the new chromosome 9`);
   }
 });
 
-test('v0.17: SENSE28 — four body-plan senses appended, never renumbered', () => {
-  assert.equal(SENSE28.length, 28);
-  assert.deepEqual(SENSE28.slice(0, 24), SENSE24, 'the old 24 are untouched');
-  assert.equal(SENSE28[24], 'airborne');
-  assert.equal(SENSE28[25], 'farLedge');
-  assert.equal(SENSE28[26], 'submerged');
-  assert.equal(SENSE28[27], 'waterNear');
+test('v0.18: SENSE32 — four realms senses appended, never renumbered', () => {
+  assert.equal(SENSE32.length, 32);
+  assert.deepEqual(SENSE32.slice(0, 24), SENSE24, 'the old 24 are untouched');
+  assert.equal(SENSE32[24], 'airborne');
+  assert.equal(SENSE32[25], 'farLedge');
+  assert.equal(SENSE32[26], 'submerged');
+  assert.equal(SENSE32[27], 'waterNear');
+  assert.equal(SENSE32[28], 'thirst');
+  assert.equal(SENSE32[29], 'cold');
+  assert.equal(SENSE32[30], 'heat');
+  assert.equal(SENSE32[31], 'buriedNear');
 });
 
-test('v0.17: four organ actions appended — glide 13, brachiate 14, swim 15, dive 16', () => {
-  assert.equal(ACTIONS.length, 17);
+test('v0.18: three realms actions appended — drink 17, bask 18, dig 19', () => {
+  assert.equal(ACTIONS.length, 20);
   assert.deepEqual(ACTIONS.slice(0, 13), ACT13, 'the old 13 are untouched');
   assert.equal(ACTIONS[13], 'glide');
   assert.equal(ACTIONS[14], 'brachiate');
   assert.equal(ACTIONS[15], 'swim');
   assert.equal(ACTIONS[16], 'dive');
-  assert.equal(ACT17.length, 17, 'the gene vocabulary agrees');
+  assert.equal(ACTIONS[17], 'drink');
+  assert.equal(ACTIONS[18], 'bask');
+  assert.equal(ACTIONS[19], 'dig');
+  assert.equal(ACT20.length, 20, 'the gene vocabulary agrees');
 });
 
-test('v0.17: the brain takes 29 inputs; the new senses land at 24–27', () => {
-  const v = senseVector({ ...MID_SENSES, airborne: 0.5, farLedge: 0.3, submerged: 0, waterNear: 0.9 });
-  assert.equal(v.length, 29, '28 senses + bias');
+test('v0.18: the brain takes 33 inputs; the realms senses land at 28–31', () => {
+  const v = senseVector({ ...MID_SENSES, airborne: 0.5, farLedge: 0.3, submerged: 0, waterNear: 0.9, thirst: 0.6, cold: 0.2, heat: 0, buriedNear: 0.4 });
+  assert.equal(v.length, 33, '32 senses + bias');
   assert.equal(v[24], 0.5, 'airborne rides at index 24');
   assert.equal(v[25], 0.3, 'farLedge rides at index 25');
   assert.equal(v[26], 0, 'submerged rides at index 26');
   assert.equal(v[27], 0.9, 'waterNear rides at index 27');
-  assert.equal(v[28], 1, 'bias still last');
+  assert.equal(v[28], 0.6, 'thirst rides at index 28');
+  assert.equal(v[29], 0.2, 'cold rides at index 29');
+  assert.equal(v[30], 0, 'heat rides at index 30');
+  assert.equal(v[31], 0.4, 'buriedNear rides at index 31');
+  assert.equal(v[32], 1, 'bias still last');
 });
 
 test('v0.17: the founder body plan is the legacy animal', () => {
@@ -3549,7 +3613,7 @@ test('v0.17: brachiate without a third grasp pair degrades to moveToward', () =>
 
 test('v0.17: swim on land is an honest flop', () => {
   const world = bindWorld(createWorld(302));
-  const c = physCreature(world, 800, 0, { action: 'swim', actionTimer: 100 });
+  const c = physCreature(world, 1400, 0, { action: 'swim', actionTimer: 100 });
   const x0 = c.x;
   tickWorld(world, 0.1);
   assert.equal(c.actionLabel, 'flopping', 'no water, no swimming');
@@ -3753,15 +3817,15 @@ test('v0.17: no dead genes — every evo-devo locus moves something', () => {
 
 // ================= v0.17.1 "Touch" =================
 
-test('v0.17.1: mineral deposits — three honest types, real amounts', () => {
+test('v0.17.1: mineral deposits — six honest types, real amounts', () => {
   assert.equal(OBSERVER_VERSION, 'v0.17.1 "Touch"');
-  assert.equal(MINERAL_TYPES.length, 3);
+  assert.equal(MINERAL_TYPES.length, 6); // flint, quartz, clay, timber, stone, driftwood — v0.18 adds biome resources
   for (const t of MINERAL_TYPES) {
     assert.ok(t.hardness > 0 && t.hardness <= 1, `${t.key} hardness in (0,1]`);
     assert.ok(t.color && t.name && t.blurb, `${t.key} fully described`);
   }
   const world = bindWorld(createWorld(42));
-  const m = addMineral(world, 300, 0, 'flint');
+  const m = addMineral(world, 1400, 0, 'flint');
   assert.equal(m.kind, 'mineral');
   assert.equal(m.mineralName, 'Flint');
   assert.equal(m.amount, 4);

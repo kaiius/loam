@@ -1,13 +1,19 @@
 // Wildcode bootstrap: world, renderer, UI, fixed-timestep game loop.
 
 import { createWorld, bindWorld, populate, tickWorld } from './sim/world.js';
+// v0.18 "Realms": the browser boots the full 8-biome world. populateGenesis
+// is landed by the sim agents — until then the classic populator stands in.
+// (populate stays imported: the test suite uses it directly. In the
+// single-file dist bundle populateGenesis arrives as a top-level binding,
+// which the typeof check below detects without an import.)
+const populateWorld = (typeof populateGenesis === 'function') ? populateGenesis : populate;
 import { setTeacherMode, commandTeacher, serializeTeacherSenses } from './sim/teacher.js';
 import { createRenderer, render } from './render/renderer.js';
 import { createUI } from './ui/ui.js';
 
 const canvas = document.getElementById('game');
 const world = bindWorld(createWorld((Date.now() % 100000) | 0));
-populate(world);
+populateWorld(world);
 
 const renderer = createRenderer(canvas);
 const ui = createUI(canvas, renderer, world);

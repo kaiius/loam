@@ -605,6 +605,12 @@ function hitTest(world, x, y) {
     const plat = world.platforms[te.platformIndex];
     if (Math.hypot(x - te.x, y - (plat.y - 20)) < 40) return { type: 'teacher', obj: te };
   }
+  // v0.18 "Realms": predators are clickable — every agent of selection is
+  // visible (Paul's v0.17-dev lesson: no phantom killers).
+  for (const pr of world.predators || []) {
+    const prr = Math.max(24, pr.r || 26);
+    if (Math.hypot(x - pr.x, y - (pr.y || 0)) < prr * 1.6) return { type: 'predator', obj: pr };
+  }
   for (let i = world.creatures.length - 1; i >= 0; i--) {
     const c = world.creatures[i];
     const plat = world.platforms[c.platformIndex];
@@ -834,7 +840,8 @@ function refreshPanel(panel, ui) {
       <div class="hint2">Keep it safe. It wobbles when hatching is near.</div>`;
     panel.querySelector('#p-close').onclick = () => { ui.setSelected(null); refreshPanel(panel, ui); };
   } else if (sel.kind === 'plant' || sel.kind === 'herb' || sel.kind === 'food' ||
-             sel.kind === 'mineral' || sel.kind === 'pebble' || sel.kind === 'toy') {
+             sel.kind === 'mineral' || sel.kind === 'pebble' || sel.kind === 'toy' ||
+             sel.kind === 'shark' || sel.kind === 'bear') { // v0.18: predators are inspectable too
     // v0.17.1 "Touch": the inspector — every entity gets its honest details,
     // rendered from describeEntity (which only reports what the engine models).
     renderInspectPanel(panel, ui, sel);

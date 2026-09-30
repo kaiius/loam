@@ -21,15 +21,21 @@ export const PLANT_GENES = [
   { key: 'waterRet', kind: 'float', founder: 0.5 },   // arid tolerance
   // H — hardiness family
   { key: 'coldTol', kind: 'float', founder: 0.5 },    // highland tolerance
+  // v0.18 §5: appended per the additive discipline (existing indices never
+  // shift). Selected by the biome fruiting stress: desert heat, shallow/
+  // archipelago salt.
+  { key: 'heatTol', kind: 'float', founder: 0.5 },    // desert heat tolerance
+  { key: 'saltTol', kind: 'float', founder: 0.5 },    // saltwater tolerance
   // M — medicine family (herbs; fruit trees ignore it)
   { key: 'potency', kind: 'float', founder: 0.5 },    // medicinal strength
 ];
 
 // Two chromosomes: [yield, fruitSize, interval, growthRate],
 // [bitterness, waterRet, coldTol, potency]. Linked genes travel together.
+// v0.18: heatTol + saltTol join the second (climate) chromosome; append-only.
 const PLANT_CHROMOSOMES = [
   ['yield', 'fruitSize', 'interval', 'growthRate'],
-  ['bitterness', 'waterRet', 'coldTol', 'potency'],
+  ['bitterness', 'waterRet', 'coldTol', 'potency', 'heatTol', 'saltTol'],
 ];
 
 const PLANT_MUTATION_RATE = 0.008;
