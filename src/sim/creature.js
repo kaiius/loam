@@ -1,12 +1,13 @@
 // A creature: genome + biochemistry + brain + body in the world.
 // Per tick: sense → brain decides → act → learn from the outcome.
 
-import { phenotype } from './genome.js';
+import { phenotype, markLocus } from './genome.js';
 import { createBiochem, tickBiochem, ageStage, stageSize, isDead, mood } from './biochem.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
+import { climbLinksFrom } from './world.js';
 
 let nextId = 1;
 
@@ -143,6 +144,17 @@ function gatherSenses(c, world) {
   // nearest creature (1 parent/child/sibling, 0.5 cousin, else 0).
   // bondNear — the pairwise bond value with that creature (-1..1).
   const otherObj = other && other.obj;
+  // Canopy senses (new): climbUp/climbDown — 1 when a climb link to a higher
+  // (lower y) or lower branch is reachable from the creature's current x.
+  // The instinct genes instClimbUp/instClimbDown wire these to the climb
+  // action; the brain learns the rest.
+  let climbUp = 0, climbDown = 0;
+  for (const { to, link } of climbLinksFrom(world, c.platformIndex)) {
+    if (c.x >= link.x1 - 30 && c.x <= link.x2 + 30) {
+      if (world.platforms[to].y < world.platforms[c.platformIndex].y) climbUp = 1;
+      else climbDown = 1;
+    }
+  }
   return {
     _range: range, // px base for dist normalization (used by contagion/mating checks)
     hunger: b.hunger,
@@ -155,6 +167,7 @@ function gatherSenses(c, world) {
     homeDist: c.homeX !== undefined ? clamp01(Math.abs(c.x - c.homeX) / 800) : 0,
     kinNear: otherObj ? pedigreeKin(world, c, otherObj) : 0,
     bondNear: otherObj && world.bonds ? getBond(world.bonds, c, otherObj) : 0,
+    climbUp, climbDown,
     foodDist: food ? food.dist : 1,
     foodDir: food ? food.dir : 0,
     creatureDist: other ? other.dist : 1,
@@ -179,6 +192,7 @@ function moveAlong(c, world, dir, dt, mult = 1) {
   const plat = world.platforms[c.platformIndex];
   const r = creatureRadius(c);
   c.x += dir * speed * dt;
+  if (Math.abs(dir) > 0) c._active = Math.max(c._active || 0, Math.min(1, mult)); // exertion for the chemistry
   if (c.x < plat.x1 + r) {
     c.x = plat.x1 + r;
     c.wanderDir *= -1;
@@ -212,7 +226,8 @@ export function doEat(c, world) {
   if (food.foodKind === 'leaf') {
     const wasSick = c.biochem.illness > 0.25;
     c.biochem.illness = Math.max(0, c.biochem.illness - 0.4);
-    c.biochem.hunger = Math.max(0, c.biochem.hunger - bite * 0.3 * eff);
+    // Bitter medicine: barely nutritious (small ate), powerfully purging.
+    c._ate = (c._ate || 0) + bite * 0.3 * eff;
     c.actionLabel = 'chewing bitter leaf';
     // Bitter when well, medicine when sick — the differential that teaches
     // self-medication. A healthy creature finds leaves meh; a sick one that
@@ -220,7 +235,10 @@ export function doEat(c, world) {
     // the conditional.
     c.reward += wasSick ? 0.6 : 0.15;
   } else {
-    c.biochem.hunger = Math.max(0, c.biochem.hunger - bite * 1.1 * eff);
+    // Food becomes blood sugar via the chemistry tick (c._ate is consumed
+    // by tickBiochem before the next action) — the body, not the action,
+    // decides what a meal means.
+    c._ate = (c._ate || 0) + bite * 1.1 * eff;
     c.actionLabel = `eating ${food.foodKind === 'meat' ? 'meat' : 'fruit'}`;
     c.reward += 0.6; // eating feels good — reinforce whatever led here
   }
@@ -264,6 +282,8 @@ export function maybeFoundGrove(c, world) {
 function executeAction(c, world, dt, s) {
   const rng = world.rng;
   c.playing = false;
+  c.grooming = false; // set by the groom action — consumed by tickBiochem
+  c._active = 0; // exertion this tick — consumed by tickBiochem
   switch (c.action) {
     case 'seekFood':
       c.actionLabel = 'looking for food';
@@ -371,6 +391,85 @@ function executeAction(c, world, dt, s) {
         c.actionTimer = 0;
       }
       break;
+    case 'climb': {
+      // The canopy action: move between linked branches. The creature walks
+      // to the nearest climbable overlap, then scrambles up/down to the
+      // branch it wants — food-rich, home, or just new. Climbing is work:
+      // it costs energy, and the grip gene (instClimb*) makes some
+      // tanglekins bolder climbers than others.
+      c.actionLabel = 'climbing';
+      const links = climbLinksFrom(world, c.platformIndex)
+        .filter(({ link }) => c.x >= link.x1 - 60 && c.x <= link.x2 + 60);
+      if (links.length === 0) {
+        // No climbable gap in reach — walk toward the nearest overlap, or
+        // give up and wander.
+        const all = climbLinksFrom(world, c.platformIndex);
+        if (all.length === 0) {
+          c.action = 'wander';
+          c.actionTimer = 0;
+        } else {
+          let best = all[0];
+          let bd = Infinity;
+          for (const l of all) {
+            const cx = Math.max(l.link.x1, Math.min(l.link.x2, c.x));
+            const d = Math.abs(cx - c.x);
+            if (d < bd) { bd = d; best = l; }
+          }
+          const cx = Math.max(best.link.x1, Math.min(best.link.x2, c.x));
+          moveToward(c, world, cx, dt, 0.8);
+        }
+        break;
+      }
+      // Choose the branch: food wins, then home, then curiosity.
+      let best = links[0];
+      let bScore = -Infinity;
+      for (const l of links) {
+        const to = l.to;
+        let score = 0;
+        for (const f of world.foods) {
+          if (f.platformIndex === to) score += 1;
+        }
+        if (to === c.homePlatform) score += 2;
+        score += rng.next() * 0.5; // a little wanderlust
+        if (score > bScore) { bScore = score; best = l; }
+      }
+      const cx = Math.max(best.link.x1, Math.min(best.link.x2, c.x));
+      if (Math.abs(cx - c.x) > 12) {
+        // Scramble sideways to the gap, at climb speed (the grip gene).
+        const step = Math.sign(cx - c.x) * c.pheno.climbSpeed * 60 * dt;
+        c.x += Math.abs(step) > Math.abs(cx - c.x) ? cx - c.x : step;
+        if (c.x < best.link.x1) c.x = best.link.x1;
+        if (c.x > best.link.x2) c.x = best.link.x2;
+      } else {
+        // Through the gap — arrive on the new branch.
+        c.platformIndex = best.to;
+        c.actionTimer = 0; // re-decide from the new branch
+        c.reward += 0.05; // climbing somewhere new feels good
+        c._active = 1;
+        world.events.push({ type: 'climbed', creature: c, to: best.to, t: world.time });
+      }
+      break;
+    }
+    case 'groom': {
+      // The troop ritual: one tanglekin grooms another, and both bond.
+      // Oxytocin rises in groomer and groomed — company you can feel.
+      c.actionLabel = 'grooming';
+      const other = s._other;
+      const reach = c.pheno.groomReach || 70;
+      if (other && Math.abs(other.x - c.x) < reach && other.platformIndex === c.platformIndex) {
+        c.grooming = true; // consumed by tickBiochem (oxytocin)
+        other._groomed = true; // the groomed feels it next tick
+        c.actionLabel = `grooming ${other.name}`;
+        c.reward += 0.2 * dt;
+        if (world.bonds) nudgeBond(world, c, other, 0.06 * dt);
+      } else if (other && other.platformIndex === c.platformIndex) {
+        moveToward(c, world, other.x, dt, 0.9);
+      } else {
+        c.action = 'wander';
+        c.actionTimer = 0;
+      }
+      break;
+    }
     case 'wander':
     default:
       c.actionLabel = 'wandering';
@@ -485,12 +584,25 @@ export function updateCreature(c, world, dt) {
   // satisfy the social need and creatures stayed lonely forever.)
   const wasNearFriend = c.nearFriend;
   c.nearFriend = false;
+  // Grooming flags: set by last tick's actions — feed them to the chemistry
+  // BEFORE resetting (the v0.5 nearFriend fix, applied to the ritual).
+  const wasGrooming = c.grooming;
+  const wasGroomed = c._groomed;
+  c._groomed = false;
+  // Meals: doEat accumulated c._ate during last tick's action — the chemistry
+  // converts it to blood sugar now.
+  const ate = c._ate || 0;
+  c._ate = 0;
   tickBiochem(b, pheno, dt, {
     sleeping: c.sleeping,
     playing: c.playing,
     nearFriend: wasNearFriend,
     petted: c.pettedFlag,
     scolded: c.scoldedFlag,
+    grooming: wasGrooming,
+    groomed: wasGroomed,
+    ate,
+    active: c._active || 0,
   });
   c.pettedFlag = false;
   c.scoldedFlag = false;
@@ -524,7 +636,7 @@ export function updateCreature(c, world, dt) {
     // dread in a dense world is either vestigial or a chronic-anxiety
     // epidemic, and we tried both.
     if (other && (other.pheno.spikeFear || 0) > 0 && s.creatureDist < 0.5) {
-      b.fear = clamp01(b.fear + other.pheno.spikeFear * (0.5 - s.creatureDist) * 2 * dt);
+      b.adrenaline = clamp01(b.adrenaline + other.pheno.spikeFear * (0.5 - s.creatureDist) * 2 * dt);
     }
     // v0.9 embodiment: the bristle display. Fear raises the spikes and puffs
     // the fur — a visible threat display computed in sim, drawn by the
@@ -539,12 +651,12 @@ export function updateCreature(c, world, dt) {
       // threshold, they bristle, and the whole herd panics in a
       // self-sustaining epidemic. You bristle from direct threat (spike
       // aura, clash pain), not from someone else's bristling.
-      if (b.fear < 0.45) b.fear = Math.min(0.45, b.fear + 1.5 * (0.35 - s.creatureDist) * dt);
+      if (b.adrenaline < 0.45) b.adrenaline = Math.min(0.45, b.adrenaline + 1.5 * (0.35 - s.creatureDist) * dt);
     }
     // v0.9 injuries: fast flight crashes into spiky creatures. The flee
     // action is the filter (1.4× — play, foraging, wandering, courting are
     // all slower and controlled); the mover must be closing, not running
-    // away. A crash startles (+0.5 fear — the victim visibly bristles)
+    // away. A crash startles (+0.5 adrenaline — the victim visibly bristles)
     // but stays below the 0.55 urgent threshold, so one crash doesn't
     // chain into another: startle, bristle, recover. (At +0.6 it pinballed.)
     // Scaled by the other's spikes, 3s refractory. Pain (−0.2) teaches
@@ -558,8 +670,9 @@ export function updateCreature(c, world, dt) {
       const distPx = s.creatureDist * s._range;
       if (distPx < creatureRadius(c) + creatureRadius(other) + 4) {
         b.injury = clamp01(b.injury + 0.14 * other.pheno.spikes);
-        // A crash startles (+0.5): the victim visibly bristles, then calms.
-        b.fear = clamp01(b.fear + 0.5);
+        // A crash startles (+0.5 adrenaline): the victim visibly bristles,
+        // then calms.
+        b.adrenaline = clamp01(b.adrenaline + 0.5);
         c.flinchT = 0.45;
         c.clashCooldown = 3;
         c.reward -= 0.2;
@@ -644,6 +757,45 @@ export function updateCreature(c, world, dt) {
 
   learn(c.brain, pheno, Math.max(-1, Math.min(1, c.reward)));
   c.episodeReward += c.reward; // the commitment's running outcome
+  // Epigenetic life events: sustained conditions mark the genome, and the
+  // marks refresh the phenotype — experience becomes heritable tuning that
+  // fades over generations. Scarcity breeds thrift (slower burn), isolation
+  // breeds hunger for company, surviving illness breeds stronger immunity.
+  // Marks never touch the instinct wiring (genetic); they tune the body.
+  const epi = c._epi || (c._epi = { hungerT: 0, loneT: 0, wasSick: false, refractory: 0 });
+  epi.refractory = Math.max(0, epi.refractory - dt);
+  let marked = null;
+  if (b.hunger > 0.85) epi.hungerT += dt; else epi.hungerT = 0;
+  if (b.social > 0.85) epi.loneT += dt; else epi.loneT = 0;
+  if (epi.refractory <= 0) {
+    if (epi.hungerT > 60) {
+      markLocus(c.genome, 'hungerRate', -0.12);
+      marked = 'scarcity → thrifty metabolism';
+      epi.hungerT = 0; epi.refractory = 240;
+    } else if (epi.loneT > 60) {
+      markLocus(c.genome, 'sociability', 0.12);
+      marked = 'isolation → hunger for company';
+      epi.loneT = 0; epi.refractory = 240;
+    }
+  }
+  const sickNow = b.illness > 0.5;
+  if (epi.wasSick && !sickNow && epi.refractory <= 0) {
+    markLocus(c.genome, 'immunity', 0.1);
+    marked = 'illness survived → stronger immunity';
+    epi.refractory = 240;
+  }
+  epi.wasSick = sickNow;
+  if (marked) {
+    c.pheno = phenotype(c.genome); // marks change expression — refresh
+    world.events.push({ type: 'epimark', creature: c, note: marked, t: world.time });
+  }
+
+  // Fear stimuli (spike aura, bristle contagion, crashes) write to
+  // adrenaline, the chemical. Refresh the fear readout here — after every
+  // stimulus, including the crash inside executeAction — so the brain, the
+  // painter, and the tests see this tick's fear, not last tick's.
+  b.fear = clamp01(b.adrenaline);
+
   c.mood = mood(b);
 }
 

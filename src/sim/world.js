@@ -19,11 +19,23 @@ export function createWorld(seed = 1) {
     width: 1600,
     height: 900,
     groundY: 800,
+    // The canopy: the forest floor plus three tiers of branches. Branches
+    // are platforms with a kind; overlapping branches in adjacent tiers are
+    // linked by climbable gaps (computed below). Tanglekins are arboreal —
+    // the vertical is the world, not a backdrop.
     platforms: [
-      { x1: 0, x2: 1600, y: 800 }, // ground
-      { x1: 180, x2: 620, y: 610 }, // ledge left
-      { x1: 980, x2: 1420, y: 610 }, // ledge right
-      { x1: 640, x2: 960, y: 430 }, // high middle
+      { x1: 0, x2: 1600, y: 800, kind: 'ground' }, // forest floor
+      // lower branches
+      { x1: 60, x2: 520, y: 650, kind: 'branch' },
+      { x1: 480, x2: 980, y: 640, kind: 'branch' },
+      { x1: 940, x2: 1540, y: 650, kind: 'branch' },
+      // mid branches
+      { x1: 200, x2: 700, y: 470, kind: 'branch' },
+      { x1: 660, x2: 1180, y: 460, kind: 'branch' },
+      { x1: 1120, x2: 1560, y: 470, kind: 'branch' },
+      // upper branches
+      { x1: 320, x2: 860, y: 290, kind: 'branch' },
+      { x1: 820, x2: 1300, y: 280, kind: 'branch' },
     ],
     plants: [],
     foods: [],
@@ -45,7 +57,39 @@ export function createWorld(seed = 1) {
     // shift the main stream's sequence (founder genomes, rolls, etc.).
     decorRng: createRng(seed * 31 + 7),
   };
+  // Climb links: pairs of platforms whose x-ranges overlap and whose
+  // vertical gap is climbable (60–240px). Computed once at worldgen —
+  // the canopy's vertical roads.
+  world.climbLinks = computeClimbLinks(world.platforms);
   return world;
+}
+
+// Two platforms are climb-linked if their spans overlap and the gap is
+// within reach — close enough to scramble between, far enough to matter.
+export function computeClimbLinks(platforms) {
+  const links = [];
+  for (let a = 0; a < platforms.length; a++) {
+    for (let b = a + 1; b < platforms.length; b++) {
+      const pa = platforms[a];
+      const pb = platforms[b];
+      const overlap = Math.min(pa.x2, pb.x2) - Math.max(pa.x1, pb.x1);
+      const gap = Math.abs(pa.y - pb.y);
+      if (overlap > 60 && gap >= 60 && gap <= 240) {
+        links.push({ a, b, x1: Math.max(pa.x1, pb.x1), x2: Math.min(pa.x2, pb.x2) });
+      }
+    }
+  }
+  return links;
+}
+
+// Platform indices reachable by climbing from platform pi.
+export function climbLinksFrom(world, pi) {
+  const out = [];
+  for (const l of world.climbLinks || []) {
+    if (l.a === pi) out.push({ to: l.b, link: l });
+    else if (l.b === pi) out.push({ to: l.a, link: l });
+  }
+  return out;
 }
 
 export function timeOfDay(world) {
@@ -233,9 +277,10 @@ function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg
     const t = world.culture.traditions.find((x) => x.id === tid);
     if (t && world.rng.chance(fid * 0.85)) adoptTradition(world.culture, c, t, fid, world.rng);
   }
-  // Newborns start hungry-ish and sleepy, like real babies.
-  c.biochem.hunger = 0.45;
-  c.biochem.energy = 0.7;
+  // Newborns start hungry-ish and sleepy, like real babies. Set the
+  // chemicals, not the readouts — the drives compute themselves.
+  c.biochem.bloodSugar = 0.55;
+  c.biochem.fatigue = 0.3;
   // Rooting reflex (v0.5): a newborn's first commitment is to eat. Combined
   // with the nest cache below, the first meal is near-guaranteed, and its
   // reward bootstraps the seekFood/eat learning loop.
@@ -285,10 +330,12 @@ export function tickWorld(world, dt) {
           interval = interval * zoneMul * densityMul;
         }
         p.fruitTimer = interval;
-        // Fruit drops to the ground platform below the plant.
+        // Fruit hangs in the tree: it appears on the plant's own branch,
+        // within reach of branch-dwellers. (The old world dropped it to
+        // the ground; the canopy keeps its fruit where it grows.)
         // v0.8: herbs bear medicinal leaves instead of fruit.
         const dropKind = p.kind === 'herb' ? 'leaf' : 'fruit';
-        addFood(world, p.x + rng.range(-30, 30), 0, dropKind, 1);
+        addFood(world, p.x + rng.range(-30, 30), p.platformIndex, dropKind, 1);
         if (world.foods.length > 40) world.foods.splice(0, world.foods.length - 40);
       }
     }
@@ -432,37 +479,47 @@ export function uniqueName(world, name) {
 
 export function populate(world) {
   const rng = world.rng;
-  // Plants on the ground and ledges.
+  // The canopy's ecology: fruit trees grow ON the branches (plants are
+  // indexed by platform — a tree on branch 4 fruits on branch 4); medicinal
+  // herbs are undergrowth on the forest floor.
   // v0.11 biomes: verdant valley is lush, the arid stretch is harsh (one
-  // fruit plant, but extra medicinal herbs), the highland is moderate.
-  addPlant(world, 150, 0); addPlant(world, 350, 0); addPlant(world, 400, 1);
-  addPlant(world, 800, 0);
-  addPlant(world, 1150, 0); addPlant(world, 1450, 0); addPlant(world, 1200, 2);
-  // v0.8: medicinal herbs. v0.11: they thrive where food is scarcest.
+  // fruit tree, but extra medicinal herbs), the highland is moderate.
+  addPlant(world, 200, 1); addPlant(world, 420, 1); // lower-left branch trees
+  addPlant(world, 700, 2); // lower-mid
+  addPlant(world, 1150, 3); addPlant(world, 1400, 3); // lower-right
+  addPlant(world, 450, 4); addPlant(world, 900, 5); // mid branches
+  addPlant(world, 1250, 6);
+  addPlant(world, 600, 7); addPlant(world, 1050, 8); // upper branches
+  // v0.8: medicinal herbs, on the forest floor where the sick descend.
+  // v0.11: they thrive where food is scarcest.
   addHerb(world, 650, 0); addHerb(world, 950, 0); addHerb(world, 1300, 0);
-  // Starter food so the first creatures don't starve immediately.
+  // Starter food: hang fruit in the branches so the first tanglekins don't
+  // starve immediately.
+  const branchIdx = [1, 2, 3, 4, 5, 6];
   for (let i = 0; i < 8; i++) {
-    addFood(world, rng.range(100, 1500), 0, 'fruit', 1);
+    const pi = branchIdx[i % branchIdx.length];
+    const plat = world.platforms[pi];
+    addFood(world, rng.range(plat.x1 + 40, plat.x2 - 40), pi, 'fruit', 1);
   }
-  // Critters and a ball.
-  for (let i = 0; i < 5; i++) addCritter(world, rng.range(100, 1500), 0, 'bug');
-  for (let i = 0; i < 3; i++) addCritter(world, rng.range(200, 1400), 0, 'butterfly');
+  // Critters in the branches, a ball on the forest floor.
+  for (let i = 0; i < 5; i++) addCritter(world, rng.range(100, 1500), 1 + rng.int(0, 5), 'bug');
+  for (let i = 0; i < 3; i++) addCritter(world, rng.range(200, 1400), 4 + rng.int(0, 2), 'butterfly');
   addToy(world, 800, 0);
-  // v0.9: pebbles scattered on the ground — the world as material.
+  // v0.9: pebbles scattered on the forest floor — the world as material.
   for (let i = 0; i < 8; i++) addPebble(world, rng.range(80, 1520), 0);
-  // Four founder creatures with fresh random genomes. (v0.5: was two. Two founders
-  // made every lineage a coin flip — one same-sex pair or a few unlucky deaths
-  // and the world went extinct. Four founders (two breeding pairs) give the
-  // population the demographic buffer it needs to survive drift.)
+  // Four founder tanglekins with fresh random genomes, born in the lower
+  // branches. (v0.5: was two. Two founders made every lineage a coin flip —
+  // four founders (two breeding pairs) give the population the demographic
+  // buffer it needs to survive drift.)
   const founders = [];
   const names = ['Pip', 'Moss'];
-  const xs = [400, 580, 760, 940]; // v0.11: cluster straddles the verdant/arid
-  // boundary — founders start where the ecology changes. 180px spacing keeps
-  // adjacent founders inside the 240px breeding-backstop range but outside
-  // the 150px contagion range. Tighter clustering caused disease extinctions;
-  // wider spacing caused failure-to-launch extinctions.
+  // Founders start on adjacent lower branches where the climb links are —
+  // 180px spacing keeps adjacent founders inside the 240px breeding-backstop
+  // range but outside the 150px contagion range.
+  const starts = [[400, 1], [580, 1], [760, 2], [940, 2]];
   for (let i = 0; i < 4; i++) {
-    const c = createCreature(randomGenome(rng), xs[i], 0, rng,
+    const [fx, fpi] = starts[i];
+    const c = createCreature(randomGenome(rng), fx, fpi, rng,
       i < 2 ? { name: names[i] } : {});
     c.name = uniqueName(world, c.name);
     // Start them as juveniles so the player gets to know them.

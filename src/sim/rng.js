@@ -22,6 +22,13 @@ export function createRng(seed) {
     chance(p) {
       return rng.next() < p;
     },
+    // Box-Muller Gaussian for small-effect mutation steps.
+    gauss(mean = 0, sigma = 1) {
+      let u = 0;
+      while (u === 0) u = rng.next();
+      const v = rng.next();
+      return mean + sigma * Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+    },
   };
   return rng;
 }
