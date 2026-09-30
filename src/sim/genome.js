@@ -287,6 +287,14 @@ GENES.push(
 // the lexicon rides the existing vocal action (12) and the existing
 // callHeard/callPitch senses (21/22), so no new instinct genes are needed
 // under Paul's v0.5 rule.
+//
+// CHANNEL CO-EVOLUTION (Wang et al. 2026, via bart-the-hat): content
+// evolution without channel co-evolution doesn't compound — the
+// transmission channel must co-evolve with the lexicon. These substrate
+// genes ARE the evolvable channel: capacity (lexCap), plasticity
+// (lexLearn), fidelity (lexNoise), signal strength (lexLoud), receiver
+// sensitivity (lexHear), and developmental window (lexCrit). Selection on
+// communicative success tunes the channel alongside the content.
 GENES.push(
   _f('lexCap', 0.65),   // lexicon slots: 4 + round(12*v) — founder ≈ 12
   _f('lexLearn', 0.5),  // lexicon learning rate
