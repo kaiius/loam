@@ -11,7 +11,7 @@ import { createBiochem, tickBiochem, mood, ageStage } from '../src/sim/biochem.j
 import { createRng } from '../src/sim/rng.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
-import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral } from '../src/sim/world.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
   memoryCapacity, RECALL_BUDGET,
@@ -25,6 +25,7 @@ import { createBonds, getBond, nudgeBond, tickBonds, pedigreeKin, detectTribes, 
 import { randomPlantGenome, plantPhenotype, inheritPlant, plantMeiosis, PLANT_GENES } from '../src/sim/plantgenome.js';
 import { createTeacher, tickTeacher, commandTeacher, setTeacherMode, teacherDemo, teacherReward, teacherRewardNearest, emitTeacherCall, TEACHER_MOTIF, TEACHER_PITCH, IMITATION_WINDOW, gatherTeacherSenses, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, foodFlavor } from '../src/sim/teacher.js';
 import { worldToScreen, screenToWorld, fitCamera, zoomAt, panBy, recenterCamera, followPoint, CAM_MIN_ZOOM, CAM_MAX_ZOOM, CAM_PAN_MARGIN } from '../src/render/renderer.js';
+import { describeEntity, pickFruit, placeFood, spawnFood, nudgeCreature, digMineral, NUDGE_V, OBSERVER_VERSION } from '../src/sim/observer.js';
 import { createLexicon, lexSlots, hearThresh, baseLoud, sizePitchFactor, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, acousticDistance, lexiconDistance, wordName, entryStats, pushUtterance, hearerSalientContext, LEX_CONTEXTS, LEX_PROBATION_HEARINGS } from '../src/sim/language.js';
 
 // ================= v0.16 "Tongues" =================
@@ -3747,5 +3748,157 @@ test('v0.17: no dead genes — every evo-devo locus moves something', () => {
   for (const key of ['instAirborneGlide', 'instFarLedgeGlide', 'instFoodBrach', 'instSubmergedSwim', 'instSubmergedDive']) {
     const b1 = createBrain({ ...base, [key]: 1 }, createRng(3));
     assert.notDeepEqual(b1.instW, b0.instW, `${key} wires the brain`);
+  }
+});
+
+// ================= v0.17.1 "Touch" =================
+
+test('v0.17.1: mineral deposits — three honest types, real amounts', () => {
+  assert.equal(OBSERVER_VERSION, 'v0.17.1 "Touch"');
+  assert.equal(MINERAL_TYPES.length, 3);
+  for (const t of MINERAL_TYPES) {
+    assert.ok(t.hardness > 0 && t.hardness <= 1, `${t.key} hardness in (0,1]`);
+    assert.ok(t.color && t.name && t.blurb, `${t.key} fully described`);
+  }
+  const world = bindWorld(createWorld(42));
+  const m = addMineral(world, 300, 0, 'flint');
+  assert.equal(m.kind, 'mineral');
+  assert.equal(m.mineralName, 'Flint');
+  assert.equal(m.amount, 4);
+  assert.equal(m.y, world.platforms[0].y);
+  assert.equal(addMineral(world, 100, 0, 'bogus').mineralKey, 'flint', 'unknown type falls back to flint');
+  assert.equal(addMineral(world, 100, 99, 'flint'), null, 'bad platform refuses');
+});
+
+test('v0.17.1: populate seeds four mineral deposits without touching the rng stream', () => {
+  const w1 = bindWorld(createWorld(7)); populate(w1);
+  const w2 = bindWorld(createWorld(7)); populate(w2);
+  assert.equal(w1.minerals.length, 4, 'four deposits');
+  // Fixed positions, zero rng draws — founder genomes are byte-identical
+  // across the two runs, so worldgen determinism survived the addition.
+  assert.equal(genomeHash(w1.creatures[0].genome), genomeHash(w2.creatures[0].genome));
+  const keys = w1.minerals.map((m) => m.mineralKey).sort();
+  assert.deepEqual(keys, ['clay', 'flint', 'flint', 'quartz']);
+});
+
+test('v0.17.1: describeEntity is honest — tree and herb read their own genomes', () => {
+  const world = bindWorld(createWorld(11)); populate(world);
+  const tree = world.plants.find((p) => p.kind === 'plant');
+  const d = describeEntity(world, tree);
+  assert.equal(d.title, 'Fruit tree');
+  const rows = Object.fromEntries(d.rows.filter((r) => r[0]));
+  assert.ok(rows['Growth stage'].includes('%'), 'growth stage is a real percentage');
+  assert.equal(rows['Zone'], zoneAt(tree.x).name);
+  assert.ok(rows['Yield'].includes('fruit per fruiting'), 'yield from the plant genome');
+  assert.ok(d.note, 'carries an honesty note');
+  const herb = world.plants.find((p) => p.kind === 'herb');
+  const hd = describeEntity(world, herb);
+  assert.equal(hd.title, 'Medicinal herb');
+  assert.ok(hd.bars.some((b) => b.label === '🌡️ Potency'), 'potency bar from the medicine locus');
+});
+
+test('v0.17.1: describeEntity — fruit keeps its nutrition, bitterness, provenance', () => {
+  const world = bindWorld(createWorld(13));
+  addFood(world, 200, 1, 'fruit', 1, 0, { plantId: 0, bitterness: 0.2, nutrition: 1.5 });
+  const f = world.foods[world.foods.length - 1];
+  const d = describeEntity(world, f);
+  const rows = Object.fromEntries(d.rows.filter((r) => r[0]));
+  assert.equal(rows['Nutrition'], '1.50');
+  assert.equal(rows['Bitterness'], '20%');
+  assert.ok(rows['Borne by'].includes('observer'), 'observer-placed fruit says so honestly');
+});
+
+test('v0.17.1: describeEntity — mineral admits creatures cannot use it yet', () => {
+  const world = bindWorld(createWorld(17));
+  const m = addMineral(world, 300, 0, 'quartz');
+  const d = describeEntity(world, m);
+  assert.equal(d.title, 'Quartz');
+  assert.ok(d.note.includes('cannot use minerals yet'), 'honest about the technology release');
+  const bars = Object.fromEntries(d.bars.map((b) => [b.label, b.value]));
+  assert.equal(bars['🪨 Hardness'], 0.7);
+});
+
+test('v0.17.1: describeEntity — creature shows real drives and genome highlights', () => {
+  const world = bindWorld(createWorld(19)); populate(world);
+  const c = world.creatures[0];
+  const d = describeEntity(world, c);
+  assert.equal(d.title, c.name);
+  assert.equal(d.subtitle, `tanglekin #${c.id}`);
+  const rows = Object.fromEntries(d.rows.filter((r) => r[0]));
+  assert.ok(rows['Genome highlights'].includes('legs'), 'leg length shown');
+  assert.ok(d.bars.length >= 3, 'drive bars present');
+  assert.ok(d.note.includes('phenotype values'), 'no invented stats — the note says what these are');
+});
+
+test('v0.17.1: pickFruit removes the item and returns an honest snapshot', () => {
+  const world = bindWorld(createWorld(23));
+  addFood(world, 200, 1, 'fruit', 1, 0, { plantId: 0, bitterness: 0.1, nutrition: 1.4 });
+  const f = world.foods[world.foods.length - 1];
+  const held = pickFruit(world, f);
+  assert.ok(!world.foods.includes(f), 'gone from the world');
+  assert.equal(held.nutrition, 1.4, 'nutrition preserved');
+  assert.equal(held.bitterness, 0.1, 'bitterness preserved');
+  assert.equal(pickFruit(world, f), null, 'double-pick refuses');
+});
+
+test('v0.17.1: placeFood re-enters through addFood — creatures really eat it', () => {
+  const world = bindWorld(createWorld(29)); populate(world);
+  const c = world.creatures[0];
+  const held = { foodKind: 'fruit', nutrition: 1.5, bitterness: 0, amount: 1 };
+  const placed = placeFood(world, c.x + 10, c.platformIndex, held);
+  assert.ok(placed && placed.kind === 'food', 'a genuine food entity');
+  assert.equal(placed.nutrition, 1.5, 'snapshot values survive the round trip');
+  assert.equal(placed.plantId, 0, 'honestly parentless');
+  // Through the real path: doEat reads c._senses exactly like the live tick.
+  c._senses = { _food: placed };
+  assert.ok(doEat(c, world), 'doEat accepts observer-placed fruit');
+  assert.ok(c._ate > 0, 'the meal entered the body (c._ate) — not a UI fiction');
+  assert.ok(!world.foods.includes(placed) || placed.amount < 1, 'the item was consumed');
+});
+
+test('v0.17.1: spawnFood provisions a whole fruit, parentless and edible', () => {
+  const world = bindWorld(createWorld(31));
+  const f = spawnFood(world, 400, 1, 'fruit');
+  assert.equal(f.foodKind, 'fruit');
+  assert.equal(f.nutrition, 1);
+  assert.equal(f.plantId, 0);
+  assert.ok(world.foods.includes(f));
+  assert.equal(spawnFood(world, 400, 99, 'fruit'), null, 'bad platform refuses');
+});
+
+test('v0.17.1: nudgeCreature is a force, not a teleport', () => {
+  const world = bindWorld(createWorld(37)); populate(world);
+  const c = world.creatures[0];
+  const x0 = c.x, vx0 = c.vx, f0 = c.facing;
+  const h0 = genomeHash(c.genome);
+  assert.ok(nudgeCreature(world, c), 'nudge lands');
+  assert.equal(c.x, x0, 'position untouched — the integrator does the moving');
+  assert.ok(Math.abs((c.vx - vx0) - NUDGE_V * f0) < 1e-9, 'impulse in the facing direction');
+  assert.equal(genomeHash(c.genome), h0, 'the genome never felt the hand');
+  for (let i = 0; i < 30; i++) tickWorld(world, 0.1);
+  assert.ok(Number.isFinite(c.x) && Number.isFinite(c.vx) && Number.isFinite(c.vy), 'no NaNs after the shove');
+  assert.notEqual(c.x, x0, 'the world did the moving');
+  assert.equal(nudgeCreature(world, { alive: false }), false, 'the dead are not nudged');
+});
+
+test('v0.17.1: digMineral depletes a real deposit; the marker stays, honestly labeled', () => {
+  const world = bindWorld(createWorld(41));
+  const m = addMineral(world, 300, 0, 'flint');
+  const samples = [];
+  for (let i = 0; i < 4; i++) samples.push(digMineral(world, m));
+  assert.equal(m.amount, 0, 'depleted');
+  assert.ok(samples.every((s) => s && s.mineralKey === 'flint'), 'four real samples');
+  assert.equal(digMineral(world, m), null, 'a depleted deposit yields nothing');
+  assert.ok(world.minerals.includes(m), 'the claim marker stays in the world');
+  const d = describeEntity(world, m);
+  assert.ok(d.rows.some((r) => r[1] === 'depleted'), 'the inspector says depleted');
+  assert.ok(d.note.includes('cannot use minerals yet'), 'still honest after depletion');
+});
+
+test('v0.17.1: observer verbs never enter the creature action set', () => {
+  // Paul's v0.5 rule binds creature actions; these verbs live outside the
+  // genome by construction — assert the brain's action list is untouched.
+  for (const v of ['pickFruit', 'placeFood', 'spawnFood', 'nudgeCreature', 'digMineral']) {
+    assert.ok(!ACTIONS.includes(v), `${v} is not a creature action`);
   }
 });

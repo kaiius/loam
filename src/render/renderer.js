@@ -195,10 +195,10 @@ export function render(r, world, ui, t) {
   }
 
   // Plants.
-  for (const p of world.plants) drawPlant(ctx, p, t, light);
+  for (const p of world.plants) { drawPlant(ctx, p, t, light); if (ui.selected === p) drawInspectRing(ctx, p.x, p.y - 40, 44, 52, t); }
 
   // Foods.
-  for (const f of world.foods) drawFood(ctx, f, t);
+  for (const f of world.foods) { drawFood(ctx, f, t); if (ui.selected === f) drawInspectRing(ctx, f.x, f.y - 12, 20, 20, t); }
 
   // v0.7: visible culture — grove tradition rings on the ground.
   drawGroves(ctx, world, t);
@@ -214,7 +214,17 @@ export function render(r, world, ui, t) {
   for (const toy of world.toys) drawBall(ctx, toy, t);
 
   // v0.9: pebbles — the world as material, not decoration.
-  for (const pb of world.pebbles || []) drawPebble(ctx, pb);
+  for (const pb of world.pebbles || []) {
+    drawPebble(ctx, pb);
+    if (ui.selected === pb) drawInspectRing(ctx, pb.x, pb.y - pb.r * 0.45, pb.r + 8, pb.r + 6, t);
+  }
+
+  // v0.17.1 "Touch": mineral deposits — crystals and clay seams, drawn from
+  // the deposit's own color. Depleted deposits draw hollow (honest).
+  for (const m of world.minerals || []) {
+    drawMineral(ctx, m, t);
+    if (ui.selected === m) drawInspectRing(ctx, m.x, m.y - 18, 30, 26, t);
+  }
 
   // Critters.
   for (const cr of world.critters) drawCritter(ctx, cr, t, light);
@@ -530,6 +540,56 @@ function drawPebble(ctx, pb) {
   ctx.ellipse(-pb.r * 0.2, -pb.r * 0.18, pb.r * 0.55, pb.r * 0.34, -0.3, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+}
+
+// v0.17.1 "Touch": mineral deposits. Three crystals (deterministic facets
+// from the deposit id) in the deposit's own color; a depleted deposit draws
+// as a hollow outline — the stone is gone, the claim marker remains.
+function drawMineral(ctx, m, t) {
+  const depleted = m.amount <= 0;
+  ctx.save();
+  ctx.translate(m.x, m.y);
+  for (let i = 0; i < 3; i++) {
+    const fx = (i - 1) * 13 + Math.sin(m.id * 2.1 + i) * 3;
+    const fh = 26 + Math.sin(m.id * 3.3 + i * 1.7) * 6 - i * 3;
+    const fw = 9 - i;
+    ctx.beginPath();
+    ctx.moveTo(fx - fw, 0);
+    ctx.lineTo(fx - fw * 0.4, -fh);
+    ctx.lineTo(fx + fw * 0.4, -fh);
+    ctx.lineTo(fx + fw, 0);
+    ctx.closePath();
+    if (depleted) {
+      ctx.strokeStyle = 'rgba(160,160,170,0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = m.color;
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.28)';
+      ctx.beginPath();
+      ctx.moveTo(fx - fw * 0.4, -fh);
+      ctx.lineTo(fx, -fh - 4);
+      ctx.lineTo(fx + fw * 0.1, -fh + 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+// v0.17.1 "Touch": the observer's selection ring for non-creature entities
+// (plants, foods, pebbles, minerals). Same dashed-white language as the
+// creature ring, smaller — selection, not emphasis.
+function drawInspectRing(ctx, x, y, rx, ry, t) {
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 5]);
+  ctx.lineDashOffset = -t * 20;
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 function drawCritter(ctx, cr, t, light) {

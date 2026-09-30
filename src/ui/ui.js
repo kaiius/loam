@@ -10,6 +10,8 @@ import { randomGenome } from '../sim/genome.js';
 import { commandTeacher, setTeacherMode, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, TEACHER_MOTIF } from '../sim/teacher.js';
 import { buildChronicle } from '../sim/chronicle.js';
 import { wordName, entryStats } from '../sim/language.js';
+// v0.17.1 "Touch": observer interactivity — inspect anything, touch the world.
+import { describeEntity, pickFruit, placeFood, spawnFood, nudgeCreature, digMineral } from '../sim/observer.js';
 
 const MOOD_EMOJI = {
   content: '😊', hungry: '🍽️', tired: '😴', bored: '😐',
@@ -22,6 +24,7 @@ export function createUI(canvas, renderer, world) {
     selected: null,
     hover: null,
     dragging: null,
+    canvas, // v0.17.1 "Touch": panel actions need the cursor too
     // v0.14.2 "Wayfinding": camera state — drag-pan, pinch, follow.
     follow: false, // camera tracks the selected creature/teacher
     camPan: null, // drag on empty space
@@ -51,6 +54,7 @@ export function createUI(canvas, renderer, world) {
       <button data-speed="1" title="Normal speed" class="active">▶</button>
       <button data-speed="4" title="Fast">⏩</button>
       <button id="addEgg" title="Add a wild egg">🥚+</button>
+      <button id="dropFoodBtn" title="Place a fruit anywhere (observer)">🍎+ fruit</button>
       <button id="treeBtn" title="Family tree">🌳 Tree</button>
       <button id="evoBtn" title="Evolution tracker">📈 Evo</button>
       <button id="chronBtn" title="Chronicle — the world's story">📜 Chronicle</button>
@@ -64,7 +68,7 @@ export function createUI(canvas, renderer, world) {
     <div id="chronpanel" class="bigpanel hidden"></div>
     <div id="tonguepanel" class="bigpanel hidden"></div>
     <div id="toasts"></div>
-    <div id="hint">Click a creature to inspect · drag to move it · double-click to pet · drag background to pan · scroll to zoom · 🧑‍🏫 finds the Teacher</div>
+    <div id="hint">Click anything to inspect it · drag creatures & toys · double-click to pet · 🍎+ places fruit · drag background to pan · scroll to zoom · 🧑‍🏫 finds the Teacher</div>
     <div id="camctl">
       <button id="zoomIn" title="Zoom in">＋</button>
       <button id="zoomOut" title="Zoom out">－</button>
@@ -93,6 +97,15 @@ export function createUI(canvas, renderer, world) {
     const x = world.rng.range(150, world.width - 150);
     layEgg(world, x, 0, randomGenome(world.rng), null);
     toast(toastsEl, '🥚 A wild egg appeared!');
+  });
+  // v0.17.1 "Touch": the observer's fruit hand — arm placement mode, the
+  // next click on a branch puts a real fruit there (creatures eat it via
+  // the normal doEat path; this is provisioning, not a state edit).
+  root.querySelector('#dropFoodBtn').addEventListener('click', () => {
+    ui.placeArm = true;
+    ui.heldFood = null;
+    canvas.style.cursor = 'crosshair';
+    toast(toastsEl, '🍎 Click a branch or the ground to place a fruit. (Esc cancels)');
   });
 
   // ---- v0.14.2 "Wayfinding": camera controls ----
@@ -310,9 +323,37 @@ export function createUI(canvas, renderer, world) {
       refreshPanel(panel, ui);
       return;
     }
+    // v0.17.1 "Touch": the observer's hands. Placing a held or fresh fruit
+    // is a click, never a drag — it lands on the nearest sensible platform
+    // through the same addFood path the trees use.
+    if (ui.heldFood || ui.placeArm) {
+      const plat = dropPlatform(world, x, y);
+      if (plat >= 0) {
+        if (ui.heldFood) {
+          const placed = placeFood(world, x, plat, ui.heldFood);
+          ui.heldFood = null;
+          toast(toastsEl, '🍎 Placed — a real fruit now; the tanglekins can find it.');
+          if (placed) ui.setSelected(placed);
+        } else {
+          const placed = spawnFood(world, x, plat, 'fruit');
+          toast(toastsEl, '🍎 Fruit placed — it will be eaten, or it will rot, like any other.');
+          if (placed) ui.setSelected(placed);
+        }
+      } else {
+        toast(toastsEl, 'No branch or ground there — click closer to a platform.');
+      }
+      ui.placeArm = false;
+      canvas.style.cursor = 'default';
+      refreshPanel(panel, ui);
+      return;
+    }
     const hit = hitTest(world, x, y);
     if (hit && hit.type !== 'none') {
-      ui.dragging = { hit, moved: false, sx: e.clientX, sy: e.clientY };
+      // v0.17.1 "Touch": plants are rooted and mineral deposits are static —
+      // they can be inspected but not dragged. Everything else (creatures,
+      // eggs, toys, loose food, pebbles) the hand can move.
+      const draggable = ['creature', 'teacher', 'egg', 'toy', 'food', 'pebble'].includes(hit.type);
+      ui.dragging = { hit, moved: false, sx: e.clientX, sy: e.clientY, draggable };
       if (hit.obj.dragged !== undefined) hit.obj.dragged = true;
       // v0.14: grabbing the teacher is tactile contact — it feels the hand.
       if (hit.type === 'teacher') hit.obj.touchT = world.time;
@@ -329,7 +370,7 @@ export function createUI(canvas, renderer, world) {
     if (ui.dragging) {
       const d = ui.dragging;
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 5) d.moved = true;
-      if (d.moved) {
+      if (d.moved && d.draggable) {
         d.hit.obj.x = Math.max(20, Math.min(world.width - 20, x));
         if (d.hit.type === 'toy') d.hit.obj.vx = 0;
       }
@@ -369,7 +410,7 @@ export function createUI(canvas, renderer, world) {
     if (d.hit.obj.dragged !== undefined) d.hit.obj.dragged = false;
     if (!d.moved) {
       ui.setSelected(d.hit.obj); // a click selects
-    } else {
+    } else if (d.draggable) {
       // Drop onto the nearest sensible platform.
       const plat = dropPlatform(world, x, y);
       if (plat >= 0) d.hit.obj.platformIndex = plat;
@@ -441,6 +482,18 @@ export function createUI(canvas, renderer, world) {
   window.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
+    // v0.17.1 "Touch": Esc lowers the observer's hand — cancels fruit
+    // placement or drops a held fruit back into the void (it was taken
+    // out of the world when picked up; the observer may waste it).
+    if (e.key === 'Escape') {
+      if (ui.heldFood || ui.placeArm) {
+        ui.heldFood = null;
+        ui.placeArm = false;
+        canvas.style.cursor = 'default';
+        toast(toastsEl, '✋ Hand lowered.');
+      }
+      return;
+    }
     const step = 60 * renderer.dpr;
     let dx = 0, dy = 0;
     if (e.key === 'ArrowLeft') dx = step;
@@ -480,6 +533,10 @@ export function createUI(canvas, renderer, world) {
     // Selection may have died.
     if (ui.selected && ui.selected.kind === 'creature' && !ui.selected.alive) ui.setSelected(null);
     if (ui.selected && ui.selected.kind === 'egg' && !world.eggs.includes(ui.selected)) ui.setSelected(null);
+    // v0.17.1 "Touch": inspector selections can vanish too — eaten fruit,
+    // culled seedlings. (Minerals and toys persist; pebbles are forever.)
+    if (ui.selected && ui.selected.kind === 'food' && !world.foods.includes(ui.selected)) ui.setSelected(null);
+    if (ui.selected && (ui.selected.kind === 'plant' || ui.selected.kind === 'herb') && !world.plants.includes(ui.selected)) ui.setSelected(null);
 
     // v0.14.2 "Wayfinding": follow — keep the selected creature or Teacher
     // centered, at the current zoom. Runs before render() each frame.
@@ -542,6 +599,23 @@ function hitTest(world, x, y) {
   }
   for (const t of world.toys) {
     if (Math.hypot(x - t.x, y - (t.y - t.r)) < t.r + 12) return { type: 'toy', obj: t };
+  }
+  // v0.17.1 "Touch": everything is inspectable — minerals, pebbles, loose
+  // food, then plants (fruit hit-tests before the tree it hangs in).
+  for (const m of world.minerals || []) {
+    if (Math.hypot(x - m.x, y - (m.y - 18)) < 30) return { type: 'mineral', obj: m };
+  }
+  for (const pb of world.pebbles || []) {
+    if (Math.hypot(x - pb.x, y - (pb.y - pb.r * 0.45)) < pb.r + 12) return { type: 'pebble', obj: pb };
+  }
+  for (const f of world.foods) {
+    if (Math.hypot(x - f.x, y - (f.y - 12)) < 20) return { type: 'food', obj: f };
+  }
+  for (const p of world.plants) {
+    const h = 40 + p.growth * 70;
+    if (Math.abs(x - p.x) < 34 && y < p.y + 6 && y > p.y - h - 20) {
+      return { type: p.kind === 'herb' ? 'herb' : 'plant', obj: p };
+    }
   }
   return { type: 'none' };
 }
@@ -649,11 +723,19 @@ function refreshPanel(panel, ui) {
       <div class="p-actions">
         <button id="p-pet">💕 Pet</button>
         <button id="p-scold">😠 Scold</button>
+        <button id="p-nudge">👉 Nudge</button>
         <button id="p-follow">${ui.follow ? '📍 Following ✓' : '📍 Follow'}</button>
       </div>`;
     panel.querySelector('#p-close').onclick = () => { ui.setSelected(null); refreshPanel(panel, ui); };
     panel.querySelector('#p-pet').onclick = () => petCreature(c);
     panel.querySelector('#p-scold').onclick = () => scoldCreature(c);
+    panel.querySelector('#p-nudge').onclick = () => {
+      // v0.17.1 "Touch": a gentle shove — a velocity impulse through the
+      // physics integrator, never a teleport. The world does the moving.
+      nudgeCreature(ui.world, c);
+      toast(toastsEl, `👉 You nudge ${escapeHtml(c.name)}.`);
+      refreshPanel(panel, ui);
+    };
     panel.querySelector('#p-follow').onclick = () => { ui.follow = !ui.follow; refreshPanel(panel, ui); };
     panel.querySelectorAll('.l-kid').forEach((btn) => {
       btn.onclick = () => {
@@ -734,7 +816,59 @@ function refreshPanel(panel, ui) {
       <div class="family">${sel.parents ? `Parents #${sel.parents[0]} × #${sel.parents[1]}` : 'Wild egg'}</div>
       <div class="hint2">Keep it safe. It wobbles when hatching is near.</div>`;
     panel.querySelector('#p-close').onclick = () => { ui.setSelected(null); refreshPanel(panel, ui); };
+  } else if (sel.kind === 'plant' || sel.kind === 'herb' || sel.kind === 'food' ||
+             sel.kind === 'mineral' || sel.kind === 'pebble' || sel.kind === 'toy') {
+    // v0.17.1 "Touch": the inspector — every entity gets its honest details,
+    // rendered from describeEntity (which only reports what the engine models).
+    renderInspectPanel(panel, ui, sel);
   }
+}
+
+// v0.17.1 "Touch": the inspector panel. Rows and bars come from
+// describeEntity; the action buttons are the observer's verbs.
+function renderInspectPanel(panel, ui, sel) {
+  const world = ui.world;
+  const d = describeEntity(world, sel);
+  if (!d) { panel.classList.add('hidden'); return; }
+  const rows = d.rows.map(([label, value]) => label
+    ? `<div class="zone"><b>${escapeHtml(label)}:</b> ${escapeHtml(value)}</div>`
+    : `<div class="zone"><i>${escapeHtml(value)}</i></div>`).join('');
+  const bars = d.bars.map((b) => bar(b.label, b.value, b.color)).join('');
+  let actions = '';
+  if (sel.kind === 'food') {
+    actions = `<div class="p-actions"><button id="i-pick">🤏 Pick up</button></div>`;
+  } else if (sel.kind === 'mineral') {
+    actions = sel.amount > 0
+      ? `<div class="p-actions"><button id="i-dig">⛏️ Collect sample</button></div>`
+      : `<div class="hint2">Depleted — the claim marker stays, the stone is gone.</div>`;
+  }
+  panel.innerHTML = `
+    <div class="p-head"><h2>${escapeHtml(d.title)}</h2><button id="p-close">✕</button></div>
+    <div class="badges">${escapeHtml(d.subtitle)}</div>
+    ${rows}${bars}
+    ${d.note ? `<div class="hint2">${escapeHtml(d.note)}</div>` : ''}
+    ${actions}`;
+  panel.querySelector('#p-close').onclick = () => { ui.setSelected(null); refreshPanel(panel, ui); };
+  const pickBtn = panel.querySelector('#i-pick');
+  if (pickBtn) pickBtn.onclick = () => {
+    const held = pickFruit(world, sel);
+    if (held) {
+      ui.heldFood = held;
+      ui.setSelected(null);
+      ui.canvas.style.cursor = 'crosshair';
+      toast(toastsEl, '🤏 Holding fruit — click a branch to place it. (Esc lowers your hand)');
+    }
+    refreshPanel(panel, ui);
+  };
+  const digBtn = panel.querySelector('#i-dig');
+  if (digBtn) digBtn.onclick = () => {
+    const sample = digMineral(world, sel);
+    if (sample) {
+      ui.samples = (ui.samples || 0) + 1;
+      toast(toastsEl, `⛏️ Collected a ${sample.mineralName} sample (${ui.samples} in hand). Creatures can't use it yet — the technology release will change that.`);
+    }
+    refreshPanel(panel, ui);
+  };
 }
 
 // v0.12 tribes & bonds: the band this creature's home range falls in
