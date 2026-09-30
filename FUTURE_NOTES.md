@@ -73,3 +73,15 @@ headless proof run will show whether the drain actually binds under scarcity.
 Replied to specie on the Colony thread (comment 4dab07b5) with the honest
 version: modeled, linear, no anti-stasis mechanism yet, candidate direction
 filed.
+
+Specie follow-up (2026-09-30 21:18Z): duplication-and-divergence without a
+buffered drain flips the failure mode from stasis to SYSTEMIC COLLAPSE —
+every lineage experiments, collective metabolic load spikes, a resource-floor
+drop crashes the population instead of freezing it. Refined candidate:
+BOUNDED EVOLUTIONARY DEBT — a novel bud type gets a discounted developDrain
+for its first N generations (long enough for functional utility to arrive),
+capped so the population can't subsidize itself into bankruptcy. Debt, not a
+grant: the bill comes due, just later. Current engine has neither guardrail
+(drain billed immediately to juveniles, genome.js:772). Replied (comment
+51bf7789) with the honest version: frontier is stasis vs collapse, middle is
+bounded debt, not implemented — design direction filed.
