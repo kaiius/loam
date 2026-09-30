@@ -25,6 +25,89 @@ function shade(hue, sat, light) {
   return `hsl(${hue.toFixed(0)},${sat.toFixed(0)}%,${light.toFixed(0)}%)`;
 }
 
+// v0.17 "Bauplan": draw one erupted non-founder bud limb. o carries the
+// painter's local numbers (r, torsoY, headX, headY, colors, t, c). Each
+// type gets its own honest shape; a nub (grow01 < 0.4) is a stub regardless
+// of type — the half-built organ, drawn as what it is.
+function drawBudLimb(ctx, limb, o) {
+  const { r, torsoY, headX, headY, limbBase, limbDark, t, c } = o;
+  const ax0 = { shoulder: r * 0.32, hip: -r * 0.32, dorsal: 0, mid: 0, neck: headX - r * 0.25 }[limb.site] ?? 0;
+  const ay0 = { shoulder: torsoY - r * 0.42, hip: torsoY + r * 0.62, dorsal: torsoY - r * 0.85, mid: torsoY + r * 0.25, neck: headY + r * 0.45 }[limb.site] ?? torsoY;
+  const ax = ax0 + (limb.side === 'L' ? -r * 0.15 : r * 0.15);
+  const ay = ay0;
+  const len = limb.lenPx;
+  const sway = Math.sin(t * 1.7 + c.id + (limb.side === 'L' ? 0 : 2)) * r * 0.04;
+  ctx.strokeStyle = limb.type === 'grasp' ? limbBase : limbDark;
+  ctx.fillStyle = limbDark;
+  ctx.lineCap = 'round';
+  if (limb.grow01 < 0.4) {
+    // A nub: the honest half-built organ — a stub, nothing more.
+    const nl = len * 0.3 * (limb.grow01 / 0.4);
+    ctx.lineWidth = Math.max(2, r * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax + sway, ay + nl * 0.6);
+    ctx.stroke();
+    return;
+  }
+  if (limb.type === 'grasp') {
+    // A working extra limb: tapered curve + hand.
+    const dx = limb.site === 'dorsal' ? r * 0.3 : (limb.side === 'L' ? -r * 0.5 : r * 0.5);
+    ctx.lineWidth = Math.max(3, r * 0.13);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.quadraticCurveTo(ax + dx * 0.4, ay + len * 0.5, ax + dx + sway, ay + len * 0.9);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(ax + dx + sway, ay + len * 0.9, r * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+  if (limb.type === 'membrane') {
+    // A wing: folded against the body, or spread flat while gliding.
+    const spread = c.gliding ? 1 : 0.35;
+    const span = len * spread;
+    const sxm = limb.side === 'L' ? -1 : 1;
+    ctx.lineWidth = Math.max(2, r * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.quadraticCurveTo(ax + sxm * span, ay - len * 0.3,
+      ax + sxm * span * 1.2, ay + len * 0.25 + sway);
+    ctx.quadraticCurveTo(ax + sxm * span * 0.5, ay + len * 0.1, ax, ay);
+    ctx.stroke();
+    return;
+  }
+  if (limb.type === 'sail') {
+    // A display frill: an arc behind the attach point.
+    ctx.lineWidth = Math.max(2, r * 0.08);
+    ctx.beginPath();
+    ctx.arc(ax, ay - len * 0.2, len * 0.55, Math.PI * 1.15, Math.PI * 1.85);
+    ctx.stroke();
+    return;
+  }
+  if (limb.type === 'gill') {
+    // Filament tuft: short breathing strokes.
+    ctx.lineWidth = Math.max(1.5, r * 0.05);
+    for (let i = 0; i < 4; i++) {
+      const gx = ax + (i - 1.5) * r * 0.12;
+      ctx.beginPath();
+      ctx.moveTo(gx, ay);
+      ctx.quadraticCurveTo(gx + sway * 2, ay + len * 0.2, gx + sway * 3, ay + len * 0.4);
+      ctx.stroke();
+    }
+    return;
+  }
+  // fin: a paddle — thick short limb with a flattened blade.
+  ctx.lineWidth = Math.max(3, r * 0.14);
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.quadraticCurveTo(ax + sway, ay + len * 0.4, ax + sway * 2, ay + len * 0.7);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(ax + sway * 2, ay + len * 0.75, r * 0.22, r * 0.1, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 // Draws the creature standing on groundY (feet at groundY). t = seconds.
 export function drawCreature(ctx, c, groundY, t) {
   const p = c.pheno;
@@ -35,6 +118,7 @@ export function drawCreature(ctx, c, groundY, t) {
 
   const sleeping = !!c.sleeping;
   const climbing = c.action === 'climb';
+  const brachiating = c.action === 'brachiate' && c.brachiating; // v0.17: arm-swinging under the branch
   const grooming = c.action === 'groom';
   const eating = c.action === 'eat';
   const bristling = !!c.bristling;
@@ -108,6 +192,17 @@ export function drawCreature(ctx, c, groundY, t) {
   // v0.15: bulk is body girth — the torso's width (founder → as before).
   const bulkK = 0.7 + (p.bulk ?? 0.5) * 0.36; // ×0.88 at founder
 
+  // v0.17 "Bauplan": the realized body plan. Old saves (bodyPlan null)
+  // draw the legacy animal — every gate below treats null as the founder.
+  const bp = c.bodyPlan || null;
+  const segK = 0.75 + 0.25 * (bp ? bp.bodySegs : 1); // serpentine elongation — ×1.0 at founder
+  const nTails = bp ? bp.tails : 1;
+  const hipGrasp = !bp || bp.limbs.some((l) => l.site === 'hip' && l.type === 'grasp');
+  const shoulderGrasp = !bp || bp.limbs.some((l) => l.site === 'shoulder' && l.type === 'grasp');
+  // Every erupted bud that isn't a founder grasp limb draws in the extra
+  // loop — the founder's four grasp limbs are the legacy blocks above.
+  const extraLimbs = bp ? bp.limbs.filter((l) => !(l.type === 'grasp' && (l.site === 'shoulder' || l.site === 'hip'))) : [];
+
   ctx.save();
   ctx.translate(c.x, groundY);
   ctx.scale(c.facing, 1);
@@ -119,6 +214,7 @@ export function drawCreature(ctx, c, groundY, t) {
   ctx.translate(0, b.fear * r * 0.26 + (1 - b.energy) * r * 0.13);
   ctx.rotate(b.hunger * 0.1 + senior * 0.05 + (grooming ? 0.14 : 0) + (climbing ? -0.06 : 0));
   if (limp > 0.02) ctx.rotate(Math.sin(c.hopPhase) * 0.09 * limp);
+  if (brachiating) ctx.translate(0, r * 0.55); // v0.17: the body hangs below the branch
   if (sleeping) {
     // Curled: the whole animal becomes a ball, tail over the nose.
     ctx.translate(0, r * 0.42);
@@ -129,13 +225,14 @@ export function drawCreature(ctx, c, groundY, t) {
   const headX = r * 0.18, headY = -r * 2.12, headR = r * 0.6;
 
   // ---- Tail (behind everything). ----
-  {
+  // v0.17: tailCount — extra tails fan out beside the first. Founder: one.
+  for (let ti = 0; ti < nTails; ti++) {
     const sway = Math.sin(t * (c.mood === 'content' ? 3.4 : 1.8) + c.id * 2) * r * 0.16;
     ctx.strokeStyle = limbDark; // v0.15: limbs read the limb pigment genes
     ctx.lineCap = 'round';
-    ctx.lineWidth = Math.max(3, r * 0.17 * (1 + (bristling ? 0.5 : 0))); // bristle puffs the tail
+    ctx.lineWidth = Math.max(3, r * 0.17 * (1 + (bristling ? 0.5 : 0)) * (1 - ti * 0.18)); // bristle puffs the tail
     ctx.beginPath();
-    const bx = -r * 0.72, by = torsoY + r * 0.35; // rump
+    const bx = -r * 0.72 + ti * r * 0.24, by = torsoY + r * 0.35 + ti * r * 0.1; // rump
     if (climbing) {
       // Wrapped: the tail coils around the branch — the fifth limb.
       ctx.moveTo(bx, by);
@@ -182,7 +279,9 @@ export function drawCreature(ctx, c, groundY, t) {
   }
 
   // ---- Legs + feet. ----
-  {
+  // v0.17: drawn only while the hip bud erupts as grasp — vestigial hips
+  // leave no legs; the founder always has them.
+  if (hipGrasp) {
     ctx.strokeStyle = limbDark;
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(3, r * 0.17);
@@ -218,7 +317,7 @@ export function drawCreature(ctx, c, groundY, t) {
   {
     ctx.fillStyle = torsoBase; // v0.15: torso reads the torso pigment genes
     ctx.beginPath();
-    ctx.ellipse(0, torsoY, r * bulkK * sx, r * 1.0 * sy, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, torsoY, r * bulkK * sx * segK, r * 1.0 * sy, 0, 0, Math.PI * 2); // v0.17: serpentine plans elongate
     ctx.fill();
     // Belly patch — paler, and satiety shows: a full belly swells.
     const full = 1 - b.hunger;
@@ -226,7 +325,7 @@ export function drawCreature(ctx, c, groundY, t) {
     ctx.globalAlpha = 0.8;
     ctx.beginPath();
     ctx.ellipse(r * 0.1 + bellyOff * 0.3, torsoY + r * 0.25,
-      r * 0.55 * sx * (1 + full * 0.18), r * 0.62 * sy * (1 + full * 0.2), 0, 0, Math.PI * 2);
+      r * 0.55 * sx * segK * (1 + full * 0.18), r * 0.62 * sy * (1 + full * 0.2), 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
     // Fur markings: spots or stripes, clipped to the torso.
@@ -234,7 +333,7 @@ export function drawCreature(ctx, c, groundY, t) {
     ctx.globalAlpha = 0.5;
     ctx.save();
     ctx.beginPath();
-    ctx.ellipse(0, torsoY, r * bulkK * sx, r * 1.0 * sy, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, torsoY, r * bulkK * sx * segK, r * 1.0 * sy, 0, 0, Math.PI * 2);
     ctx.clip();
     if (torsoPat === 'stripes') {
       const n = 3 + Math.round(p.patternDensity * 3);
@@ -277,7 +376,9 @@ export function drawCreature(ctx, c, groundY, t) {
   }
 
   // ---- Arms. ----
-  {
+  // v0.17: drawn only while the shoulder bud erupts as grasp — a shoulder
+  // that became a membrane draws in the extra loop instead.
+  if (shoulderGrasp) {
     const shX = r * 0.32, shY = torsoY - r * 0.42; // shoulder
     ctx.strokeStyle = limbBase;
     ctx.lineCap = 'round';
@@ -293,8 +394,9 @@ export function drawCreature(ctx, c, groundY, t) {
       ctx.fill();
       ctx.fillStyle = limbBase;
     };
-    if (climbing) {
-      // Reaching up, gripping the branch above.
+    if (climbing || brachiating) {
+      // Reaching up, gripping the branch above — the brachiator hangs
+      // from the same grip.
       drawArm(shX, shY, shX + r * 0.35, shY - armLen * 0.95, r * 0.15, 0, r * 0.14);
       drawArm(shX - r * 0.5, shY, shX - r * 0.15, shY - armLen * 0.85, -r * 0.1, 0, r * 0.14);
     } else if (sleeping) {
@@ -318,6 +420,13 @@ export function drawCreature(ctx, c, groundY, t) {
       drawArm(shX - r * 0.45, shY + r * 0.1, shX - r * 0.45 - swing * 0.8, shY + armLen * 0.8 + drop, -r * 0.08, 0, r * 0.13);
     }
   }
+
+  // ---- v0.17 "Bauplan": extra limbs. ----
+  // Every erupted bud that isn't a founder grasp limb draws here, from its
+  // own site, in its own type's shape. The founder draws nothing here —
+  // its four grasp limbs are the legacy blocks above.
+  const budEnv = { r, torsoY, headX, headY, limbBase, limbDark, light, t, c };
+  for (const limb of extraLimbs) drawBudLimb(ctx, limb, budEnv);
 
   // ---- Head. ----
   {

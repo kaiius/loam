@@ -9,6 +9,7 @@ import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fide
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
 import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION } from './world.js';
 import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, pushContextWindow, hearerSalientContext, lexiconDistance } from './language.js';
+import { expressBuds, developmentalGrowth01 } from './evodevo.js';
 
 let nextId = 1;
 
@@ -25,6 +26,10 @@ export const JUMP_V_BASE = 260; // px/s upward at legPower 0
 export const JUMP_V_GAIN = 420; // +px/s of launch at legPower 1
 export const JUMP_RANGE_DY = 280; // highest ledge the jumpNear sense can see
 export const JUMP_RANGE_DX = 220; // farthest sideways the jumpNear sense sees
+// v0.17 "Bauplan": the glide verb's reach — a ledge within this box but
+// beyond jump range is what farLedge (sense 25) reports.
+export const GLIDE_RANGE_DY = 520; // highest ledge a glide can reach
+export const GLIDE_RANGE_DX = 450; // farthest sideways a glide carries
 
 const NAMES = [
   'Pip', 'Moss', 'Wren', 'Pebble', 'Fig', 'Nix', 'Bramble', 'Tansy',
@@ -40,6 +45,9 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     name: opts.name || rng.pick(NAMES),
     genome,
     pheno,
+    // v0.17 "Bauplan": the realized body plan — what development has built
+    // so far. Newborns are babies; the plan re-expresses on stage changes.
+    bodyPlan: expressBuds(pheno, developmentalGrowth01('baby')),
     biochem: createBiochem(),
     brain: createBrain(pheno, rng),
     memory: createMemory(pheno), // episodic memory: lived + observed episodes
@@ -208,6 +216,31 @@ export function gatherSenses(c, world) {
     }
     if (bd < Infinity) jumpNear = 1 - bd / maxD;
   }
+  // v0.17 "Bauplan": the body-plan senses. airborne is 1 whenever the
+  // creature is off the branch — the glide verb's reader. farLedge reports
+  // a ledge within glide range but BEYOND jump range: the travel verb's
+  // reader, the situation wings are for. submerged/waterNear read the
+  // body's water state — 0 in v0.17, because the world has no water yet.
+  const airborne = c.grounded ? 0 : 1;
+  let farLedge = 0;
+  {
+    const py = world.platforms[c.platformIndex].y;
+    const gMaxD = Math.hypot(GLIDE_RANGE_DX, GLIDE_RANGE_DY);
+    const jMaxD = Math.hypot(JUMP_RANGE_DX, JUMP_RANGE_DY);
+    let bd = Infinity;
+    for (let i = 0; i < world.platforms.length; i++) {
+      if (i === c.platformIndex) continue;
+      const p = world.platforms[i];
+      const dy = py - p.y; // positive = ledge above
+      if (dy < 30 || dy > GLIDE_RANGE_DY) continue;
+      const cx = Math.max(p.x1, Math.min(p.x2, c.x));
+      const dx = Math.abs(c.x - cx);
+      if (dx > GLIDE_RANGE_DX) continue;
+      const d = Math.hypot(dx, dy);
+      if (d < bd) bd = d;
+    }
+    if (bd < Infinity && bd > jMaxD) farLedge = 1 - bd / gMaxD;
+  }
   // v2 (breeding fix): _mate — the nearest VALID mate: adult, opposite sex,
   // in sight. The old code courted s._other (the nearest body), which was so
   // often same-sex or juvenile that tryMate never fired and lineages died out.
@@ -263,6 +296,16 @@ export function gatherSenses(c, world) {
         const wordSim = 1 - lexiconDistance(c.lexicon, o.lexicon);
         score += callChoosy * (0.6 * accentSim + 0.4 * wordSim);
       }
+      // v0.17 "Bauplan": sexual selection on novelty — Fisherian runaway.
+      // Choosiness on the candidate's novel-structure area (wings + sails
+      // + gills + fins), read from the GENES (choosing genes, not bodies).
+      // Founder 0 → nearest/color wins, exactly as before.
+      const novelChoosy = c.pheno.matePrefNovel ?? 0;
+      if (novelChoosy > 0) {
+        const novelty = (o.pheno.wingArea || 0) + (o.pheno.sailArea || 0) +
+          (o.pheno.gillArea || 0) + (o.pheno.finArea || 0);
+        score += novelChoosy * Math.min(1, novelty);
+      }
       if (score > best) { best = score; mate = o; mateDist = d / range; }
     }
   }
@@ -289,6 +332,8 @@ export function gatherSenses(c, world) {
     bondNear: otherObj && world.bonds ? getBond(world.bonds, c, otherObj) : 0,
     climbUp, climbDown, jumpNear, groomNear,
     callHeard: heard.heard, callPitch: heard.pitch,
+    airborne, farLedge, // v0.17: the body-plan senses
+    submerged: c.submerged ? 1 : 0, waterNear: c._waterNear ? 1 : 0, // v0.17: 0 until v0.18's water
     _heardCall: heard.call || null, // v0.16: the full acoustic event for the lexicon
     wasteOdor: wasteOdorOf(world, c.x), // v0.14: disgust — the smell of fouled ground
     _alarmHeard: heard.alarm, // v0.14: alarm calls reassure — fear drains slightly
@@ -330,7 +375,12 @@ function moveAlong(c, world, dir, dt, mult = 1, edge = 'turn') {
   const injurySlow = 1 - 0.35 * c.biochem.injury;
   // v0.6 morphology: long legs = fast but fur is heavy.
   const morphSpeed = c.pheno.legSpeedMult * (1 - c.pheno.furWeight);
-  const speed = c.pheno.walkSpeed * stageSize(stage) * (stage === 'senior' ? 0.7 : 1) * sickSlow * injurySlow * mult * morphSpeed;
+  // v0.17 "Bauplan": serpentine plans — no grasp limbs, the body is the
+  // limb. The realized body plan decides; the founder (2 grasp pairs)
+  // walks exactly as before.
+  const graspPairs = c.bodyPlan ? c.bodyPlan.graspPairs : (c.pheno.graspPairs ?? 2);
+  const baseSpeed = graspPairs === 0 ? (c.pheno.slitherSpeed || c.pheno.walkSpeed) : c.pheno.walkSpeed;
+  const speed = baseSpeed * stageSize(stage) * (stage === 'senior' ? 0.7 : 1) * sickSlow * injurySlow * mult * morphSpeed;
   const plat = world.platforms[c.platformIndex];
   const r = creatureRadius(c);
   c.x += dir * speed * dt;
@@ -368,9 +418,14 @@ export function stepPhysics(c, world, dt) {
     c.vy = 0;
     return;
   }
-  // Airborne: gravity integrates.
+  // Airborne: gravity integrates — reduced while gliding (descent, never
+  // ascent: glideLift ≤ 0.85 by construction). The wings also steer
+  // slightly toward the facing direction. c.gliding is only ever true
+  // with real wings, so the founder's falls are untouched.
   const prevY = c.y;
-  c.vy = Math.min(MAX_FALL, c.vy + GRAVITY * dt);
+  const glideLift = c.gliding ? (c.pheno.glideLift || 0) : 0;
+  c.vy = Math.min(MAX_FALL, c.vy + GRAVITY * (1 - glideLift) * dt);
+  if (c.gliding) c.vx += c.facing * 30 * dt;
   c.x += c.vx * dt;
   // The world has walls: nobody leaves sideways.
   if (c.x < 0) { c.x = 0; c.vx = Math.abs(c.vx) * 0.3; }
@@ -431,8 +486,17 @@ function applyStimulus(c, eventName) {
 
 // Touchdown: hard landings cost injury, startle, and a flinch the painter
 // shows. Soft landings are just Tuesday.
+// v0.17 "Bauplan": fallSoak — membranes and sails drag the fall, softening
+// the impact (exaptation's bridge: display → drag → flight). And a glide
+// that ends in a touchdown feels like a small triumph. Founder fallSoak 0.
 function land(c, world, impact) {
-  if (impact <= FALL_HURT_V) return;
+  const wasGliding = c.gliding;
+  c.gliding = false;
+  impact = impact * (1 - (c.pheno.fallSoak || 0));
+  if (impact <= FALL_HURT_V) {
+    if (wasGliding) c.reward += 0.05; // the touchdown after a real glide
+    return;
+  }
   const b = c.biochem;
   const excess = impact - FALL_HURT_V;
   b.injury = clamp01(b.injury + excess * FALL_DMG);
@@ -602,6 +666,9 @@ function executeAction(c, world, dt, s) {
   const rng = world.rng;
   c.playing = false;
   c.grooming = false; // set by the groom action — consumed by tickBiochem
+  c.gliding = false; // set by the glide action — true flight needs real wings
+  c.brachiating = false; // set by the brachiate action — needs a 3rd grasp pair
+  c.diving = false; // set by the dive action — needs real gills to stay down
   c._active = 0; // exertion this tick — consumed by tickBiochem
   switch (c.action) {
     case 'seekFood':
@@ -845,6 +912,121 @@ function executeAction(c, world, dt, s) {
       c.actionTimer = 0; // calls are punctual, not commitments
       break;
     }
+    case 'glide': {
+      // The dormant travel verb. Launch like a jump; with real wings the
+      // fall becomes a glide. Without wings: exactly a jump (Paul's rule —
+      // a verb that needs an organ must degrade to something honest).
+      // Physics reads the REALIZED body plan: a baby with wing genes has
+      // nubs, not wings.
+      const wingArea = (c.bodyPlan && c.bodyPlan.wingArea) || 0;
+      const winged = wingArea > 0.6;
+      if (!c.grounded) {
+        // Already airborne: spread the wings (if any) and ride the air.
+        c.gliding = winged;
+        c.actionLabel = winged ? 'gliding' : 'falling';
+        c._active = 0.6;
+      } else if (winged) {
+        // A winged launch — like a jump, but the wings are out.
+        const power = c.pheno.legPower ?? 0.5;
+        c.vy = -(JUMP_V_BASE + JUMP_V_GAIN * power);
+        c.vx = c.facing * (60 + power * 120);
+        c.grounded = false;
+        c.gliding = true;
+        c.actionLabel = 'gliding';
+        c._active = 1;
+        c.reward += 0.05;
+        world.events.push({ type: 'jumped', creature: c, t: world.time });
+      } else {
+        // No wings: exactly a jump.
+        c.actionLabel = 'jumping';
+        const power = c.pheno.legPower ?? 0.5;
+        c.vy = -(JUMP_V_BASE + JUMP_V_GAIN * power);
+        c.vx = c.facing * (60 + power * 120);
+        c.grounded = false;
+        c._active = 1; // jumping is work — the chemistry bills it
+        c.reward += 0.05; // airtime feels good
+        world.events.push({ type: 'jumped', creature: c, t: world.time });
+      }
+      break;
+    }
+    case 'brachiate': {
+      // Arm-swinging along the branch — faster than walking when a third
+      // grasp pair exists. Without it: exactly moveToward at walk speed.
+      const graspPairs = c.bodyPlan ? c.bodyPlan.graspPairs : (c.pheno.graspPairs ?? 2);
+      const armed = graspPairs >= 3;
+      const mult = 1 + 0.35 * Math.max(0, graspPairs - 2);
+      c.brachiating = armed;
+      c.actionLabel = armed ? 'brachiating' : 'scrambling along';
+      if (s._food) {
+        if (moveToward(c, world, s._food.x, dt, mult)) {
+          c.actionTimer = 0;
+          doEat(c, world);
+        }
+      } else {
+        c.action = 'wander';
+        c.actionTimer = 0;
+      }
+      break;
+    }
+    case 'swim': {
+      // The dormant water verb — v0.18 brings the water; the verb sleeps
+      // until then. Dog-paddles badly without fins, well with them;
+      // drowning is the honest cost without gills. On land: an honest flop.
+      const finArea = (c.bodyPlan && c.bodyPlan.finArea) || 0;
+      const gillArea = (c.bodyPlan && c.bodyPlan.gillArea) || 0;
+      if (c.submerged) {
+        const swimMult = 0.3 + Math.min(1, finArea * 1.2); // 0.3× dog-paddle → finned
+        c.actionLabel = 'swimming';
+        if (s._food) {
+          if (moveToward(c, world, s._food.x, dt, swimMult)) {
+            c.actionTimer = 0;
+            doEat(c, world);
+          }
+        } else {
+          moveAlong(c, world, c.wanderDir, dt, swimMult);
+        }
+        if (gillArea <= 0.4) {
+          // No real gills: the breath timer runs. Past it, drowning bills
+          // the chemistry directly — the honest cost of staying down.
+          c.breathT = (c.breathT ?? c.pheno.breathTime ?? 30) - dt;
+          if (c.breathT <= 0) {
+            c.biochem.bloodSugar = clamp01(c.biochem.bloodSugar - 0.08 * dt);
+            c.reward -= 0.3 * dt;
+          }
+        }
+        c._active = 0.8;
+      } else {
+        c.actionLabel = 'flopping';
+        moveAlong(c, world, c.wanderDir, dt, 0.5); // an honest flop
+        c.breathT = c.pheno.breathTime ?? 30; // the lungs refill on land
+      }
+      break;
+    }
+    case 'dive': {
+      // Hold depth while submerged — needs real gills to stay down.
+      // Without them: a brief duck, forced up after breathTime. On land:
+      // nothing to dive into; the verb degrades to wandering.
+      const gillArea = (c.bodyPlan && c.bodyPlan.gillArea) || 0;
+      if (c.submerged) {
+        c.actionLabel = 'diving';
+        c.diving = true;
+        if (gillArea <= 0.4) {
+          c.breathT = (c.breathT ?? c.pheno.breathTime ?? 30) - dt;
+          if (c.breathT <= 0) {
+            c.submerged = false; // forced up — the honest limit
+            c.breathT = c.pheno.breathTime ?? 30;
+            c.action = 'wander';
+            c.actionTimer = 0;
+          }
+        }
+        c._active = 0.5;
+      } else {
+        c.actionLabel = 'ducking';
+        c.action = 'wander';
+        c.actionTimer = 0;
+      }
+      break;
+    }
     case 'wander':
     default:
       c.actionLabel = 'wandering';
@@ -977,6 +1159,10 @@ export function updateCreature(c, world, dt) {
   // This is the cost that lets biomes diverge instead of homogenizing
   // (Paul's v0.11 honest negative: zones alone don't differentiate).
   const homeDist = c.homeX !== undefined ? clamp01(Math.abs(c.x - c.homeX) / 800) : 0;
+  // v0.17 "Bauplan": growing novel structures costs fuel. Juveniles pay
+  // the developmental cost through hunger (the chemistry bills it below);
+  // adults pay maintenance upkeep after the tick. Founder 0 → silent.
+  const devStage = ageStage(b, pheno);
   tickBiochem(b, pheno, dt, {
     sleeping: c.sleeping,
     playing: c.playing,
@@ -988,7 +1174,16 @@ export function updateCreature(c, world, dt) {
     ate,
     active: c._active || 0,
     homesick: homeDist * (pheno.instHomeSeek !== undefined ? pheno.instHomeSeek : 0.5),
+    develop: (devStage === 'baby' || devStage === 'child') ? (pheno.developDrain || 0) : 0,
   });
+  // v0.17 "Bauplan": adult maintenance — novel structures cost fuel to keep.
+  if ((pheno.wingUpkeep || 0) + (pheno.gillUpkeep || 0) + (pheno.finUpkeep || 0) > 0) {
+    const upStage = ageStage(b, pheno);
+    if (upStage === 'adult' || upStage === 'senior') {
+      b.bloodSugar = clamp01(b.bloodSugar -
+        ((pheno.wingUpkeep || 0) + (pheno.gillUpkeep || 0) + (pheno.finUpkeep || 0)) * dt);
+    }
+  }
   c.pettedFlag = false;
   c.scoldedFlag = false;
   c.mateCooldown = Math.max(0, c.mateCooldown - dt);
@@ -1114,6 +1309,19 @@ export function updateCreature(c, world, dt) {
     const stage = ageStage(b, pheno);
     // v2 (L): maturation — juveniles learn faster. Founder: no boost.
     c._learnBoost = (stage === 'baby' || stage === 'child') ? 1 + (pheno.matBoost ?? 0) : 1;
+    // v0.17 "Bauplan": development ticks. Juveniles log their nutrition;
+    // a stage change re-expresses the body plan; maturation freezes the
+    // stunt factor — starved childhoods write permanently on the body.
+    if (stage === 'baby' || stage === 'child') {
+      const ej = c._juv || (c._juv = { n: 0, sum: 0 });
+      ej.n++; ej.sum += b.bloodSugar;
+    }
+    if (stage !== c._stage) {
+      const juvMean = c._juv && c._juv.n > 0 ? c._juv.sum / c._juv.n : undefined;
+      if (stage === 'adult') c._stunt = 0.5 + 0.5 * (juvMean ?? 0.75);
+      c._stage = stage;
+      c.bodyPlan = expressBuds(c.pheno, developmentalGrowth01(stage, juvMean, c._stunt));
+    }
     // Commit to an action for a stretch; only urgent needs interrupt.
     // (Re-deciding every tick causes jitter — the creature can never
     // actually walk to the food it wants.)
@@ -1227,6 +1435,9 @@ export function updateCreature(c, world, dt) {
   epi.wasSick = sickNow;
   if (marked) {
     c.pheno = phenotype(c.genome); // marks change expression — refresh
+    // v0.17: the body plan re-expresses too — the same developmental moment.
+    const g01 = c.bodyPlan ? c.bodyPlan.growth01 : 1;
+    c.bodyPlan = expressBuds(c.pheno, g01);
     world.events.push({ type: 'epimark', creature: c, note: marked, t: world.time });
   }
 

@@ -36,9 +36,13 @@ export const ACTIONS = [
   'groom', // groom the nearest creature — the troop's bonding ritual
   'jump', // leap: gravity's answer to the gap between branches (physics)
   'vocal', // call out: grounded call type, evolvable pitch (v0.14 Voices)
+  'glide', // launch and ride the air — needs real wings (v0.17 Bauplan)
+  'brachiate', // arm-swing along the branch — wants a third grasp pair (v0.17)
+  'swim', // paddle — the water verb, dormant until v0.18 (v0.17)
+  'dive', // hold depth — needs real gills (v0.17)
 ];
 
-export const N_IN = 25; // 24 senses + bias... see senseVector
+export const N_IN = 29; // 28 senses + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -50,7 +54,7 @@ const MIN_ASSOC = 16; // pruning never goes below this
 //           foodDist, foodDir, creatureDist, creatureDir, toyDist, toyDir,
 //           isAdult, illness, homeDist, kinNear, bondNear,
 //           climbUp, climbDown, groomNear, jumpNear, callHeard, callPitch,
-//           wasteOdor, bias]
+//           wasteOdor, airborne, farLedge, submerged, waterNear, bias]
 // v0.12 rule kept: never renumber. New senses append before the bias.
 export function senseVector(s) {
   return [
@@ -59,7 +63,8 @@ export function senseVector(s) {
     s.toyDist, s.toyDir, s.isAdult, s.illness,
     s.homeDist || 0, s.kinNear || 0, s.bondNear || 0,
     s.climbUp || 0, s.climbDown || 0, s.groomNear || 0, s.jumpNear || 0,
-    s.callHeard || 0, s.callPitch || 0, s.wasteOdor || 0, 1,
+    s.callHeard || 0, s.callPitch || 0, s.wasteOdor || 0,
+    s.airborne || 0, s.farLedge || 0, s.submerged || 0, s.waterNear || 0, 1,
   ];
 }
 

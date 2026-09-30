@@ -56,7 +56,10 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   // --- chemistry ---------------------------------------------------------
   // Fuel: eating fills the tank, living drains it. A full belly lasts a
   // few minutes — the same pacing as v0.12, now as a chemical.
-  const hungerRate = 0.004 + pheno.hungerRate * 0.014; // per second
+  // v0.17 "Bauplan": ctx.develop — juveniles growing novel structures burn
+  // extra fuel. It enters as a hungerRate term, not a new chemical: drives
+  // stay readouts of the five chemicals.
+  const hungerRate = 0.004 + pheno.hungerRate * 0.014 + (ctx.develop || 0); // per second
   const exert = ctx.sleeping ? 0.6 : (0.5 + (ctx.active ?? 0.6) * 0.5);
   b.bloodSugar = clamp01(b.bloodSugar + (ctx.ate ?? 0) * 0.9 - hungerRate * dt * exert);
 

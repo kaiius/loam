@@ -31,6 +31,7 @@
 // a chromosome is a story, not a bag of alleles.
 
 import { createRng } from './rng.js';
+import { budPotentials } from './evodevo.js';
 
 export const GENES = [
   // appearance
@@ -92,7 +93,7 @@ export const GENES = [
   { key: 'diet', kind: 'choice', choices: ['herbivore', 'omnivore', 'carnivore'], founder: 0 },
   { key: 'mouthSize', kind: 'float', founder: 0.5 },
   { key: 'legLength', kind: 'float', founder: 0.5 },
-  { key: 'legPower', kind: 'float', founder: 0.5 }, // jump impulse — how hard the legs launch
+  { key: 'legPower', kind: 'float', founder: 0.4 }, // jump impulse — how hard the legs launch. v0.17: 0.5 → 0.4 (via 0.3 — 0.3 flipped seeds 4/7/99 through illness from floor-foraging; 0.4 is the middle path); selection re-strengthens them.
   { key: 'spikes', kind: 'float', founder: 0.2 },
   { key: 'fur', kind: 'float', founder: 0.5 },
   // tradition — fidelity of cultural transmission.
@@ -103,19 +104,33 @@ export const GENES = [
 // Append-only: everything below is new. The original 43 loci keep their
 // indices. Choice vocabularies shared by the families:
 export const CHEM5 = ['bloodSugar', 'fatigue', 'oxytocin', 'endorphin', 'adrenaline'];
-// The 24 real senses (bias excluded) — mirrors brain.js senseVector order.
-export const SENSE24 = [
+// The 28 real senses (bias excluded) — mirrors brain.js senseVector order.
+// Append-only: a new sense goes at the END, never renumbered, so old
+// brains and old saved genomes keep their meaning.
+// v0.17 "Bauplan": airborne 24 (off the branch — the glide verb's reader),
+// farLedge 25 (a ledge within glide range but beyond jump range),
+// submerged 26, waterNear 27. The water senses read 0 until v0.18 brings
+// water — the sense exists and works; the world just lacks water.
+export const SENSE28 = [
   'hunger', 'tiredness', 'boredom', 'loneliness', 'fear', 'light',
   'foodDist', 'foodDir', 'creatureDist', 'creatureDir', 'toyDist', 'toyDir',
   'isAdult', 'illness', 'homeDist', 'kinNear', 'bondNear',
   'climbUp', 'climbDown', 'groomNear', 'jumpNear',
   'callHeard', 'callPitch',
   'wasteOdor', // v0.14: disgust — the smell of fouled ground
+  'airborne', 'farLedge', 'submerged', 'waterNear', // v0.17: the body-plan senses
 ];
-export const ACT13 = [
+// The pre-v0.17 vocabulary — family-C genes name senses against these
+// indices, which are never renumbered.
+export const SENSE24 = SENSE28.slice(0, 24);
+export const ACT17 = [
   'seekFood', 'eat', 'sleep', 'play', 'approach', 'flee',
   'mate', 'wander', 'seekHome', 'climb', 'groom', 'jump', 'vocal',
+  'glide', 'brachiate', 'swim', 'dive', // v0.17: the dormant verbs
 ];
+// The pre-v0.17 vocabulary — family-E genes name actions against these
+// indices, which are never renumbered.
+export const ACT13 = ACT17.slice(0, 13);
 // Stimulus events that actually occur in the tick (rain/thunder were cut —
 // Canopy has no weather; fed-by-other was cut — no food-sharing mechanic).
 export const STIM4 = ['groomed', 'petted', 'scolded', 'hardLanding'];
@@ -273,6 +288,48 @@ GENES.push(
   _f('lexCrit', 0.5),   // infant critical-period learning boost
 );
 // === end GENOME v0.16 =====================================================
+// === GENOME v0.17 "Bauplan": the evo-devo family (append-only) ===========
+// The body plan as a developmental program: five paired bud sites (see
+// sim/evodevo.js), each with grow/type/pow loci (+len where no ancestral
+// gene exists), plus body-plan regulators. Shoulder/hip buds ADOPT
+// armLength/legLength as their len source — the founder's arms and legs
+// are ancestral buds that simply always grew, so the founder phenotype is
+// exactly the old one by construction. Dorsal has no ancestral len gene
+// (founder proportion 0.5); mid-torso and neck carry their own len loci.
+// 17 bud loci + segCount/tailCount regulators (family V = 19 loci on
+// chromosome 9) + matePrefNovel + 5 dormant-action instincts (Paul's v0.5
+// rule: every new action needs one) = 25 loci. Founder values reproduce
+// the v0.15 body exactly.
+const EVO17_START = GENES.length;
+const BUD_TYPE_VOCAB = ['grasp', 'membrane', 'sail', 'gill', 'fin'];
+GENES.push(
+  // shoulder — adopts armLength
+  _f('budShoulderGrow', 1), _c('budShoulderType', BUD_TYPE_VOCAB, 0), _f('budShoulderPow', 0.5),
+  // hip — adopts legLength
+  _f('budHipGrow', 1), _c('budHipType', BUD_TYPE_VOCAB, 0), _f('budHipPow', 0.5),
+  // dorsal — membrane latent (one unrealized possibility among several)
+  _f('budDorsalGrow', 0), _c('budDorsalType', BUD_TYPE_VOCAB, 1), _f('budDorsalPow', 0.5),
+  // mid-torso — extra grasp-limb pair / serpentine segments
+  _f('budMidGrow', 0), _c('budMidType', BUD_TYPE_VOCAB, 0), _f('budMidLen', 0.5), _f('budMidPow', 0.5),
+  // neck — gill's natural home
+  _f('budNeckGrow', 0), _c('budNeckType', BUD_TYPE_VOCAB, 3), _f('budNeckLen', 0.5), _f('budNeckPow', 0.5),
+  // regulators
+  _c('segCount', [0, 1, 2], 0), _c('tailCount', [0, 1], 0),
+  // sexual selection on novelty — Fisherian runaway on wings/sails/gills/fins
+  _f('matePrefNovel', 0),
+  // dormant-action instincts (Paul's v0.5 rule). Founder 0 wires at
+  // (0 − 0.5) × 2.4 = −1.2: the pathway exists but is inhibited — the
+  // verbs sleep until organs (or evolution) wake them.
+  { key: 'instAirborneGlide', kind: 'float', sense: 24, action: 13, founder: 0 },
+  { key: 'instFarLedgeGlide', kind: 'float', sense: 25, action: 13, founder: 0 },
+  { key: 'instFoodBrach', kind: 'float', sense: 6, action: 14, founder: 0 },
+  { key: 'instSubmergedSwim', kind: 'float', sense: 26, action: 15, founder: 0 },
+  { key: 'instSubmergedDive', kind: 'float', sense: 26, action: 16, founder: 0 },
+);
+// === end GENOME v0.17 =====================================================
+// v0.17: the evo-devo loci draw from their own sub-stream in randomGenome
+// (below) — new loci must never shift the main RNG sequence.
+export const EVO17_KEYS = new Set(GENES.slice(EVO17_START).map((g) => g.key));
 // v0.16: the language-substrate loci draw from a dedicated sub-stream in
 // randomGenome (below) — new loci must never shift the main RNG sequence.
 // Worldgen order is load-bearing for determinism: founder genomes and every
@@ -281,7 +338,7 @@ GENES.push(
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
-// 8 chromosomes, thematic like Emberhollow's. Genes on the same chromosome
+// 9 chromosomes, thematic like Emberhollow's. Genes on the same chromosome
 // cross over in segments; genes on different chromosomes assort freely.
 // A chromosome is a story, not a bag of alleles.
 // v2: the reserved chromosomes 5–7 are now populated (drives, chemistry,
@@ -338,6 +395,10 @@ export const CHROMOSOMES = [
    'vocalPitch', 'vocalRange', 'vocalVolume', 'vocalImitate', 'matePrefCall',
    'instHeardVocal', 'instLonelyVocal',
    'lexCap', 'lexLearn', 'lexNoise', 'lexLoud', 'lexHear', 'lexCrit'],
+  // 9 — EvoDevo (v0.17: the body plan as a developmental program — the bud
+  // sites, their regulators, the novelty preference, and the dormant-action
+  // instincts travel together)
+  [...EVO17_KEYS],
 ];
 
 const MUTATION_RATE = 0.008; // per allele
@@ -392,20 +453,36 @@ export function randomGenome(rng) {
   // genome's main content, so identical genomes (same seed, different runs)
   // get identical language alleles. (v0.9 decorRng precedent: new loci must
   // never shift the main RNG sequence.)
+  // v0.17: the evo-devo loci (family V, chromosome 9) draw from their own
+  // sub-stream in pass 3, seeded by a hash of the full pre-v0.17 genome —
+  // deterministic, and the main + language streams stay bit-identical
+  // to v0.16.
+  const isNew17 = (k) => EVO17_KEYS.has(k);
   for (const gene of GENES) {
-    if (gene.key.startsWith('lex')) continue;
+    if (gene.key.startsWith('lex') || isNew17(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
     marks[gene.key] = 1.0;
   }
   let h = 0x1a6c0de;
   for (const gene of GENES) {
-    if (gene.key.startsWith('lex')) continue;
+    if (gene.key.startsWith('lex') || isNew17(gene.key)) continue;
     for (const a of alleles[gene.key]) h = (Math.imul(h, 31) + Math.floor(a * 1e9)) | 0;
   }
   const langRng = createRng(h >>> 0);
   for (const gene of GENES) {
     if (!gene.key.startsWith('lex')) continue;
     alleles[gene.key] = [randomAllele(gene, langRng), randomAllele(gene, langRng)];
+    marks[gene.key] = 1.0;
+  }
+  let h2 = 0x5eed17;
+  for (const gene of GENES) {
+    if (isNew17(gene.key)) continue;
+    for (const a of alleles[gene.key]) h2 = (Math.imul(h2, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const evoRng = createRng(h2 >>> 0);
+  for (const gene of GENES) {
+    if (!isNew17(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, evoRng), randomAllele(gene, evoRng)];
     marks[gene.key] = 1.0;
   }
   return { alleles, marks, extra: {} };
@@ -569,8 +646,32 @@ export function phenotype(genome) {
   p.furWeight = p.fur * 0.15;
   // canopy (new): climbing speed and grooming reach from morphology.
   // v2 (M): tailGrip adds a prehensile-strength bonus to climb speed.
-  p.climbSpeed = 40 + p.legLength * 40 + p.tailLength * 20 + p.tailGrip * 30; // px/sec vertical
-  p.groomReach = 40 + p.size * 30;
+  // v0.17 "Bauplan": evo-devo derivations — the developmental program's
+  // gene-level potentials (budPotentials in sim/evodevo.js). All founder
+  // values reproduce v0.15 exactly (asserted by test): areas 0,
+  // graspPairs 2, bodySegs 1, every bonus +0.
+  const _bp = budPotentials(p);
+  p.wingArea = _bp.wingArea; p.sailArea = _bp.sailArea;
+  p.gillArea = _bp.gillArea; p.finArea = _bp.finArea;
+  p.graspPairs = _bp.graspPairs; p.bodySegs = _bp.bodySegs;
+  // Always descends, never powered flight.
+  p.glideLift = Math.min(0.85, _bp.wingArea * 1.2);
+  p.brachMult = 1 + 0.35 * Math.max(0, _bp.graspPairs - 2);
+  p.fallSoak = Math.min(0.9, (_bp.wingArea + _bp.sailArea) * 0.9);
+  p.swimSpeed = p.walkSpeed * (0.3 + Math.min(1, _bp.finArea * 1.2));
+  p.breathTime = 30 + _bp.gillArea * 300;
+  p.slitherSpeed = p.walkSpeed * (0.9 + 0.1 * _bp.bodySegs);
+  p.developDrain = (_bp.wingArea + _bp.sailArea + _bp.gillArea + _bp.finArea +
+    Math.max(0, _bp.graspPairs - 2) * 0.5) * 0.004;
+  p.wingUpkeep = _bp.wingArea * 0.0015;
+  p.gillUpkeep = _bp.gillArea * 0.002;
+  p.finUpkeep = _bp.finArea * 0.0012;
+  // The limb economy: extra grasp pairs climb better; longer grasp limbs
+  // extend grooming reach (the general manipulation affordance);
+  // serpentine plans trade reach away.
+  p.climbSpeed = 40 + p.legLength * 40 + p.tailLength * 20 + p.tailGrip * 30
+    + Math.max(0, _bp.graspPairs - 2) * 15; // px/sec vertical
+  p.groomReach = 40 + p.size * 30 + _bp.reachBonus - Math.max(0, _bp.bodySegs - 1) * 10;
   // v2 (D): drive tuning — gain + baseline on the chemical→drive readout.
   // Founder defaults are the identity: gain 1.0, baseline 0.
   for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) {

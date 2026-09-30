@@ -762,7 +762,11 @@ export function soilGrowthMul(world, zoneKey) {
 // v0.13: divergence metric (Eliza's S). Per biome, per tracked trait:
 // S = μ_zone(adults now) − μ_founders. Positive S = the biome selected
 // upward on that trait; negative = downward. Computed every 6 sim-minutes.
-export const DIVERGENCE_CREATURE_TRAITS = ['instHomeSeek', 'size', 'bulk', 'curiosity', 'boldness', 'vocalPitch'];
+// v0.17 "Bauplan": the body plan joins the divergence census — wings,
+// grasp pairs, sails, gills, fins, and segment counts are the traits the
+// bauplan release exists to watch diverge.
+export const DIVERGENCE_CREATURE_TRAITS = ['instHomeSeek', 'size', 'bulk', 'curiosity', 'boldness', 'vocalPitch',
+  'wingArea', 'graspPairs', 'sailArea', 'gillArea', 'finArea', 'bodySegs'];
 export const DIVERGENCE_PLANT_TRAITS = ['waterRet', 'coldTol', 'bitterness', 'yield'];
 
 export function recordFounderMeans(world) {

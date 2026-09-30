@@ -11,6 +11,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MODULES = [
   'src/sim/rng.js',
   'src/sim/genome.js',
+  'src/sim/evodevo.js', // v0.17 "Bauplan": the developmental program
   'src/sim/plantgenome.js',
   'src/sim/biochem.js',
   'src/sim/brain.js',

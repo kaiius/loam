@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, DUP_RATE, DEL_RATE, MAX_EXTRA } from '../src/sim/genome.js';
+import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, DUP_RATE, DEL_RATE, MAX_EXTRA, EVO17_KEYS, CHROMOSOMES, SENSE28, SENSE24, ACT17, ACT13 } from '../src/sim/genome.js';
+import { budPotentials, expressBuds, developmentalGrowth01, BUD_SITES, BUD_TYPES, BUD_ERUPT, BUD_NUB_HI } from '../src/sim/evodevo.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from '../src/sim/brain.js';
 import { createBiochem, tickBiochem, mood, ageStage } from '../src/sim/biochem.js';
 import { createRng } from '../src/sim/rng.js';
@@ -168,7 +169,7 @@ test('v0.16: troop census clusters shared words every 30s', () => {
   assert.ok(Array.isArray(world.troopWords), 'census ran');
 });
 
-const N_SENSES = 24; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor
+const N_SENSES = 28; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor + v0.17's airborne, farLedge, submerged, waterNear
 
 function testPheno(seed, overrides = {}) {
   const p = phenotype(randomGenome(createRng(seed)));
@@ -197,7 +198,7 @@ const MID_SENSES = {
 
 test('instinct genes map to valid sense/action indices', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 20); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee
+  assert.equal(inst.length, 25); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts
   for (const g of inst) {
     assert.ok(g.sense >= 0 && g.sense < N_SENSES, g.key);
     assert.ok(g.action >= 0 && g.action < ACTIONS.length, g.key);
@@ -513,13 +514,13 @@ test('memory capacity is set by an evolvable gene', () => {
 
 test('v0.5: mate finally has an instinct pathway', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 20); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee
+  assert.equal(inst.length, 25); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts
   const g = GENES.find((g) => g.key === 'instLonelyMate');
   assert.ok(g, 'instLonelyMate is a registered gene');
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 192); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes
+  assert.equal(GENES.length, 217); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -1060,7 +1061,7 @@ test('v0.8: leaves are bitter — weak reward when healthy', () => {
 
 test('v0.8: illness is the 15th brain input', () => {
   const v = senseVector({ ...MID_SENSES, illness: 0.7 });
-  assert.equal(v.length, 25, 'twenty-five entries: 24 senses + bias');
+  assert.equal(v.length, 29, 'twenty-nine entries: 28 senses + bias');
   assert.equal(v[13], 0.7, 'illness rides at index 13');
   assert.equal(v[14], 0, 'homeDist defaults to 0');
   assert.equal(v[15], 0, 'kinNear defaults to 0');
@@ -1072,7 +1073,11 @@ test('v0.8: illness is the 15th brain input', () => {
   assert.equal(v[21], 0, 'callHeard defaults to 0');
   assert.equal(v[22], 0, 'callPitch defaults to 0');
   assert.equal(v[23], 0, 'wasteOdor defaults to 0');
-  assert.equal(v[24], 1, 'bias still last');
+  assert.equal(v[24], 0, 'airborne defaults to 0');
+  assert.equal(v[25], 0, 'farLedge defaults to 0');
+  assert.equal(v[26], 0, 'submerged defaults to 0');
+  assert.equal(v[27], 0, 'waterNear defaults to 0');
+  assert.equal(v[28], 1, 'bias still last');
 });
 
 test('v0.8: the illness instinct points at food-seeking', () => {
@@ -1797,6 +1802,11 @@ test('physics: directed feet walk off the edge; wanderers turn around', () => {
 
 test('physics: falling onto a lower platform lands you standing on it', () => {
   const world = v09world(52);
+  // v0.17: clear populate's creatures and foods — the bigger brain (N_IN
+  // 25→29) shifted the world RNG stream, and a courting creature's
+  // stream-dependent path is not what this test is about. Gravity is.
+  world.creatures.length = 0;
+  world.foods.length = 0;
   const c = physCreature(world, 800, 4);
   // Below the lower branch (y=640) at x=800 — only the floor underneath.
   c.y = 660; c.vy = 0; c.vx = 0; c.grounded = false;
@@ -2134,7 +2144,7 @@ test('v0.13.1: non-finite eligibility traces reset instead of spreading', () => 
 
 test('v0.14: vocal is the 13th action; voice genes are registered', () => {
   assert.equal(ACTIONS[12], 'vocal', 'vocal appended, never renumbered');
-  assert.equal(ACTIONS.length, 13);
+  assert.equal(ACTIONS.length, 17); // v0.14's 13 + v0.17's glide, brachiate, swim, dive
   for (const k of ['vocalPitch', 'vocalRange', 'vocalVolume', 'vocalImitate', 'matePrefCall']) {
     assert.ok(GENES.find((g) => g.key === k), `${k} is a registered gene`);
   }
@@ -2633,10 +2643,18 @@ test('v0.14: autonomous policy teaches — demo, listen, reward', () => {
   const world = bindWorld(createWorld(9007));
   populate(world);
   const te = world.teacher;
-  // Put the teacher where the students are.
-  te.platformIndex = world.creatures[0].platformIndex;
-  te.x = world.creatures[0].x + 100;
-  for (let i = 0; i < 600; i++) tickWorld(world, 0.1);
+  // Put the teacher where the students are — and keep it there. v0.17's
+  // weaker founding legs (legPower 0.5 → 0.3) mean students climb the link
+  // network instead of jumping after the teacher, so a wandering teacher
+  // outruns its class; the policy under test is demo → listen → reward,
+  // not student mobility, so the scenario re-cages the teacher each stretch.
+  for (let i = 0; i < 600; i++) {
+    if (i % 100 === 0) {
+      const s = world.creatures.find((c) => c.alive);
+      if (s) { te.platformIndex = s.platformIndex; te.x = s.x + 100; }
+    }
+    tickWorld(world, 0.1);
+  }
   const kinds = world.teachLog.map((e) => e.kind);
   assert.ok(kinds.includes('demo'), `autonomous teacher demonstrated (${kinds.join(',')})`);
   assert.ok(kinds.includes('reward'), `autonomous teacher rewarded imitators (${kinds.join(',')})`);
@@ -3364,5 +3382,370 @@ test('v0.15: morphology genes (bulk/tailCurl/ears/regional pigment) reach the pa
   ]) {
     const k = Object.keys(mut)[0];
     assert.notEqual(draw(mut), classic, `${k} changes the render`);
+  }
+});
+
+// ================= v0.17 "Bauplan" =================
+
+// A genome with the evo-devo loci pinned to exact founder values —
+// the legacy animal, as the genome intends it.
+function founderEvoGenome(rng) {
+  const g = randomGenome(rng);
+  for (const key of EVO17_KEYS) {
+    const gene = GENES.find((gg) => gg.key === key);
+    if (gene.founder !== undefined) g.alleles[key] = [gene.founder, gene.founder];
+  }
+  return g;
+}
+
+// A genome with targeted evo-devo overrides (choice alleles are indices).
+function evoGenome(rng, overrides) {
+  const g = founderEvoGenome(rng);
+  for (const [k, v] of Object.entries(overrides)) g.alleles[k] = [v, v];
+  return g;
+}
+
+test('v0.17: 217 loci, 9 chromosomes — the evo-devo 25 ride together', () => {
+  assert.equal(GENES.length, 217);
+  assert.equal(EVO17_KEYS.size, 25);
+  assert.equal(new Set(GENES.map((g) => g.key)).size, 217, 'no duplicate keys');
+  assert.equal(CHROMOSOMES.length, 9);
+  for (const k of EVO17_KEYS) {
+    assert.ok(CHROMOSOMES[8].includes(k), `${k} rides the new chromosome 9`);
+  }
+});
+
+test('v0.17: SENSE28 — four body-plan senses appended, never renumbered', () => {
+  assert.equal(SENSE28.length, 28);
+  assert.deepEqual(SENSE28.slice(0, 24), SENSE24, 'the old 24 are untouched');
+  assert.equal(SENSE28[24], 'airborne');
+  assert.equal(SENSE28[25], 'farLedge');
+  assert.equal(SENSE28[26], 'submerged');
+  assert.equal(SENSE28[27], 'waterNear');
+});
+
+test('v0.17: four organ actions appended — glide 13, brachiate 14, swim 15, dive 16', () => {
+  assert.equal(ACTIONS.length, 17);
+  assert.deepEqual(ACTIONS.slice(0, 13), ACT13, 'the old 13 are untouched');
+  assert.equal(ACTIONS[13], 'glide');
+  assert.equal(ACTIONS[14], 'brachiate');
+  assert.equal(ACTIONS[15], 'swim');
+  assert.equal(ACTIONS[16], 'dive');
+  assert.equal(ACT17.length, 17, 'the gene vocabulary agrees');
+});
+
+test('v0.17: the brain takes 29 inputs; the new senses land at 24–27', () => {
+  const v = senseVector({ ...MID_SENSES, airborne: 0.5, farLedge: 0.3, submerged: 0, waterNear: 0.9 });
+  assert.equal(v.length, 29, '28 senses + bias');
+  assert.equal(v[24], 0.5, 'airborne rides at index 24');
+  assert.equal(v[25], 0.3, 'farLedge rides at index 25');
+  assert.equal(v[26], 0, 'submerged rides at index 26');
+  assert.equal(v[27], 0.9, 'waterNear rides at index 27');
+  assert.equal(v[28], 1, 'bias still last');
+});
+
+test('v0.17: the founder body plan is the legacy animal', () => {
+  const p = phenotype(founderEvoGenome(createRng(7)));
+  const bp = expressBuds(p, 1);
+  assert.equal(bp.limbs.length, 4, 'four limbs, as always');
+  const sig = bp.limbs.map((l) => `${l.site}:${l.side}:${l.type}`).sort();
+  assert.deepEqual(sig, ['hip:L:grasp', 'hip:R:grasp', 'shoulder:L:grasp', 'shoulder:R:grasp']);
+  assert.equal(bp.graspPairs, 2);
+  assert.equal(bp.bodySegs, 1);
+  assert.equal(bp.tails, 1);
+  assert.equal(bp.wingArea, 0);
+  assert.equal(bp.sailArea, 0);
+  assert.equal(bp.gillArea, 0);
+  assert.equal(bp.finArea, 0);
+  // Babies have nubs, not wings: the plan is unrealized early.
+  const baby = expressBuds(p, 0.21875);
+  assert.ok(baby.limbs.every((l) => l.grow01 < BUD_NUB_HI), 'baby grasp limbs are still nubs');
+  assert.equal(baby.graspPairs, 2, '...but they count as grasp pairs');
+});
+
+test('v0.17: founder phenotype derivations — areas 0, graspPairs 2, bodySegs 1', () => {
+  const p = phenotype(founderEvoGenome(createRng(7)));
+  assert.equal(p.wingArea, 0);
+  assert.equal(p.sailArea, 0);
+  assert.equal(p.gillArea, 0);
+  assert.equal(p.finArea, 0);
+  assert.equal(p.graspPairs, 2);
+  assert.equal(p.bodySegs, 1);
+  assert.equal(p.glideLift, 0, 'no wings, no lift');
+  assert.equal(p.developDrain, 0, 'the founder plan costs nothing to develop');
+  assert.equal(p.matePrefNovel, 0, 'novelty does not choose at founder');
+  assert.equal(p.fallSoak, 0);
+  assert.equal(p.breathTime, 30, 'founder lungs');
+});
+
+test('v0.17: newborns start with a baby body plan', () => {
+  const c = createCreature(randomGenome(createRng(9)), 100, 0, createRng(10));
+  assert.ok(c.bodyPlan, 'createCreature sets the realized plan');
+  assert.equal(c.bodyPlan.growth01, 0.21875, 'baby growth01');
+});
+
+test('v0.17: growth curves — baby < child < adult', () => {
+  const baby = developmentalGrowth01('baby');
+  const child = developmentalGrowth01('child');
+  const adult = developmentalGrowth01('adult');
+  assert.ok(baby < child && child < adult, `${baby.toFixed(3)} < ${child.toFixed(3)} < ${adult.toFixed(3)}`);
+  assert.equal(adult, 1.0);
+});
+
+test('v0.17: starvation stunts juveniles; adults freeze the stunt', () => {
+  const stunted = developmentalGrowth01('child', 0.2);
+  const fed = developmentalGrowth01('child', 0.9);
+  assert.ok(stunted < fed, `hunger stunts growth (${stunted.toFixed(3)} < ${fed.toFixed(3)})`);
+  assert.equal(developmentalGrowth01('adult', 0.2, 0.6), 0.6, 'adults freeze the stunt they grew up with');
+  assert.equal(developmentalGrowth01('senior', 0.9, 0.8), 0.95 * 0.8, 'seniors keep it too (on the 0.95 senior base)');
+});
+
+test('v0.17: vestigialization is free, wings cost — developDrain', () => {
+  const vest = phenotype(evoGenome(createRng(7), { budShoulderGrow: 0, budHipGrow: 0 }));
+  assert.equal(vest.graspPairs, 0, 'no erupted grasp limbs');
+  assert.equal(vest.developDrain, 0, 'a vestigial plan costs nothing');
+  const wing = phenotype(evoGenome(createRng(7), {
+    budDorsalGrow: 1, budDorsalType: 1, budMidGrow: 1, budMidType: 1, budMidLen: 1,
+  }));
+  assert.ok(wing.wingArea > 0.6, `real wings (${wing.wingArea.toFixed(2)})`);
+  assert.ok(wing.developDrain > 0, `wings cost development (${wing.developDrain.toFixed(4)})`);
+  assert.ok(wing.wingUpkeep > 0, 'and upkeep for life');
+});
+
+test('v0.17: glide without wings degrades to exactly a jump', () => {
+  const world = bindWorld(createWorld(300));
+  const mk = (action, x) => {
+    const c = createCreature(randomGenome(world.rng), x, 0, world.rng);
+    c.pheno.legPower = 0.5;
+    c.pheno.spikes = 0; // no accidental clashes
+    c.facing = 1;
+    world.creatures.push(c);
+    c.action = action;
+    c.actionTimer = 100;
+    return c;
+  };
+  const glider = mk('glide', 800);
+  const jumper = mk('jump', 1000);
+  tickWorld(world, 0.1);
+  assert.ok(!glider.grounded && !jumper.grounded, 'both left the ground');
+  assert.equal(glider.vy, jumper.vy, 'the jump impulse, exactly');
+  assert.equal(glider.vx, jumper.vx, 'the jump velocity, exactly');
+  assert.ok(!glider.gliding, 'no wings, no gliding flag');
+  assert.equal(glider.actionLabel, 'jumping', "Paul's rule: the verb degrades honestly");
+});
+
+test('v0.17: brachiate without a third grasp pair degrades to moveToward', () => {
+  const world = bindWorld(createWorld(301));
+  addFood(world, 900, 0, 'fruit', 1);
+  const c = physCreature(world, 800, 0, { action: 'brachiate', actionTimer: 100 });
+  assert.equal(c.bodyPlan.graspPairs, 2, 'founder has two grasp pairs');
+  const x0 = c.x;
+  tickWorld(world, 0.1);
+  assert.ok(!c.brachiating, 'no third pair, no brachiation');
+  assert.equal(c.actionLabel, 'scrambling along');
+  assert.ok(c.x > x0, 'still moves toward the food at walk speed');
+});
+
+test('v0.17: swim on land is an honest flop', () => {
+  const world = bindWorld(createWorld(302));
+  const c = physCreature(world, 800, 0, { action: 'swim', actionTimer: 100 });
+  const x0 = c.x;
+  tickWorld(world, 0.1);
+  assert.equal(c.actionLabel, 'flopping', 'no water, no swimming');
+  assert.ok(Math.abs(c.x - x0) < 12, 'a flop barely moves');
+});
+
+test('v0.17: dive on land degrades to wandering', () => {
+  const world = bindWorld(createWorld(303));
+  const c = physCreature(world, 800, 0, { action: 'dive', actionTimer: 100 });
+  tickWorld(world, 0.1);
+  assert.equal(c.action, 'wander', 'nothing to dive into');
+  assert.equal(c.actionLabel, 'ducking');
+});
+
+test('v0.17: organ instincts wire inhibited at founder (−1.2), excitable when mutated', () => {
+  const rng = createRng(11);
+  const base = testPheno(11, {
+    instAirborneGlide: 0, instFarLedgeGlide: 0, instFoodBrach: 0,
+    instSubmergedSwim: 0, instSubmergedDive: 0,
+  });
+  const brain = createBrain(base, rng);
+  // founder 0 → (0 − 0.5) × 2.4: the pathway exists but sleeps.
+  assert.equal(brain.instW[13][24], -1.2, 'airborne → glide');
+  assert.equal(brain.instW[13][25], -1.2, 'farLedge → glide');
+  assert.equal(brain.instW[14][6], -1.2, 'foodDist → brachiate');
+  assert.equal(brain.instW[15][26], -1.2, 'submerged → swim');
+  assert.equal(brain.instW[16][26], -1.2, 'submerged → dive');
+  const woke = createBrain(testPheno(11, { instAirborneGlide: 1 }), rng);
+  assert.equal(woke.instW[13][24], 1.2, 'a mutated instinct excites the pathway');
+});
+
+test('v0.17: real wings glide — slower descent, farther travel than a jump', () => {
+  const world = bindWorld(createWorld(304));
+  const mk = (genome, x) => {
+    const c = createCreature(genome, x, 0, world.rng);
+    c.biochem.age = c.pheno.lifespanSec * 0.5; // adult
+    c.pheno.legPower = 0.5;
+    c.pheno.spikes = 0; // no accidental clashes
+    c.facing = 1;
+    c.bodyPlan = expressBuds(c.pheno, 1); // adult realization
+    c.action = 'glide';
+    c.actionTimer = 1000;
+    world.creatures.push(c);
+    return c;
+  };
+  const glider = mk(evoGenome(world.rng, {
+    budDorsalGrow: 1, budDorsalType: 1, budMidGrow: 1, budMidType: 1, budMidLen: 1,
+  }), 800);
+  assert.ok(glider.bodyPlan.wingArea > 0.6, 'wings above the glide threshold');
+  assert.ok(glider.pheno.glideLift > 0, 'and they make lift');
+  const jumper = mk(founderEvoGenome(world.rng), 200);
+  for (let i = 0; i < 20; i++) tickWorld(world, 0.1);
+  assert.ok(glider.gliding, 'the wings are out');
+  assert.ok(!jumper.gliding, 'the wingless never glides');
+  assert.ok(glider.x - 800 > jumper.x - 200,
+    `glider travels farther (${(glider.x - 800).toFixed(0)}px vs ${(jumper.x - 200).toFixed(0)}px)`);
+  assert.ok(glider.y < jumper.y, 'and descends slower');
+});
+
+test('v0.17: glideLift caps at 0.85 — descent, never ascent', () => {
+  const p = phenotype(evoGenome(createRng(5), {
+    budDorsalGrow: 1, budDorsalType: 1, budShoulderGrow: 1, budShoulderType: 1,
+    budHipGrow: 1, budHipType: 1, budMidGrow: 1, budMidType: 1, budMidLen: 1,
+    budNeckGrow: 1, budNeckType: 1, budNeckLen: 1,
+  }));
+  assert.ok(p.wingArea > 2, `maximal membranes (${p.wingArea.toFixed(2)})`);
+  assert.equal(p.glideLift, 0.85, 'lift caps — gravity always wins a little');
+});
+
+test('v0.17: dorsal-only membranes can never glide — the two-site wing quirk', () => {
+  // Honest negative, kept as a documented test: the dorsal len is fixed at
+  // 0.5, below the 0.6 glide threshold, so a single-site wing is a daydream.
+  // Functional glide needs membranes at 2+ sites (or a shoulder/hip wing,
+  // which adopts the longer ancestral limb).
+  const p = phenotype(evoGenome(createRng(6), { budDorsalGrow: 1, budDorsalType: 1 }));
+  assert.ok(p.wingArea < 0.6, `dorsal-only caps at ${p.wingArea.toFixed(2)} — below threshold`);
+  assert.equal(p.glideLift, p.wingArea * 1.2, 'lift without the glide');
+});
+
+test('v0.17: open-endedness smoke — divergence reports organ traits, no winner asserted', () => {
+  for (const k of ['wingArea', 'graspPairs', 'sailArea', 'gillArea', 'finArea', 'bodySegs']) {
+    assert.ok(DIVERGENCE_CREATURE_TRAITS.includes(k), `${k} is a divergence trait`);
+  }
+  for (const seed of [11, 22]) {
+    const world = bindWorld(createWorld(seed));
+    populate(world);
+    recordFounderMeans(world);
+    for (let i = 0; i < 300; i++) tickWorld(world, 0.05);
+    const div = computeDivergence(world);
+    assert.ok(div && div.zones, 'divergence computed');
+    const zk = Object.keys(div.zones)[0];
+    assert.ok('wingArea' in div.zones[zk], 'organ traits reported per zone');
+    // Deliberately no assertion about which lineage wins — the door stays open.
+  }
+});
+
+test('v0.17: randomGenome stream pinned — the main stream never shifts', () => {
+  // The main-stream alleles (legLength, instHungerSeek, bodyHue) are drawn
+  // in GENES order and never move: a founder-value change consumes no extra
+  // draws. The evo-devo and language sub-streams are seeded by a CONTENT
+  // HASH of the main alleles, so a founder-value change upstream (v0.17:
+  // legPower 0.5 → 0.4, via 0.3) reshuffles their seeds — deterministically,
+  // and only then. Re-pinned after the legPower change (2026-09-30).
+  const g = randomGenome(createRng(7));
+  assert.deepEqual(g.alleles.legLength, [0.7337531622033566, 0.524284133920446]);
+  assert.deepEqual(g.alleles.instHungerSeek, [0.6374707734910772, 0.7284905070671812]);
+  assert.deepEqual(g.alleles.bodyHue, [0.011704753153026104, 0.06195825757458806]);
+  assert.deepEqual(g.alleles.budDorsalGrow, [0, 0]);
+  assert.deepEqual(g.alleles.lexCap, [0.6358831344172359, 0.4754308270988986]);
+  const g2 = randomGenome(createRng(7));
+  assert.deepEqual(g2.alleles.budShoulderGrow, g.alleles.budShoulderGrow, 'evo sub-stream deterministic');
+});
+
+test('v0.17: founder render is pixel-identical with and without a body plan', () => {
+  const world = bindWorld(createWorld(7));
+  const c = createCreature(founderEvoGenome(world.rng), 400, 0, world.rng);
+  c.biochem.age = c.pheno.lifespanSec * 0.5;
+  const draw = () => {
+    const ctx = new SvgCtx(400, 400);
+    drawCreature(ctx, c, 350, 1.0);
+    return ctx.toSVG();
+  };
+  const legacy = (() => { c.bodyPlan = null; return draw(); })(); // the old-save path
+  c.bodyPlan = expressBuds(c.pheno, 1);
+  const planned = draw();
+  assert.equal(planned, legacy, 'the founder draws identically either way');
+});
+
+test('v0.17: extra limbs reach the painter', () => {
+  const world = bindWorld(createWorld(7));
+  const c = createCreature(founderEvoGenome(world.rng), 400, 0, world.rng);
+  c.biochem.age = c.pheno.lifespanSec * 0.5;
+  const draw = () => {
+    const ctx = new SvgCtx(400, 400);
+    drawCreature(ctx, c, 350, 1.0);
+    return ctx.toSVG();
+  };
+  const classic = draw();
+  assert.ok(classic.length > 1000, 'the painter produced a render');
+  const cases = [
+    ['dorsal membranes', { budDorsalGrow: 1, budDorsalType: 'membrane' }],
+    ['mid grasp limbs', { budMidGrow: 1, budMidType: 'grasp' }],
+    ['neck gills', { budNeckGrow: 1, budNeckType: 'gill' }],
+    ['hip fins', { budHipGrow: 1, budHipType: 'fin' }],
+    ['shoulder sail', { budShoulderGrow: 1, budShoulderType: 'sail' }],
+    ['a nub', { budDorsalGrow: 0.2, budDorsalType: 'membrane' }],
+    ['two tails', { tailCount: 1 }],
+    ['three body segments', { segCount: 2 }],
+  ];
+  for (const [name, mut] of cases) {
+    const saved = {};
+    for (const k of Object.keys(mut)) { saved[k] = c.pheno[k]; c.pheno[k] = mut[k]; }
+    c.bodyPlan = expressBuds(c.pheno, 1);
+    assert.notEqual(draw(), classic, `${name} change the render`);
+    for (const k of Object.keys(mut)) c.pheno[k] = saved[k];
+  }
+  c.bodyPlan = expressBuds(c.pheno, 1);
+  assert.equal(draw(), classic, 'restoring the founder restores the render');
+});
+
+test('v0.17: no dead genes — every evo-devo locus moves something', () => {
+  const base = phenotype(founderEvoGenome(createRng(7)));
+  const sig = (p) => {
+    const bp = expressBuds(p, 1);
+    return JSON.stringify([
+      bp.limbs.map((l) => [l.site, l.type, l.grow01.toFixed(3), l.pow01.toFixed(3)]),
+      bp.bodySegs, bp.tails, bp.graspPairs,
+      p.wingArea.toFixed(4), p.sailArea.toFixed(4), p.gillArea.toFixed(4), p.finArea.toFixed(4),
+      p.glideLift.toFixed(4), p.developDrain.toFixed(5), p.brachMult.toFixed(4),
+      p.fallSoak.toFixed(4), p.swimSpeed.toFixed(3), p.breathTime.toFixed(1),
+      p.slitherSpeed.toFixed(3), p.climbSpeed.toFixed(3), p.groomReach.toFixed(3),
+      p.wingUpkeep.toFixed(5), p.gillUpkeep.toFixed(5), p.finUpkeep.toFixed(5),
+      p.matePrefNovel,
+    ]);
+  };
+  const baseSig = sig(base);
+  const flips = {
+    budShoulderGrow: 0, budShoulderType: 'membrane', budShoulderPow: 1,
+    budHipGrow: 0, budHipType: 'sail', budHipPow: 1,
+    budDorsalGrow: 1, budDorsalType: 'grasp', budDorsalPow: 1,
+    budMidGrow: 1, budMidType: 'fin', budMidLen: 1, budMidPow: 1,
+    budNeckGrow: 1, budNeckType: 'fin', budNeckLen: 1, budNeckPow: 1,
+    segCount: 2, tailCount: 1, matePrefNovel: 1,
+  };
+  for (const key of EVO17_KEYS) {
+    if (key.startsWith('inst')) continue; // wired through the brain, checked below
+    const p = { ...base, [key]: flips[key] };
+    // Vestigial buds are silent until they erupt — wake the site so the
+    // locus gets its say. (The grow flips wake themselves.)
+    const m = key.match(/^bud(Dorsal|Mid|Neck)(Type|Len|Pow)$/);
+    if (m) p['bud' + m[1] + 'Grow'] = 1;
+    assert.notEqual(sig(p), baseSig, `${key} moves a readout`);
+  }
+  // Instinct loci wire through the brain, not the body.
+  const b0 = createBrain(base, createRng(3));
+  for (const key of ['instAirborneGlide', 'instFarLedgeGlide', 'instFoodBrach', 'instSubmergedSwim', 'instSubmergedDive']) {
+    const b1 = createBrain({ ...base, [key]: 1 }, createRng(3));
+    assert.notDeepEqual(b1.instW, b0.instW, `${key} wires the brain`);
   }
 });
