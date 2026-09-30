@@ -7,7 +7,7 @@ import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
-import { climbLinksFrom } from './world.js';
+import { climbLinksFrom, disperseSeed } from './world.js';
 
 let nextId = 1;
 
@@ -470,9 +470,17 @@ export function doEat(c, world) {
     // Food becomes blood sugar via the chemistry tick (c._ate is consumed
     // by tickBiochem before the next action) — the body, not the action,
     // decides what a meal means.
-    c._ate = (c._ate || 0) + bite * 1.1 * eff;
+    // v0.13: bitterness from the plant genome — bitter fruit is less
+    // rewarding, so the brain learns to avoid bitter plants. The differential
+    // (not a hardcoded rule) is what teaches foraging discrimination.
+    const bitter = food.bitterness || 0;
+    const palatability = 1 - 0.5 * bitter;
+    const nutrition = (food.nutrition || 1) * palatability;
+    c._ate = (c._ate || 0) + bite * 1.1 * eff * nutrition;
     c.actionLabel = `eating ${food.foodKind === 'meat' ? 'meat' : 'fruit'}`;
-    c.reward += 0.6; // eating feels good — reinforce whatever led here
+    c.reward += 0.6 * palatability; // bitter meals reinforce less
+    // v0.13: seed dispersal — the eaten fruit's plant may ride along.
+    disperseSeed(world, c, food);
   }
   if (food.amount <= 0.01) {
     const i = world.foods.indexOf(food);
@@ -866,6 +874,12 @@ export function updateCreature(c, world, dt) {
   // converts it to blood sugar now.
   const ate = c._ate || 0;
   c._ate = 0;
+  // v0.13 migration friction: homesickness — comfort drains in proportion
+  // to distance from the imprinted home range, scaled by the instHomeSeek
+  // gene. Homebodies feel the pull; wanderers (low instHomeSeek) range free.
+  // This is the cost that lets biomes diverge instead of homogenizing
+  // (Paul's v0.11 honest negative: zones alone don't differentiate).
+  const homeDist = c.homeX !== undefined ? clamp01(Math.abs(c.x - c.homeX) / 800) : 0;
   tickBiochem(b, pheno, dt, {
     sleeping: c.sleeping,
     playing: c.playing,
@@ -876,6 +890,7 @@ export function updateCreature(c, world, dt) {
     groomed: wasGroomed,
     ate,
     active: c._active || 0,
+    homesick: homeDist * (pheno.instHomeSeek !== undefined ? pheno.instHomeSeek : 0.5),
   });
   c.pettedFlag = false;
   c.scoldedFlag = false;

@@ -88,7 +88,12 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   b.adrenaline = clamp01(b.adrenaline - 0.25 * dt);
 
   // Comfort stays direct: touch soothes, scolding wounds.
-  b.comfort = clamp01(b.comfort - 0.004 * dt + (ctx.petted ? 0.5 : 0));
+  // v0.13: homesickness — being far from the imprinted home range wears
+  // on homebodies (ctx.homesick = homeDist × instHomeSeek). Gentle: at full
+  // homesickness the drain is ~2.5× baseline, a pull not a shove. (0.03 was
+  // tried first — it crashed comfort in under a minute 229px from home and
+  // starved seed 21's founders next to uneaten food. Friction, not force.)
+  b.comfort = clamp01(b.comfort - 0.004 * dt - (ctx.homesick || 0) * 0.006 * dt + (ctx.petted ? 0.5 : 0));
   if (ctx.scolded) b.comfort = clamp01(b.comfort - 0.3);
 
   // --- v2 (R): evolvable chemical reactions --------------------------------

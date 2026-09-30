@@ -3,6 +3,7 @@
 
 import { createRng } from './rng.js';
 import { randomGenome, inherit } from './genome.js';
+import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius } from './creature.js';
 import { ageStage } from './biochem.js';
 import { createCulture, sampleCulture, pruneExtinct, adoptTradition, fidelityOf } from './culture.js';
@@ -56,6 +57,11 @@ export function createWorld(seed = 1) {
     // order is load-bearing for determinism — cosmetic additions must never
     // shift the main stream's sequence (founder genomes, rolls, etc.).
     decorRng: createRng(seed * 31 + 7),
+    // v0.13 "Roots":
+    seenGenomes: new Set(), // genome hashes ever born — the beautiful-mutant watch
+    novelParents: new Set(), // ids of living creatures with novel genomes
+    divergenceLog: [], // { t, zones: { key: { trait: S } } } — Eliza's S per biome
+    founderMeans: null, // { trait: mean } recorded at populate — the S baseline
   };
   // Climb links: pairs of platforms whose x-ranges overlap and whose
   // vertical gap is climbable (60–240px). Computed once at worldgen —
@@ -121,32 +127,44 @@ export function zoneAt(x) {
   return ZONES[2];
 }
 
-export function addPlant(world, x, platformIndex) {
+export function addPlant(world, x, platformIndex, genome) {
   const plat = world.platforms[platformIndex];
+  // v0.13: initial plant genomes come from the decor stream — worldgen order
+  // is load-bearing for determinism, and plant genomes must never shift the
+  // main stream's sequence (founder genomes, rolls, etc.).
+  const g = genome || randomPlantGenome(world.decorRng || world.rng);
   world.plants.push({
     kind: 'plant', id: oid(), x, platformIndex, y: plat.y,
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     sway: world.rng.range(0, Math.PI * 2),
     zone: zoneAt(x).key, // v0.11: biomes
+    genome: g, pheno: plantPhenotype(g), // v0.13: plant genomes
   });
 }
 
 // v0.8: medicinal herbs. Same growth mechanics as fruit plants, but they bear
 // bitter leaves (foodKind 'leaf') that purge illness instead of feeding hunger.
-export function addHerb(world, x, platformIndex) {
+export function addHerb(world, x, platformIndex, genome) {
   const plat = world.platforms[platformIndex];
+  const g = genome || randomPlantGenome(world.decorRng || world.rng);
   world.plants.push({
     kind: 'herb', id: oid(), x, platformIndex, y: plat.y,
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     sway: world.rng.range(0, Math.PI * 2),
     zone: zoneAt(x).key, // v0.11: biomes
+    genome: g, pheno: plantPhenotype(g), // v0.13: plant genomes
   });
 }
 
-export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1, rotAfter = 0) {
+export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1, rotAfter = 0, opts = {}) {
   const plat = world.platforms[platformIndex];
   world.foods.push({
     kind: 'food', id: oid(), x, platformIndex, y: plat.y, foodKind: kind, amount,
+    // v0.13: plant-genome provenance — which plant bore this fruit, its
+    // bitterness, and its nutrition. Enables seed dispersal + learned
+    // avoidance of bitter plants.
+    plantId: opts.plantId || 0, bitterness: opts.bitterness || 0,
+    nutrition: opts.nutrition || 1,
     // rotAfter: seconds until this fruit rots (0 = never). Nest-cache fruit
     // rots so it can't become a population-level food source — births must
     // increase food DEMAND, not supply, or the ecology explodes.
@@ -154,6 +172,37 @@ export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1, rot
   });
   // v0.8 exam telemetry: opt-in spawn hook (intake-efficiency cost column).
   if (world.onSpawn) world.onSpawn(amount);
+}
+
+// v0.13 "Roots": seed dispersal — the coevolution loop. When a creature
+// eats fruit, the parent plant's genes may ride along: a seed is deposited
+// at the creature's position and sprouts into a seedling carrying a selfed
+// child genome (crossover + mutation). High-yield plants get eaten more and
+// spread; bitter plants are avoided and persist uneaten; arid selects for
+// waterRet, highland for coldTol. Called from doEat.
+export function disperseSeed(world, c, food) {
+  if (!food.plantId) return;
+  const parent = world.plants.find((p) => p.id === food.plantId);
+  if (!parent || !parent.genome) return;
+  const pYield = parent.pheno ? parent.pheno.yield : 0.5;
+  if (!world.rng.chance(0.15 + 0.3 * pYield)) return;
+  // Cap the flora: oldest seedlings are culled first.
+  if (world.plants.length >= 60) {
+    const seedlings = world.plants.filter((p) => p.growth < 1);
+    if (seedlings.length > 0) {
+      const oldest = seedlings[0];
+      world.plants.splice(world.plants.indexOf(oldest), 1);
+    } else return;
+  }
+  const plat = world.platforms[c.platformIndex];
+  if (!plat) return;
+  const x = Math.max(plat.x1 + 10, Math.min(plat.x2 - 10, c.x + world.rng.range(-40, 40)));
+  const childGenome = inheritPlant(parent.genome, parent.genome, world.rng);
+  if (parent.kind === 'herb') addHerb(world, x, c.platformIndex, childGenome);
+  else addPlant(world, x, c.platformIndex, childGenome);
+  const seedling = world.plants[world.plants.length - 1];
+  seedling.growth = 0.05; // a true seedling — must mature before fruiting
+  world.events.push({ type: 'seedDispersed', plant: seedling, parentId: parent.id, t: world.time });
 }
 
 export function addCritter(world, x, platformIndex, kind) {
@@ -248,6 +297,14 @@ export function tryMate(a, b) {
   b.reward += 0.8;
   // v0.12: mating forms a pair bond — the strongest positive bond event.
   nudgeBond(world, a, b, 0.4);
+  // v0.13: beautiful-mutant watch — a novel-genome parent that reproduces
+  // proved its combination. Reproduction is the only fitness that counts.
+  for (const p of [mom, dad]) {
+    if (world.novelParents.has(p.id)) {
+      world.novelParents.delete(p.id);
+      world.events.push({ type: 'beautifulMutant', creature: p, mate: p === mom ? dad : mom, t: world.time });
+    }
+  }
   world.events.push({ type: 'mating', a, b, t: world.time });
   return true;
 }
@@ -277,6 +334,95 @@ export function recordLineage(world, c) {
   }
 }
 
+// v0.13: compact genome hash for the beautiful-mutant watch (iggy's idea).
+// Two creatures share a hash only if every allele matches to 3 decimals.
+export function genomeHash(genome) {
+  const parts = [];
+  for (const key of Object.keys(genome.alleles).sort()) {
+    const [a, b] = genome.alleles[key];
+    parts.push(a.toFixed(3) + '/' + b.toFixed(3));
+  }
+  let h = 0;
+  const s = parts.join('|');
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+
+// v0.13: the beautiful-mutant watch. A birth whose genome hash was never
+// seen before is flagged novel; if that individual later reproduces, the
+// novel combination proved itself — a "beautiful mutant" (reproduction =
+// fitness, the only fitness evolution recognizes).
+export function checkNovelGenome(world, c) {
+  const h = genomeHash(c.genome);
+  if (world.seenGenomes.has(h)) return false;
+  world.seenGenomes.add(h);
+  // Soft cap: the deep past's genotypes are forgotten (10k cap).
+  if (world.seenGenomes.size > 10000) {
+    const first = world.seenGenomes.values().next().value;
+    world.seenGenomes.delete(first);
+  }
+  world.novelParents.add(c.id);
+  world.events.push({ type: 'novelGenome', creature: c, t: world.time });
+  return true;
+}
+
+// v0.13: divergence metric (Eliza's S). Per biome, per tracked trait:
+// S = μ_zone(adults now) − μ_founders. Positive S = the biome selected
+// upward on that trait; negative = downward. Computed every 6 sim-minutes.
+export const DIVERGENCE_CREATURE_TRAITS = ['instHomeSeek', 'size', 'bulk', 'curiosity', 'boldness'];
+export const DIVERGENCE_PLANT_TRAITS = ['waterRet', 'coldTol', 'bitterness', 'yield'];
+
+export function recordFounderMeans(world) {
+  const means = {};
+  const n = world.creatures.length;
+  if (n === 0) return;
+  for (const k of DIVERGENCE_CREATURE_TRAITS) {
+    let sum = 0;
+    for (const c of world.creatures) sum += c.pheno[k] !== undefined ? c.pheno[k] : 0.5;
+    means[k] = sum / n;
+  }
+  for (const k of DIVERGENCE_PLANT_TRAITS) {
+    let sum = 0, m = 0;
+    for (const p of world.plants) {
+      if (p.pheno && p.pheno[k] !== undefined) { sum += p.pheno[k]; m++; }
+    }
+    means['plant_' + k] = m > 0 ? sum / m : 0.5;
+  }
+  world.founderMeans = means;
+}
+
+export function computeDivergence(world) {
+  if (!world.founderMeans) return null;
+  const snap = { t: world.time, zones: {} };
+  for (const z of ZONES) {
+    const zs = { key: z.key };
+    // Creatures: adults currently in this zone.
+    const adults = world.creatures.filter((c) => c.alive && zoneAt(c.x).key === z.key);
+    for (const k of DIVERGENCE_CREATURE_TRAITS) {
+      if (adults.length === 0) { zs[k] = 0; continue; }
+      let sum = 0;
+      for (const c of adults) sum += c.pheno[k] !== undefined ? c.pheno[k] : 0.5;
+      zs[k] = sum / adults.length - world.founderMeans[k];
+    }
+    // Plants: all plants rooted in this zone.
+    const plants = world.plants.filter((p) => p.zone === z.key && p.pheno);
+    for (const k of DIVERGENCE_PLANT_TRAITS) {
+      const pk = 'plant_' + k;
+      if (plants.length === 0) { zs[pk] = 0; continue; }
+      let sum = 0;
+      for (const p of plants) sum += p.pheno[k] !== undefined ? p.pheno[k] : 0.5;
+      zs[pk] = sum / plants.length - world.founderMeans[pk];
+    }
+    snap.zones[z.key] = zs;
+  }
+  world.divergenceLog.push(snap);
+  // Keep the log bounded: one snapshot per 6 sim-minutes, cap at 500.
+  if (world.divergenceLog.length > 500) world.divergenceLog.splice(0, world.divergenceLog.length - 500);
+  return snap;
+}
+
 function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg.platformIndex, world.rng, {
     parents: egg.parents,
     generation: egg.gen || 0,
@@ -300,6 +446,7 @@ function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg
   c.actionTimer = 3;
   world.creatures.push(c);
   recordLineage(world, c);
+  checkNovelGenome(world, c); // v0.13: beautiful-mutant watch
   world.events.push({ type: 'hatch', creature: c, t: world.time });
   // v0.5: nest cache. Hatchlings used to starve when the egg landed far from
   // food; now every nest is stocked with a first bite. That first meal's
@@ -318,7 +465,8 @@ export function tickWorld(world, dt) {
 
   // Plants grow fruit.
   for (const p of world.plants) {
-    p.growth = Math.min(1, p.growth + dt / 150);
+    // v0.13: growth rate from the plant genome.
+    p.growth = Math.min(1, p.growth + (dt / 150) * (0.5 + (p.pheno ? p.pheno.growthRate : 0.5)));
     p.sway += dt;
     if (p.growth >= 1) {
       p.fruitTimer -= dt;
@@ -332,23 +480,47 @@ export function tickWorld(world, dt) {
           const hp = ex.patches[ex.hot];
           interval = (p.x >= hp.x1 && p.x <= hp.x2) ? ex.hotInterval : ex.coldInterval;
         } else {
+          // v0.13 plant genomes: the fruiting interval, yield, and zone
+          // stress all read the plant's own genome now.
           // v0.11 biomes + scarcity: zone sets the base rate; crowding slows
           // everything (density-dependent scarcity — more mouths, less fruit).
           // Herbs are counter-cyclical: medicine thrives where food is scarce.
-          const zoneMul = p.kind === 'herb'
-            ? (p.zone === 'arid' ? 0.9 : 1.1)
-            : zoneAt(p.x).fruitMul;
+          const ph = p.pheno || {};
+          const intervalGene = 0.7 + 0.6 * (ph.interval !== undefined ? ph.interval : 0.5);
+          let zoneStress;
+          if (p.kind === 'herb') {
+            zoneStress = p.zone === 'arid' ? 0.9 : 1.1;
+          } else if (p.zone === 'arid') {
+            // Drought: thirsty plants stall; water-retainers keep fruiting.
+            zoneStress = zoneAt(p.x).fruitMul * (2 - (ph.waterRet !== undefined ? ph.waterRet : 0.5));
+          } else if (p.zone === 'highland') {
+            // Cold: the tender stall; the hardy keep fruiting.
+            zoneStress = zoneAt(p.x).fruitMul * (1.6 - 0.6 * (ph.coldTol !== undefined ? ph.coldTol : 0.5));
+          } else {
+            zoneStress = zoneAt(p.x).fruitMul;
+          }
           const densityMul = 1 + (world.creatures.length / 40) * 0.6;
-          interval = interval * zoneMul * densityMul;
+          interval = interval * intervalGene * zoneStress * densityMul;
         }
         p.fruitTimer = interval;
         // Fruit hangs in the tree: it appears on the plant's own branch,
         // within reach of branch-dwellers. (The old world dropped it to
         // the ground; the canopy keeps its fruit where it grows.)
         // v0.8: herbs bear medicinal leaves instead of fruit.
+        // v0.13: yield + fruitSize + bitterness from the plant genome; the
+        // fruit remembers which plant bore it (seed dispersal).
         const dropKind = p.kind === 'herb' ? 'leaf' : 'fruit';
-        addFood(world, p.x + rng.range(-30, 30), p.platformIndex, dropKind, 1);
-        if (world.foods.length > 40) world.foods.splice(0, world.foods.length - 40);
+        const ph = p.pheno || {};
+        const fruits = p.kind === 'herb' ? 1 : 1 + Math.round(2 * (ph.yield !== undefined ? ph.yield : 0.5));
+        const nutrition = p.kind === 'herb'
+          ? 0.3 * (0.5 + (ph.potency !== undefined ? ph.potency : 0.5))
+          : 0.5 + (ph.fruitSize !== undefined ? ph.fruitSize : 0.5);
+        for (let f = 0; f < fruits; f++) {
+          addFood(world, p.x + rng.range(-30, 30), p.platformIndex, dropKind, 1, 0, {
+            plantId: p.id, bitterness: ph.bitterness || 0, nutrition,
+          });
+        }
+        if (world.foods.length > 60) world.foods.splice(0, world.foods.length - 60);
       }
     }
   }
@@ -432,6 +604,10 @@ export function tickWorld(world, dt) {
   // never assigned.
   if (Math.floor(world.time / 60) !== Math.floor((world.time - dt) / 60)) {
     world.tribes = detectTribes(world);
+  }
+  // v0.13: divergence snapshot every 6 sim-minutes — Eliza's S per biome.
+  if (Math.floor(world.time / 360) !== Math.floor((world.time - dt) / 360)) {
+    computeDivergence(world);
   }
   // Remove the dead (UI reads events first).
   // v0.7: the dead leave carcasses — meat for the diet gene's new niche.
@@ -556,5 +732,10 @@ export function populate(world) {
     const fx = Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, c.x + rng.range(-60, 60)));
     addFood(world, fx, c.platformIndex, 'fruit', 1);
   }
+  // v0.13: founders are the genomic baseline — register their hashes so the
+  // beautiful-mutant watch only fires on genuinely new combinations. Record
+  // founder trait means for the divergence metric (Eliza's S).
+  for (const c of founders) world.seenGenomes.add(genomeHash(c.genome));
+  recordFounderMeans(world);
   return world;
 }

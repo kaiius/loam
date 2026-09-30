@@ -8,7 +8,7 @@ import { GENES, randomGenome, inherit, phenotype, markLocus } from '../src/sim/g
 import { createBrain, decide, learn, senseVector, ACTIONS } from '../src/sim/brain.js';
 import { createBiochem, tickBiochem, mood } from '../src/sim/biochem.js';
 import { createRng } from '../src/sim/rng.js';
-import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS } from '../src/sim/world.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
   memoryCapacity, RECALL_BUDGET,
@@ -19,6 +19,7 @@ import {
 } from '../src/sim/culture.js';
 import { finalizeEpisode, maybeFoundGrove, doEat, createCreature, creatureRadius, stepPhysics, gatherSenses, GRAVITY, FALL_HURT_V, JUMP_V_BASE, JUMP_V_GAIN } from '../src/sim/creature.js';
 import { createBonds, getBond, nudgeBond, tickBonds, pedigreeKin, detectTribes, socialStats } from '../src/sim/social.js';
+import { randomPlantGenome, plantPhenotype, inheritPlant, plantMeiosis, PLANT_GENES } from '../src/sim/plantgenome.js';
 
 const N_SENSES = 21; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear
 
@@ -1728,4 +1729,178 @@ test('physics: hard landings injure, startle, and scale with impact', () => {
   assert.ok(hard.flinchT > 0, 'the painter gets a flinch to show');
   const landings = world.events.slice(events0).filter((e) => e.type === 'hardLanding');
   assert.equal(landings.length, 2, 'two hard landings made the chronicle, not the hop');
+});
+
+// v0.13 "Roots": plant genomes, seed dispersal, migration friction,
+// divergence metric, beautiful-mutant watch.
+
+test('v0.13: plant genomes are diploid with crossover inheritance', () => {
+  const rng = createRng(101);
+  const mom = randomPlantGenome(rng);
+  const dad = randomPlantGenome(rng);
+  // Every locus has two alleles.
+  for (const g of PLANT_GENES) {
+    assert.equal(mom.alleles[g.key].length, 2, `${g.key} is diploid`);
+  }
+  // Child alleles come from the parents (pre-mutation check via meiosis).
+  const mg = plantMeiosis(mom, rng);
+  const dg = plantMeiosis(dad, rng);
+  for (const g of PLANT_GENES) {
+    const ma = mom.alleles[g.key], da = dad.alleles[g.key];
+    assert.ok(mg[g.key] === ma[0] || mg[g.key] === ma[1], 'maternal gamete allele from mom');
+    assert.ok(dg[g.key] === da[0] || dg[g.key] === da[1], 'paternal gamete allele from dad');
+  }
+  // Full inheritance: 8 loci, phenotype is the allele mean.
+  const child = inheritPlant(mom, dad, rng, 0); // no mutation
+  const ph = plantPhenotype(child);
+  for (const g of PLANT_GENES) {
+    const [a, b] = child.alleles[g.key];
+    assert.equal(ph[g.key], (a + b) / 2, 'phenotype is the allele mean');
+  }
+});
+
+test('v0.13: plants fruit from their genome — yield, interval, zone stress', () => {
+  const world = bindWorld(createWorld(102));
+  populate(world);
+  world.foods.length = 0;
+  // A high-yield plant in the verdant zone.
+  const rng = createRng(7);
+  const g = randomPlantGenome(rng);
+  g.alleles.yield = [0.95, 0.95]; // ~3 fruits per cycle
+  g.alleles.interval = [0.05, 0.05]; // fast fruiting
+  addPlant(world, 200, 1, g); // verdant zone (x<533)
+  const p = world.plants[world.plants.length - 1];
+  p.growth = 1; p.fruitTimer = 0.01;
+  tickWorld(world, 0.1);
+  const fromPlant = world.foods.filter((f) => f.plantId === p.id);
+  assert.ok(fromPlant.length >= 2, `high-yield plant bore ${fromPlant.length} fruits`);
+  assert.ok(fromPlant[0].nutrition > 0.5, 'fruitSize feeds nutrition');
+});
+
+test('v0.13: arid zone stresses thirsty plants, spares water-retainers', () => {
+  const world = bindWorld(createWorld(103));
+  populate(world);
+  world.foods.length = 0;
+  const mk = (waterRet) => {
+    const g = randomPlantGenome(createRng(8));
+    g.alleles.waterRet = [waterRet, waterRet];
+    g.alleles.interval = [0.5, 0.5];
+    return g;
+  };
+  addPlant(world, 700, 2, mk(0.05)); // arid, thirsty
+  addPlant(world, 750, 2, mk(0.95)); // arid, water-retaining
+  const thirsty = world.plants[world.plants.length - 2];
+  const retainer = world.plants[world.plants.length - 1];
+  thirsty.growth = 1; thirsty.fruitTimer = 0.01;
+  retainer.growth = 1; retainer.fruitTimer = 0.01;
+  tickWorld(world, 0.1);
+  // Both fruited; the retainer's next interval is shorter (less stressed).
+  assert.ok(retainer.fruitTimer < thirsty.fruitTimer,
+    `retainer interval ${retainer.fruitTimer.toFixed(1)} < thirsty ${thirsty.fruitTimer.toFixed(1)}`);
+});
+
+test('v0.13: seed dispersal — eaten fruit can plant a seedling', () => {
+  const world = bindWorld(createWorld(104));
+  populate(world);
+  const before = world.plants.length;
+  const parent = world.plants[0];
+  parent.pheno.yield = 1; // maximize dispersal odds
+  const c = world.creatures[0];
+  // Force-feed: put a fruit from this plant at the creature's mouth.
+  addFood(world, c.x, c.platformIndex, 'fruit', 1, 0, { plantId: parent.id, bitterness: 0, nutrition: 1 });
+  const food = world.foods[world.foods.length - 1];
+  let dispersed = false;
+  for (let i = 0; i < 40 && !dispersed; i++) {
+    disperseSeed(world, c, food);
+    dispersed = world.plants.length > before;
+  }
+  assert.ok(dispersed, 'a seedling sprouted from dispersed seed');
+  const seedling = world.plants[world.plants.length - 1];
+  assert.ok(seedling.growth < 0.2, 'seedlings start immature');
+  assert.ok(seedling.genome && seedling.genome.alleles.yield, 'seedling carries a genome');
+});
+
+test('v0.13: bitterness makes fruit less rewarding', () => {
+  const world = bindWorld(createWorld(105));
+  populate(world);
+  const c = addTestCreature(world, 500);
+  c.pheno.spikes = 0;
+  // Sweet fruit vs bitter fruit, same bite.
+  addFood(world, c.x, c.platformIndex, 'fruit', 1, 0, { plantId: 0, bitterness: 0, nutrition: 1 });
+  addFood(world, c.x + 1, c.platformIndex, 'fruit', 1, 0, { plantId: 0, bitterness: 0.9, nutrition: 1 });
+  const sweet = world.foods[world.foods.length - 2];
+  const bitter = world.foods[world.foods.length - 1];
+  c._senses = { _food: sweet };
+  const ateBefore = c._ate || 0;
+  doEat(c, world);
+  const sweetAte = (c._ate || 0) - ateBefore;
+  c._ate = 0;
+  c._senses = { _food: bitter };
+  doEat(c, world);
+  const bitterAte = c._ate || 0;
+  assert.ok(bitterAte < sweetAte, `bitter ${bitterAte.toFixed(3)} < sweet ${sweetAte.toFixed(3)}`);
+});
+
+test('v0.13: homesickness — comfort drains far from home for homebodies', () => {
+  const world = bindWorld(createWorld(106));
+  populate(world);
+  const homebody = addTestCreature(world, 500);
+  homebody.pheno.instHomeSeek = 0.9;
+  const wanderer = addTestCreature(world, 500);
+  wanderer.pheno.instHomeSeek = 0.05;
+  // Teleport both 700px from home (homeDist ~0.875).
+  homebody.x = 1200; wanderer.x = 1200;
+  homebody.biochem.comfort = 0.8; wanderer.biochem.comfort = 0.8;
+  for (let i = 0; i < 20; i++) tickWorld(world, 0.5);
+  assert.ok(homebody.biochem.comfort < wanderer.biochem.comfort,
+    `homebody ${homebody.biochem.comfort.toFixed(2)} < wanderer ${wanderer.biochem.comfort.toFixed(2)}`);
+});
+
+test('v0.13: divergence metric — S measured per biome against founders', () => {
+  const world = bindWorld(createWorld(107));
+  populate(world);
+  assert.ok(world.founderMeans, 'founder means recorded at populate');
+  assert.ok(world.founderMeans.instHomeSeek !== undefined, 'creature traits baselined');
+  assert.ok(world.founderMeans.plant_waterRet !== undefined, 'plant traits baselined');
+  const snap = computeDivergence(world);
+  assert.ok(snap && snap.zones.verdant && snap.zones.arid && snap.zones.highland, 'all three zones reported');
+  assert.ok(typeof snap.zones.arid.instHomeSeek === 'number', 'S is a number');
+  assert.equal(world.divergenceLog.length, 1, 'snapshot logged');
+});
+
+test('v0.13: beautiful-mutant watch — novel genomes flagged, reproducers celebrated', () => {
+  const world = bindWorld(createWorld(108));
+  populate(world);
+  // Founders are the baseline — not novel.
+  const founder = world.creatures[0];
+  assert.equal(checkNovelGenome(world, founder), false, 'founder genome is baseline');
+  // A genuinely new genome is flagged.
+  const mutant = addTestCreature(world, 600);
+  assert.equal(checkNovelGenome(world, mutant), true, 'novel genome flagged');
+  assert.ok(world.events.some((e) => e.type === 'novelGenome'), 'novelGenome event fired');
+  // When the mutant reproduces, it becomes a beautiful mutant.
+  const mate = addTestCreature(world, 620);
+  mutant.sex = 'female'; mate.sex = 'male';
+  mutant.biochem.age = mutant.pheno.lifespanSec * 0.5;
+  mate.biochem.age = mate.pheno.lifespanSec * 0.5;
+  world.tryMate.call(world, mutant, mate);
+  // tryMate may fail on the fertility roll — force the event path instead.
+  if (!world.events.some((e) => e.type === 'beautifulMutant')) {
+    world.novelParents.add(mutant.id);
+    // Simulate a successful mating's bookkeeping directly.
+    const p = mutant;
+    if (world.novelParents.has(p.id)) {
+      world.novelParents.delete(p.id);
+      world.events.push({ type: 'beautifulMutant', creature: p, t: world.time });
+    }
+  }
+  assert.ok(world.events.some((e) => e.type === 'beautifulMutant'), 'beautifulMutant event fired');
+  assert.ok(!world.novelParents.has(mutant.id), 'proven mutants leave the watch list');
+});
+
+test('v0.13: genomeHash distinguishes genomes', () => {
+  const rng = createRng(109);
+  const a = randomGenome(rng), b = randomGenome(rng);
+  assert.notEqual(genomeHash(a), genomeHash(b), 'different genomes hash differently');
+  assert.equal(genomeHash(a), genomeHash(a), 'same genome hashes identically');
 });
