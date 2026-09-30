@@ -8,6 +8,7 @@ import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_R
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
 import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION } from './world.js';
+import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, pushContextWindow, hearerSalientContext, lexiconDistance } from './language.js';
 
 let nextId = 1;
 
@@ -89,6 +90,11 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     // pitches heard, the raw material of accent.
     voicePitch: pheno.vocalPitch ?? 0.5,
     heardPitches: [],
+    // v0.16 "Tongues": the lexicon — per-creature acoustic prototypes with
+    // context tallies. Culture, not DNA: hatchlings start empty and learn
+    // by hearing (infant critical-period boost in lexLearnRate).
+    lexicon: createLexicon(lexSlots(pheno)),
+    _contextWindow: [], // hearer's salient-context window (delta a)
     // v0.14 "Voices": the waste cycle — the gut holds what digestion
     // didn't take. Excretion (in updateCreature) returns it to the soil.
     gut: 0,
@@ -250,7 +256,12 @@ export function gatherSenses(c, world) {
       if (callChoosy > 0) {
         const myPitch = c.voicePitch ?? 0.5;
         const op = o.voicePitch ?? 0.5;
-        score += callChoosy * (1 - Math.abs(myPitch - op));
+        // v0.16 (delta d): lexicon distance joins the dialect mate-choice —
+        // accent similarity AND word similarity. Word-drift becomes a
+        // prezygotic barrier: this is what turns drift into languages.
+        const accentSim = 1 - Math.min(1, Math.abs(myPitch - op));
+        const wordSim = 1 - lexiconDistance(c.lexicon, o.lexicon);
+        score += callChoosy * (0.6 * accentSim + 0.4 * wordSim);
       }
       if (score > best) { best = score; mate = o; mateDist = d / range; }
     }
@@ -278,6 +289,7 @@ export function gatherSenses(c, world) {
     bondNear: otherObj && world.bonds ? getBond(world.bonds, c, otherObj) : 0,
     climbUp, climbDown, jumpNear, groomNear,
     callHeard: heard.heard, callPitch: heard.pitch,
+    _heardCall: heard.call || null, // v0.16: the full acoustic event for the lexicon
     wasteOdor: wasteOdorOf(world, c.x), // v0.14: disgust — the smell of fouled ground
     _alarmHeard: heard.alarm, // v0.14: alarm calls reassure — fear drains slightly
     foodDist: food ? food.dist : 1,
@@ -574,6 +586,18 @@ export function groundCallType(c, s) {
   return 'contact';
 }
 
+// v0.16: the creature's own salient state as an observable context —
+// what the hearer-half of delta (a) reinforces toward. Mirrors
+// groundCallType with a strength weight.
+export function ownSalientContext(c, s) {
+  const b = c.biochem;
+  const stage = ageStage(b, c.pheno);
+  if (b.fear > 0.6) return { ctx: 'alarm', w: b.fear };
+  if (s.foodDist < 0.3 && s._food) return { ctx: 'food', w: 1 - s.foodDist };
+  if (b.social > 0.6 && (stage === 'adult' || stage === 'senior')) return { ctx: 'mate', w: b.social };
+  return { ctx: 'contact', w: 0.25 };
+}
+
 function executeAction(c, world, dt, s) {
   const rng = world.rng;
   c.playing = false;
@@ -808,7 +832,14 @@ function executeAction(c, world, dt, s) {
     case 'vocal': {
       const type = groundCallType(c, s);
       c.actionLabel = type === 'contact' ? 'calling out' : `calling: ${type}!`;
-      emitCall(world, c, type);
+      // v0.16 "Tongues": speak from the lexicon — the prototype most tied
+      // to the salient state, with production noise; babble if nothing is
+      // tied yet. The speaker reinforces toward its OWN salient state
+      // (delta a: it knows why it called).
+      const said = speakFromLexicon(c, type, rng);
+      const call = emitCall(world, c, type, said.proto);
+      const young = ageStage(c.biochem, c.pheno) !== 'adult';
+      registerSpoken(c.lexicon, call.proto, type, lexLearnRate(c.pheno, young), world.time);
       c._active = 0.3; // calling is light work
       if (s.callHeard > 0.5) c.reward += 0.05; // answering is social glue — comfort
       c.actionTimer = 0; // calls are punctual, not commitments
@@ -990,6 +1021,23 @@ export function updateCreature(c, world, dt) {
       c.voicePitch = Math.max(0.05, Math.min(1, c.voicePitch + (mean - c.voicePitch) * rate));
     }
     if (s._alarmHeard) b.adrenaline = clamp01(b.adrenaline - 0.12 * dt);
+
+    // v0.16 "Tongues": the lexicon learns from every heard call (delta a,
+    // hearer half). The heard prototype is reinforced toward the hearer's
+    // own most salient observable context in a short recency-weighted
+    // window — the hearer never knows the speaker's state. Novel sounds
+    // birth probationary candidates. Infant critical-period boost (delta f).
+    {
+      const young = ageStage(b, c.pheno) !== 'adult';
+      const lr = lexLearnRate(c.pheno, young);
+      const osc = ownSalientContext(c, s);
+      pushContextWindow(c, osc.ctx, osc.w, world.time);
+      if (s._heardCall && s.callHeard > 0.2) {
+        const hc = hearerSalientContext(c, world.time);
+        registerHeard(c.lexicon, s._heardCall.proto, hc.ctx, hc.weight, lr, world.time);
+      }
+      decayLexicon(c.lexicon, dt, world.time);
+    }
 
     // Illness: contagion from sick neighbors, plus rare spontaneous onset.
     // Stronger immune systems resist both.

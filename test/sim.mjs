@@ -24,6 +24,149 @@ import { createBonds, getBond, nudgeBond, tickBonds, pedigreeKin, detectTribes, 
 import { randomPlantGenome, plantPhenotype, inheritPlant, plantMeiosis, PLANT_GENES } from '../src/sim/plantgenome.js';
 import { createTeacher, tickTeacher, commandTeacher, setTeacherMode, teacherDemo, teacherReward, teacherRewardNearest, emitTeacherCall, TEACHER_MOTIF, TEACHER_PITCH, IMITATION_WINDOW, gatherTeacherSenses, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, foodFlavor } from '../src/sim/teacher.js';
 import { worldToScreen, screenToWorld, fitCamera, zoomAt, panBy, recenterCamera, followPoint, CAM_MIN_ZOOM, CAM_MAX_ZOOM, CAM_PAN_MARGIN } from '../src/render/renderer.js';
+import { createLexicon, lexSlots, hearThresh, baseLoud, sizePitchFactor, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, acousticDistance, lexiconDistance, wordName, entryStats, pushUtterance, hearerSalientContext, LEX_CONTEXTS, LEX_PROBATION_HEARINGS } from '../src/sim/language.js';
+
+// ================= v0.16 "Tongues" =================
+
+test('v0.16: wordName is deterministic — "mooo" and "KIT!"', () => {
+  assert.equal(wordName({ pitch: 0.2, length: 0.9, loudness: 0.15 }), 'mooo');
+  assert.equal(wordName({ pitch: 0.85, length: 0.15, loudness: 0.95 }), 'KIT!');
+  assert.equal(wordName({ pitch: 0.85, length: 0.15, loudness: 0.95 }), 'KIT!', 'same acoustics, same name');
+});
+
+test('v0.16: probation — novel calls graduate after LEX_PROBATION_HEARINGS hearings', () => {
+  assert.equal(LEX_PROBATION_HEARINGS, 3);
+  const lex = createLexicon(12);
+  const proto = { pitch: 0.7, length: 0.3, loudness: 0.6 };
+  for (let i = 0; i < LEX_PROBATION_HEARINGS - 1; i++) {
+    registerHeard(lex, proto, 'contact', 1.0, 0.5, i);
+  }
+  assert.equal(lex.entries.length, 0, 'still probationary after 2 hearings');
+  assert.equal(lex.probation.length, 1, 'candidate is tracked');
+  registerHeard(lex, proto, 'contact', 1.0, 0.5, 3);
+  assert.equal(lex.entries.length, 1, 'graduates to the lexicon after 3 hearings');
+  assert.equal(lex.probation.length, 0, 'probation cleared');
+});
+
+test('v0.16: speaker/hearer asymmetry — speakers register immediately', () => {
+  const lex = createLexicon(12);
+  const proto = { pitch: 0.6, length: 0.4, loudness: 0.5 };
+  registerSpoken(lex, proto, 'food', 0.5, 1);
+  assert.equal(lex.entries.length, 1, 'speaker own-utterance needs no probation');
+  assert.equal(lex.entries[0].used, 1);
+  assert.equal(lex.entries[0].heard, 0, 'speaker entry tracks usage, not hearings');
+  assert.ok(lex.entries[0].confidence >= 0.25, 'speaker entry starts confident');
+});
+
+test('v0.16: decay forgets only low-confidence, low-speaker entries', () => {
+  const lex = createLexicon(12);
+  const filler = (pitch, conf) => ({ proto: { pitch, length: 0.4, loudness: 0.4 }, contexts: { contact: 5 }, used: 5, heard: 5, confidence: conf, speakers: 2, lastT: 0 });
+  const weak = { proto: { pitch: 0.3, length: 0.4, loudness: 0.4 }, contexts: { food: 1 }, used: 0, heard: 1, confidence: 0.1, speakers: 0, lastT: 0 };
+  const shared = { proto: { pitch: 0.6, length: 0.4, loudness: 0.4 }, contexts: { contact: 2 }, used: 1, heard: 1, confidence: 0.1, speakers: 3, lastT: 0 };
+  lex.entries.push(filler(0.4, 0.8), filler(0.7, 0.9), weak, shared);
+  decayLexicon(lex, 400, 1000);
+  assert.ok(!lex.entries.includes(weak), 'weak, unshared entry forgotten');
+  assert.ok(lex.entries.includes(shared), 'low-confidence but troop-shared entry survives');
+});
+
+test('v0.16: context tallies concentrate — entryStats names the dominant context', () => {
+  const e = { proto: { pitch: 0.5, length: 0.4, loudness: 0.5 }, contexts: { food: 8, contact: 2 }, used: 5, heard: 5, confidence: 0.6, speakers: 2 };
+  const st = entryStats(e);
+  assert.equal(st.top, 'food');
+  assert.ok(Math.abs(st.topPct - 0.8) < 1e-9, `food at 80%, got ${st.topPct}`);
+});
+
+test('v0.16: lexiconDistance — 0 for identical, symmetric, positive for different', () => {
+  const a = createLexicon(12);
+  const b = createLexicon(12);
+  assert.equal(lexiconDistance(a, b), 0, 'empty lexicons have no distance');
+  registerSpoken(a, { pitch: 0.2, length: 0.8, loudness: 0.2 }, 'food', 0.5, 1);
+  registerSpoken(b, { pitch: 0.2, length: 0.8, loudness: 0.2 }, 'food', 0.5, 1);
+  assert.equal(lexiconDistance(a, b), 0, 'identical entries → 0');
+  registerSpoken(b, { pitch: 0.9, length: 0.1, loudness: 0.9 }, 'alarm', 0.5, 2);
+  const d = lexiconDistance(a, b);
+  assert.ok(d > 0, `different lexicons have distance, got ${d}`);
+  assert.equal(lexiconDistance(a, b), lexiconDistance(b, a), 'symmetric');
+});
+
+test('v0.16: body size sets base pitch — big bodies call lower', () => {
+  const world = bindWorld(createWorld(99));
+  populate(world);
+  const a = world.creatures[0];
+  a.pheno.vocalRange = 0; a.voicePitch = 0.7;
+  a.pheno.size = -1; // small
+  emitCall(world, a, 'contact');
+  const smallPitch = world.calls[0].pitch;
+  world.calls.length = 0;
+  a.pheno.size = 1; // big
+  emitCall(world, a, 'contact');
+  const bigPitch = world.calls[0].pitch;
+  assert.ok(smallPitch > bigPitch, `small ${smallPitch.toFixed(2)} > big ${bigPitch.toFixed(2)}`);
+  assert.equal(world.calls[0].y, world.platforms[a.platformIndex].y, 'call carries emitter y');
+});
+
+test('v0.16: 1/d falloff + hearing-threshold gate', () => {
+  const world = bindWorld(createWorld(4242));
+  populate(world);
+  const a = world.creatures[0];
+  const b = world.creatures[1];
+  b.platformIndex = a.platformIndex; b.x = a.x + 50;
+  a.voicePitch = 0.6; a.pheno.vocalRange = 0; a.pheno.size = 0;
+  emitCall(world, a, 'contact');
+  const near = callsHeardBy(world, b);
+  assert.ok(near.heard > 0, 'nearby creature hears');
+  assert.ok(near.call, 'heard result carries the acoustic event');
+  assert.ok(near.length > 0 && near.loudnessAtEar > 0, 'acoustic fields survive');
+  // Whisper-quiet call: below the hearer's threshold even at close range.
+  world.calls.length = 0;
+  const thr = hearThresh(b.pheno);
+  b.x = a.x + 100;
+  emitCall(world, a, 'contact', { pitch: 0.6, length: 0.2, loudness: thr * 0.1 });
+  const gated = callsHeardBy(world, b);
+  assert.equal(gated.heard, 0, `sub-threshold whisper is gated out (thr ${thr.toFixed(2)})`);
+});
+
+test('v0.16: teacher calls are full acoustic events with utterance logging', () => {
+  const world = bindWorld(createWorld(7));
+  populate(world);
+  const te = world.teacher;
+  const n0 = (world.utterLog || []).length;
+  emitTeacherCall(world, te, 'food', 0.55);
+  const call = world.calls[world.calls.length - 1];
+  assert.equal(call.length, 0.4, 'deliberate length');
+  assert.equal(call.loudness, 0.95, 'loud and clear');
+  assert.ok(call.proto, 'carries its prototype');
+  assert.equal(call.y, world.platforms[te.platformIndex].y);
+  assert.equal((world.utterLog || []).length, n0 + 1, 'utterance logged');
+  const u = world.utterLog[world.utterLog.length - 1];
+  assert.equal(u.ctx, 'food', 'true context recorded');
+  assert.equal(u.speaker, 'Sunny');
+  assert.ok(u.fromTeacher, 'Rosetta stone marked');
+});
+
+test('v0.16: witnessed death triggers the teacher danger demo', () => {
+  const world = bindWorld(createWorld(31337));
+  populate(world);
+  const te = world.teacher;
+  te.lastDemoT = -100; // past the cooldown
+  world.time = 100;
+  const victim = world.creatures[0];
+  victim.alive = false;
+  victim.platformIndex = te.platformIndex;
+  victim.x = te.x + 100;
+  world.events.push({ type: 'death', t: world.time, creature: victim });
+  tickWorld(world, 0.1);
+  assert.ok(te.demoQueue.length > 0, 'teacher starts a demo on witnessing death');
+  assert.equal(te.demoType, 'danger', 'the demo names the danger');
+});
+
+test('v0.16: troop census clusters shared words every 30s', () => {
+  const world = bindWorld(createWorld(2024));
+  populate(world);
+  world.time = 29.95;
+  tickWorld(world, 0.1); // crosses the 30s boundary
+  assert.ok(Array.isArray(world.troopWords), 'census ran');
+});
 
 const N_SENSES = 24; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor
 
@@ -376,7 +519,7 @@ test('v0.5: mate finally has an instinct pathway', () => {
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 186); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee
+  assert.equal(GENES.length, 192); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -2043,6 +2186,7 @@ test('v0.14: nearby listeners hear the call — callHeard/callPitch senses', () 
   b.x = a.x + 50; // well within earshot
   a.voicePitch = 0.75;
   a.pheno.vocalRange = 0; // clean signal
+  a.pheno.size = 0; // neutralize body-size pitch scaling (v0.16)
   emitCall(world, a, 'contact');
   const s = gatherSenses(b, world);
   assert.ok(s.callHeard > 0.3, `listener hears the call (${s.callHeard.toFixed(2)})`);

@@ -4,11 +4,12 @@
 import { screenToWorld, zoomAt, panBy, recenterCamera, followPoint } from '../render/renderer.js';
 import { petCreature, scoldCreature, creatureRadius } from '../sim/creature.js';
 import { ageStage, mood } from '../sim/biochem.js';
-import { layEgg, DAY_LENGTH, LINEAGE_TRAITS, zoneAt } from '../sim/world.js';
+import { layEgg, DAY_LENGTH, LINEAGE_TRAITS, zoneAt, CALL_REF_D } from '../sim/world.js';
 import { strongestBond } from '../sim/social.js';
 import { randomGenome } from '../sim/genome.js';
 import { commandTeacher, setTeacherMode, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, TEACHER_MOTIF } from '../sim/teacher.js';
 import { buildChronicle } from '../sim/chronicle.js';
+import { wordName, entryStats } from '../sim/language.js';
 
 const MOOD_EMOJI = {
   content: '😊', hungry: '🍽️', tired: '😴', bored: '😐',
@@ -53,12 +54,15 @@ export function createUI(canvas, renderer, world) {
       <button id="treeBtn" title="Family tree">🌳 Tree</button>
       <button id="evoBtn" title="Evolution tracker">📈 Evo</button>
       <button id="chronBtn" title="Chronicle — the world's story">📜 Chronicle</button>
+      <button id="tongueBtn" title="Tongues — the emerging lexicon">📖 Tongues</button>
+      <button id="soundBtn" title="Toggle sound">🔊</button>
       <button id="teacherBtn" title="Find the Teacher">🧑‍🏫</button>
     </div>
     <div id="panel" class="hidden"></div>
     <div id="treepanel" class="bigpanel hidden"></div>
     <div id="evopanel" class="bigpanel hidden"></div>
     <div id="chronpanel" class="bigpanel hidden"></div>
+    <div id="tonguepanel" class="bigpanel hidden"></div>
     <div id="toasts"></div>
     <div id="hint">Click a creature to inspect · drag to move it · double-click to pet · drag background to pan · scroll to zoom · 🧑‍🏫 finds the Teacher</div>
     <div id="camctl">
@@ -74,6 +78,7 @@ export function createUI(canvas, renderer, world) {
   const treePanel = root.querySelector('#treepanel');
   const evoPanel = root.querySelector('#evopanel');
   const chronPanel = root.querySelector('#chronpanel');
+  const tonguePanel = root.querySelector('#tonguepanel');
   const clockEl = root.querySelector('#clock');
   const censusEl = root.querySelector('#census');
   const toastsEl = root.querySelector('#toasts');
@@ -137,14 +142,18 @@ export function createUI(canvas, renderer, world) {
   const treeBtn = root.querySelector('#treeBtn');
   const evoBtn = root.querySelector('#evoBtn');
   const chronBtn = root.querySelector('#chronBtn');
+  const tongueBtn = root.querySelector('#tongueBtn');
+  const soundBtn = root.querySelector('#soundBtn');
   const closeBigPanels = () => {
-    ui.treeOpen = ui.evoOpen = ui.chronOpen = false;
+    ui.treeOpen = ui.evoOpen = ui.chronOpen = ui.tonguesOpen = false;
     treePanel.classList.add('hidden');
     evoPanel.classList.add('hidden');
     chronPanel.classList.add('hidden');
+    tonguePanel.classList.add('hidden');
     treeBtn.classList.remove('active');
     evoBtn.classList.remove('active');
     chronBtn.classList.remove('active');
+    tongueBtn.classList.remove('active');
   };
   treeBtn.addEventListener('click', () => {
     ui.treeOpen = !ui.treeOpen;
@@ -172,6 +181,32 @@ export function createUI(canvas, renderer, world) {
       chronBtn.classList.add('active');
     } else closeBigPanels();
   });
+  // ---- v0.16 "Tongues": the field-linguist's notebook ----
+  tongueBtn.addEventListener('click', () => {
+    ui.tonguesOpen = !ui.tonguesOpen;
+    if (ui.tonguesOpen) {
+      closeBigPanels(); ui.tonguesOpen = true;
+      renderTongues(tonguePanel, ui);
+      tongueBtn.classList.add('active');
+    } else closeBigPanels();
+  });
+  tonguePanel.addEventListener('click', (e) => {
+    if (!e.target || !e.target.closest) return;
+    if (e.target.id === 'g-close' || (e.target.closest && e.target.closest('#g-close'))) {
+      ui.tonguesOpen = false; tonguePanel.classList.add('hidden'); tongueBtn.classList.remove('active');
+    }
+  });
+  // ---- v0.16: audible calls. AudioContext starts on first user gesture
+  // (autoplay policy); the toggle is on by default.
+  ui.soundOn = true;
+  ui._audioCursor = 0;
+  const paintSoundBtn = () => { soundBtn.textContent = ui.soundOn ? '🔊' : '🔇'; };
+  soundBtn.addEventListener('click', () => {
+    ui.soundOn = !ui.soundOn;
+    if (ui.soundOn) ensureAudio();
+    paintSoundBtn();
+  });
+  root.addEventListener('pointerdown', () => { if (ui.soundOn) ensureAudio(); });
   treePanel.addEventListener('click', (e) => {
     if (!e.target || !e.target.closest) return;
     if (e.target.id === 't-close' || (e.target.closest && e.target.closest('#t-close'))) {
@@ -472,6 +507,12 @@ export function createUI(canvas, renderer, world) {
       ui._evoAt = now;
       renderEvo(evoPanel, ui);
     }
+    // v0.16 "Tongues": audible calls + the notebook refresh.
+    drainCallSounds(world, ui, renderer);
+    if (ui.tonguesOpen && now - ui._tongueAt > 1500) {
+      ui._tongueAt = now;
+      renderTongues(tonguePanel, ui);
+    }
   };
 
   return ui;
@@ -649,8 +690,14 @@ function refreshPanel(panel, ui) {
     };
     panel.querySelector('#t-demo').onclick = () => {
       ensurePossessed(ui.world, te);
-      commandTeacher(te, { cmd: 'demo' });
-      toast(toastsEl, '📢 The Teacher demonstrates its motif.');
+      // v0.16: the demo cycles the Rosetta types — FOOD / CONTACT / COME / DANGER.
+      const types = ['food', 'contact', 'come', 'danger'];
+      const next = types[((types.indexOf(te.demoType) + 1) + types.length) % types.length] || 'food';
+      const motif = next === 'danger' ? [0.85, 0.92, 0.85]
+        : next === 'come' ? [0.5, 0.62, 0.5]
+        : next === 'food' ? [0.55, 0.5] : TEACHER_MOTIF;
+      commandTeacher(te, { cmd: 'demo', pitches: motif, type: next });
+      toast(toastsEl, `📢 The Teacher demonstrates: ${next}.`);
       refreshPanel(panel, ui);
     };
     panel.querySelector('#t-reward').onclick = () => {
@@ -1018,4 +1065,143 @@ function renderChronicle(chronPanel, ui) {
     html += `</div>`;
   }
   chronPanel.innerHTML = html;
+}
+
+// ---- v0.16 "Tongues": audible calls (WebAudio) ----
+// Headless-safe: everything gates on `typeof AudioContext !== 'undefined'`
+// — node (test/headless/dist-smoke) never has one. The context is created
+// lazily on the first user gesture (autoplay policy).
+let _tongueAudio = null;
+function ensureAudio() {
+  if (typeof AudioContext === 'undefined') return null;
+  if (!_tongueAudio) {
+    try { _tongueAudio = new AudioContext(); } catch (e) { return null; }
+  }
+  if (_tongueAudio.state === 'suspended') _tongueAudio.resume().catch(() => {});
+  return _tongueAudio;
+}
+function playCallSound(world, renderer, call) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const t0 = ctx.currentTime;
+  // Camera-relative volume + stereo pan — calls first, other sounds later.
+  const cc = screenToWorld(renderer, renderer.canvas.width / 2, renderer.canvas.height / 2);
+  const d = Math.hypot(call.x - cc.x, (call.y || 0) - cc.y);
+  const vol = Math.min(1, (call.loudness || 0.5) * CALL_REF_D / Math.max(d, 40)) * 0.4;
+  if (vol <= 0.01) return;
+  const panV = Math.max(-1, Math.min(1, (call.x - cc.x) / 600));
+  const freq = 160 + (call.pitch || 0.5) * 700;
+  const dur = Math.max(0.08, Math.min(1.2, call.length || 0.3));
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(freq, t0);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(40, freq * 0.85), t0 + dur);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(vol, t0 + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  osc.connect(gain);
+  if (ctx.createStereoPanner) {
+    const pan = ctx.createStereoPanner();
+    pan.pan.setValueAtTime(panV, t0);
+    gain.connect(pan);
+    pan.connect(ctx.destination);
+  } else {
+    gain.connect(ctx.destination);
+  }
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.05);
+}
+function drainCallSounds(world, ui, renderer) {
+  if (!ui.soundOn) { ui._audioCursor = world.time; return; }
+  if (typeof AudioContext === 'undefined') return; // never in headless
+  let played = 0;
+  for (const call of world.calls) {
+    if (call.t > ui._audioCursor && call.t <= world.time && played < 8) {
+      playCallSound(world, renderer, call);
+      played++;
+    }
+  }
+  ui._audioCursor = world.time;
+}
+
+// ---- v0.16 "Tongues": the field-linguist's notebook ----
+// Per-creature lexicon when one is selected, troop-level population view
+// otherwise, plus the recent-utterance log with true contexts.
+const TONGUE_CTX_ICON = { food: '🍎', alarm: '⚠️', mate: '💕', contact: '📢', come: '👉' };
+function tongueWordRow(name, trend, speakers, topCtx, topPct, used, heard, conf) {
+  const icon = TONGUE_CTX_ICON[topCtx] || '❔';
+  return `<div class="g-row"><span class="g-word">${escapeHtml(name)}</span>`
+    + `<span class="g-trend">${trend}</span>`
+    + `<span class="g-spk">${speakers} 🐒</span>`
+    + `<span class="g-ctx">${icon} ${Math.round(topPct * 100)}%</span>`
+    + `<span class="g-n">×${used + heard}</span>`
+    + `<span class="g-conf"><span class="g-confbar" style="width:${Math.round(conf * 100)}%"></span></span></div>`;
+}
+function tongueCreatureHtml(c) {
+  const lex = c.lexicon;
+  const entries = [...lex.entries].sort((a, b) => b.confidence - a.confidence);
+  let html = `<div class="l-title">🗣️ ${escapeHtml(c.name)}'s lexicon — ${entries.length}/${lex.slots} words`
+    + (lex.probation.length ? ` · ${lex.probation.length} candidate${lex.probation.length > 1 ? 's' : ''} on probation` : '') + `</div>`;
+  if (!entries.length && !lex.probation.length) {
+    return html + `<div class="ch-empty">No words yet — this one hasn't learned to talk.</div>`;
+  }
+  for (const e of entries.slice(0, 12)) {
+    const st = entryStats(e);
+    html += tongueWordRow(wordName(e.proto), '•', e.speakers || 0, st.top, st.topPct, e.used, e.heard, e.confidence);
+  }
+  if (lex.probation.length) {
+    html += `<div class="l-title">🥚 Probation — heard ${lex.probation.map((p) => p.hearings).join(', ')}×</div>`;
+    for (const p of lex.probation) {
+      html += `<div class="g-row g-prob"><span class="g-word">${escapeHtml(wordName(p.proto))}</span>`
+        + `<span class="g-n">heard ${p.hearings}×</span></div>`;
+    }
+  }
+  return html;
+}
+function tonguePopulationHtml(world) {
+  const census = world.troopWords || [];
+  if (!census.length) {
+    return `<div class="l-title">🌍 Troops</div><div class="ch-empty">Listening… the troop census runs every 30 seconds.</div>`;
+  }
+  let html = '';
+  for (const t of census) {
+    html += `<div class="l-title">🌍 Troop · ${t.memberCount} members ${t.words.length ? `· ${t.words.length} shared words` : '· no shared words yet'}</div>`;
+    for (const w of t.words) {
+      let total = 0, top = 'contact', topP = 0;
+      for (const k of Object.keys(w.contexts)) {
+        total += w.contexts[k];
+        if (w.contexts[k] > (w.contexts[top] || 0)) top = k;
+      }
+      topP = total > 0 ? (w.contexts[top] || 0) / total : 0;
+      html += tongueWordRow(w.name, w.trend, w.speakers, top, topP, w.total, 0, Math.min(1, w.speakers / Math.max(1, t.memberCount)));
+    }
+  }
+  return html;
+}
+function tongueUtterHtml(world) {
+  const log = (world.utterLog || []).slice(-12).reverse();
+  if (!log.length) return `<div class="l-title">👂 Recent utterances</div><div class="ch-empty">Silence so far.</div>`;
+  let html = `<div class="l-title">👂 Recent utterances — true context, straight from the sim</div>`;
+  for (const u of log) {
+    const icon = TONGUE_CTX_ICON[u.ctx] || '❔';
+    html += `<div class="g-row"><span class="g-t">t=${Math.round(u.t)}</span>`
+      + `<span class="g-word">${escapeHtml(u.name)}</span>`
+      + `<span class="g-spk">${escapeHtml(u.speaker)}${u.fromTeacher ? ' 🧑‍🏫' : ''}</span>`
+      + `<span class="g-ctx">${icon} ${escapeHtml(u.ctx)}</span></div>`;
+  }
+  return html;
+}
+function renderTongues(tonguePanel, ui) {
+  const world = ui.world;
+  const sel = ui.selected;
+  tonguePanel.classList.remove('hidden');
+  let html = `<div class="bp-head"><h2>📖 Tongues — the emerging lexicon</h2><button id="g-close">✕</button></div>
+    <div class="tnote">No meaning is ever assigned. Each word shows inferred statistics —
+    where it gets used, by whom, whether it spreads or dies — like a field linguist's notebook.
+    Teacher calls 🧑‍🏫 are the Rosetta stone.</div>`;
+  if (sel && sel.kind === 'creature' && sel.lexicon) html += tongueCreatureHtml(sel);
+  else html += tonguePopulationHtml(world);
+  html += tongueUtterHtml(world);
+  tonguePanel.innerHTML = html;
 }

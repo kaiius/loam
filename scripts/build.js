@@ -16,6 +16,7 @@ const MODULES = [
   'src/sim/brain.js',
   'src/sim/memory.js',
   'src/sim/culture.js',
+  'src/sim/language.js',
   'src/sim/social.js',
   'src/sim/creature.js',
   'src/sim/world.js',

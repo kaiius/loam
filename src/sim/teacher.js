@@ -26,6 +26,7 @@
 //                 the good imitators, rest, repeat.
 
 import { zoneAt, ZONES, callsHeardBy } from './world.js';
+import { pushUtterance } from './language.js';
 
 // The lesson: a four-note motif at the teacher's signature pitch.
 // Exact pitches — the teacher is a clear model, not a noisy one.
@@ -109,19 +110,38 @@ function logTeach(world, ev) {
 // Exact pitch: the lesson is clear.
 export function emitTeacherCall(world, teacher, type, pitch) {
   const zkey = zoneAt(teacher.x).key;
-  world.calls.push({
-    t: world.time, type, pitch, volume: TEACHER_VOLUME, earshot: TEACHER_EARSHOT,
-    platformIndex: teacher.platformIndex, x: teacher.x, zone: zkey,
-    callerId: 'teacher', fromTeacher: true,
-  });
+  const plat = world.platforms[teacher.platformIndex];
+  const ty = plat ? plat.y : 0;
+  // v0.16: the teacher's calls are full acoustic events — loud and clear
+  // (loudness 0.95), deliberate length. The Rosetta stone must carry.
+  const call = {
+    t: world.time, type,
+    pitch: Math.max(0.05, Math.min(1, pitch)),
+    length: 0.4, loudness: 0.95,
+    volume: TEACHER_VOLUME, earshot: TEACHER_EARSHOT,
+    platformIndex: teacher.platformIndex, x: teacher.x, y: ty, zone: zkey,
+    callerId: 'teacher', callerName: 'Sunny', fromTeacher: true,
+    proto: null,
+  };
+  call.proto = { pitch: call.pitch, length: call.length, loudness: call.loudness };
+  world.calls.push(call);
   let log = world.zoneCalls[zkey];
   if (!log) { log = []; world.zoneCalls[zkey] = log; }
   log.push({ t: world.time, pitch, type, fromTeacher: true });
   if (log.length > 300) log.splice(0, log.length - 300);
+  pushUtterance(world, call);
 }
 
 // Begin a demonstration: a sequence of exact-pitch calls, one per 0.7s.
-// type is the call's meaning ('contact' default; 'food' after a good taste).
+// type is the call's meaning — 'contact' (default), 'food' (after a good
+// taste), 'danger' (on witnessing a death), 'come' (a summons). Together
+// FOOD/DANGER/COME are the Rosetta stone of the emerging lexicon.
+const DEMO_LABELS = {
+  food: 'teaching: food 🍎',
+  danger: 'teaching: danger ⚠️',
+  come: 'calling: come here 📢',
+  contact: 'demonstrating 🎵',
+};
 export function teacherDemo(world, teacher, pitches = TEACHER_MOTIF, type = 'contact') {
   teacher.demoQueue = [...pitches];
   teacher.demoTimer = 0;
@@ -130,7 +150,7 @@ export function teacherDemo(world, teacher, pitches = TEACHER_MOTIF, type = 'con
     ? pitches.reduce((a, b) => a + b, 0) / pitches.length
     : TEACHER_PITCH;
   teacher.lastDemoT = world.time;
-  teacher.actionLabel = type === 'food' ? 'teaching: food 🍎' : 'demonstrating 🎵';
+  teacher.actionLabel = DEMO_LABELS[type] || DEMO_LABELS.contact;
   logTeach(world, {
     t: world.time, kind: 'demo', type,
     pitches: [...pitches], zone: zoneAt(teacher.x).key,
@@ -259,7 +279,7 @@ export function tickTeacher(world, teacher, dt) {
       const pitch = teacher.demoQueue.shift();
       emitTeacherCall(world, teacher, teacher.demoType || 'contact', pitch);
       teacher.demoTimer = 0.7;
-      teacher.actionLabel = teacher.demoType === 'food' ? 'teaching: food 🍎' : 'demonstrating 🎵';
+      teacher.actionLabel = DEMO_LABELS[teacher.demoType] || DEMO_LABELS.contact;
     }
   }
 
@@ -377,7 +397,7 @@ function runCommand(world, teacher, cmd) {
       logTeach(world, { t: world.time, kind: 'command', command: 'moveTo', zone: zoneAt(teacher.targetX).key });
       break;
     case 'demo':
-      teacherDemo(world, teacher, cmd.pitches || TEACHER_MOTIF);
+      teacherDemo(world, teacher, cmd.pitches || TEACHER_MOTIF, cmd.type || 'contact');
       break;
     case 'reward':
       teacherReward(world, teacher, cmd.pitch);

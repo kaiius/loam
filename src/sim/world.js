@@ -8,7 +8,8 @@ import { createCreature, updateCreature, creatureRadius } from './creature.js';
 import { ageStage } from './biochem.js';
 import { createCulture, sampleCulture, pruneExtinct, adoptTradition, fidelityOf } from './culture.js';
 import { createBonds, tickBonds, detectTribes, nudgeBond } from './social.js';
-import { createTeacher, tickTeacher } from './teacher.js';
+import { createTeacher, tickTeacher, teacherDemo } from './teacher.js';
+import { sizePitchFactor, hearThresh, baseLoud, pushUtterance, acousticDistance, lexiconDistance, wordName, LEX_CONTEXTS, pushContextWindow } from './language.js';
 
 export const DAY_LENGTH = 300; // seconds per full day/night cycle
 
@@ -326,7 +327,12 @@ export function tryMate(a, b) {
   const childGen = Math.max(a.generation || 0, b.generation || 0) + 1;
   const parentTraditions = [...new Set([...(mom.traditions || []), ...(dad.traditions || [])])];
   // v0.14: parental genome distance — the postzygotic barrier input.
-  const parentDist = genomeDistance(mom.genome, dad.genome);
+  // v0.16 (delta d): lexicon distance joins the barrier — word-drift
+  // becomes a reproductive barrier, which is what turns drift into
+  // distinct languages. Additive, so language difference alone can push
+  // a pairing over the hybrid threshold.
+  const lexD = lexiconDistance(mom.lexicon, dad.lexicon);
+  const parentDist = genomeDistance(mom.genome, dad.genome) + 0.35 * lexD;
   for (let i = 0; i < nEggs; i++) {
     const eg = inherit(mom.genome, dad.genome, world.rng);
     // v0.14: gene duplication/deletion events enter the world's record —
@@ -443,41 +449,208 @@ export function checkNovelGenome(world, c) {
 // Pitch = vocalPitch × (1 ± vocalRange × noise); earshot scales with
 // vocalVolume. Calls live ~2 sim-seconds; the zone archive keeps the last
 // 300 per zone for dialect measurement.
-export function emitCall(world, c, type) {
+export function emitCall(world, c, type, proto = null) {
   const p = c.pheno;
   // The LEARNED pitch is what's heard: genetics sets the base voicePitch
   // at birth, imitation drifts it, and the accent is audible. This is what
   // makes dialects real — a zone's accent lives in ears, not just genes.
-  const base = c.voicePitch ?? p.vocalPitch ?? 0.5;
+  // v0.16: body size sets base pitch (sizePitchFactor — big bodies rumble,
+  // small bodies chirp; physics, not script). The optional proto carries
+  // the lexicon's chosen prototype; without one the call is raw voice.
+  const base = (c.voicePitch ?? p.vocalPitch ?? 0.5) * sizePitchFactor(p);
   const range = p.vocalRange ?? 0.3;
-  const pitch = Math.max(0.05, Math.min(1, base * (1 + (world.rng.next() * 2 - 1) * range)));
+  const ap = proto || {};
+  const pitch = ap.pitch !== undefined ? ap.pitch
+    : Math.max(0.05, Math.min(1, base * (1 + (world.rng.next() * 2 - 1) * range)));
+  const length = ap.length !== undefined ? ap.length : 0.15 + world.rng.next() * 0.5;
+  const loudness = ap.loudness !== undefined ? ap.loudness : baseLoud(p);
   const volume = p.vocalVolume ?? 0.5;
-  const earshot = 200 + volume * 400;
+  const earshot = 200 + volume * 400; // kept for compatibility
   const zkey = zoneAt(c.x).key;
-  world.calls.push({
-    t: world.time, type, pitch, volume, earshot,
-    platformIndex: c.platformIndex, x: c.x, zone: zkey, callerId: c.id,
-  });
+  const cplat = world.platforms[c.platformIndex];
+  const call = {
+    t: world.time, type,
+    pitch: Math.max(0.05, Math.min(1, pitch)),
+    length: Math.max(0.05, Math.min(1.2, length)),
+    loudness: Math.max(0.05, Math.min(1, loudness)),
+    volume, earshot,
+    platformIndex: c.platformIndex, x: c.x, y: cplat ? cplat.y : 0,
+    zone: zkey, callerId: c.id, callerName: c.name, fromTeacher: false,
+    proto: null,
+  };
+  call.proto = { pitch: call.pitch, length: call.length, loudness: call.loudness };
+  world.calls.push(call);
   let log = world.zoneCalls[zkey];
   if (!log) { log = []; world.zoneCalls[zkey] = log; }
-  log.push({ t: world.time, pitch, type });
+  log.push({ t: world.time, pitch: call.pitch, type });
   if (log.length > 300) log.splice(0, log.length - 300);
+  pushUtterance(world, call); // v0.16: the Tongues notebook's raw material
+  return call;
 }
 
-// v0.14: what does creature c hear right now? The loudest recent call on
-// the same platform within earshot. Returns { heard: 0..1, pitch, alarm }.
+// v0.16: what does creature c hear right now? Sound as physics — the
+// recent call with the strongest amplitude at c's ear: 1/d cylindrical
+// spreading, platform-slab + foliage occlusion along the ray, then the
+// hearing-threshold gene gates reception. What arrives (pitch, length,
+// loudness-at-ear, direction) is slightly noisy. Returns { heard: 0..1,
+// pitch, alarm } for the old senses, plus the acoustic event for the
+// lexicon.
+export const CALL_REF_D = 400; // loudness 0.5 carries ~400px unoccluded
 export function callsHeardBy(world, c) {
-  let best = null, bestScore = 0;
-  for (const call of world.calls || []) {
-    if (call.platformIndex !== c.platformIndex || call.callerId === c.id) continue;
-    const d = Math.abs(call.x - c.x);
-    if (d > call.earshot) continue;
+  const plat = world.platforms[c.platformIndex];
+  const hearY = plat ? plat.y : 0;
+  const thr = hearThresh(c.pheno || {});
+  let best = null, bestAmp = 0;
+  const calls = world.calls || [];
+  for (let i = 0; i < calls.length; i++) {
+    const call = calls[i];
+    if (!call || call.callerId === c.id) continue;
+    const dx = call.x - c.x;
+    const dy = (call.y !== undefined ? call.y : hearY) - hearY;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    let amp = (call.loudness !== undefined ? call.loudness : 0.5) * CALL_REF_D / Math.max(d, 1);
+    if (amp < thr) continue; // inaudible even unoccluded
+    amp *= soundOcclusion(world, call.x, call.y !== undefined ? call.y : hearY, c.x, hearY);
+    if (amp < thr) continue;
     const age = world.time - call.t;
-    const score = call.volume * Math.max(0, 1 - age / 2);
-    if (score > bestScore) { bestScore = score; best = call; }
+    const score = amp * Math.max(0, 1 - age / 2);
+    if (score > bestAmp) { bestAmp = score; best = call; best._ampAtEar = amp; }
   }
-  if (!best) return { heard: 0, pitch: 0, alarm: false };
-  return { heard: Math.min(1, bestScore * 2), pitch: best.pitch, alarm: best.type === 'alarm' };
+  if (!best) return { heard: 0, pitch: 0, alarm: false, call: null };
+  const heard = Math.max(0, Math.min(1, (bestAmp - thr) / Math.max(0.05, 1.5 - thr)));
+  const nz = world.rng.next() * 2 - 1;
+  return {
+    heard,
+    pitch: Math.max(0.05, Math.min(1, best.pitch * (1 + nz * 0.03))),
+    alarm: best.type === 'alarm',
+    call: best,
+    length: best.length,
+    loudnessAtEar: best._ampAtEar,
+    direction: Math.abs(best.x - c.x) < 1 ? 0 : Math.sign(best.x - c.x),
+  };
+}
+
+// v0.16: occlusion along the ray (delta e) — branch slabs and foliage
+// puffs eat sound. Endpoints' own slabs don't count (the ray travels
+// along the caller's / hearer's own branch, it doesn't punch through).
+function segmentHitsSlab(x1, y1, x2, y2, pl) {
+  const near1 = Math.abs(y1 - pl.y) < 14 && x1 >= pl.x1 - 4 && x1 <= pl.x2 + 4;
+  const near2 = Math.abs(y2 - pl.y) < 14 && x2 >= pl.x1 - 4 && x2 <= pl.x2 + 4;
+  if (near1 || near2) return false;
+  const dy = y2 - y1;
+  if (Math.abs(dy) < 1e-6) return false;
+  for (const edge of [pl.y - 10, pl.y + 10]) {
+    const t = (edge - y1) / dy;
+    if (t > 0.02 && t < 0.98) {
+      const x = x1 + (x2 - x1) * t;
+      if (x >= pl.x1 && x <= pl.x2) return true;
+    }
+  }
+  return false;
+}
+
+export function foliageDensityAt(world, x, y) {
+  let d = 0;
+  const plats = world.platforms;
+  const plants = world.plants || [];
+  for (let i = 0; i < plants.length; i++) {
+    const pl = plants[i];
+    const plat = plats[pl.platformIndex];
+    if (!plat) continue;
+    const dx = x - pl.x, dy = y - (plat.y - 70); // foliage puff above the branch
+    const d2 = dx * dx + dy * dy;
+    if (d2 < 1210000) d += Math.exp(-d2 / 24200); // σ=110
+  }
+  return d;
+}
+
+export function soundOcclusion(world, x1, y1, x2, y2) {
+  let att = 1;
+  const plats = world.platforms || [];
+  for (let i = 0; i < plats.length; i++) {
+    if (segmentHitsSlab(x1, y1, x2, y2, plats[i])) att *= 0.55;
+  }
+  const N = 10;
+  let fol = 0;
+  for (let i = 1; i < N; i++) {
+    const t = i / N;
+    fol += foliageDensityAt(world, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t);
+  }
+  fol /= (N - 1);
+  att *= Math.max(0.25, 1 - 0.6 * Math.min(1, fol));
+  return att;
+}
+
+// v0.16: troop-level word census (delta c — culture lives at the troop
+// level). Greedy-clusters each tribe's lexicon entries by acoustic distance
+// into shared words; tracks speaker counts and spread/die trends for the
+// Tongues notebook. Writes entry.speakers back for the forget rule.
+export function censusTroopWords(world) {
+  const out = [];
+  const tribes = world.tribes || [];
+  const byId = new Map(world.creatures.map((c) => [c.id, c]));
+  tribes.forEach((tribe, ti) => {
+    const members = (tribe.members || [])
+      .map((id) => byId.get(id))
+      .filter((c) => c && c.alive && c.lexicon);
+    if (!members.length) return;
+    const clusters = [];
+    for (const c of members) {
+      for (const e of c.lexicon.entries) {
+        if (e.confidence < 0.25) continue;
+        let placed = null;
+        for (const cl of clusters) {
+          if (acousticDistance(cl.centroid, e.proto) < 0.18) { placed = cl; break; }
+        }
+        if (!placed) {
+          placed = { members: [], centroid: { pitch: e.proto.pitch, length: e.proto.length, loudness: e.proto.loudness } };
+          clusters.push(placed);
+        }
+        placed.members.push({ c, e });
+      }
+    }
+    const words = clusters.map((cl) => {
+      let sw = 0;
+      const cent = { pitch: 0, length: 0, loudness: 0 };
+      const contexts = { food: 0, alarm: 0, mate: 0, contact: 0, come: 0 };
+      const speakers = new Set();
+      let total = 0;
+      for (const { c, e } of cl.members) {
+        const w = 0.5 + e.confidence;
+        sw += w;
+        cent.pitch += e.proto.pitch * w;
+        cent.length += e.proto.length * w;
+        cent.loudness += e.proto.loudness * w;
+        for (const k of LEX_CONTEXTS) contexts[k] += e.contexts[k] || 0;
+        speakers.add(c.id);
+        total += e.heard + e.used;
+      }
+      cent.pitch /= sw; cent.length /= sw; cent.loudness /= sw;
+      for (const { e } of cl.members) e.speakers = speakers.size;
+      return {
+        name: wordName(cent), proto: cent,
+        speakers: speakers.size, contexts, total, trend: '•',
+      };
+    });
+    words.sort((a, b) => b.speakers - a.speakers || b.total - a.total);
+    out.push({
+      tribeIndex: ti, homeX: tribe.homeX,
+      memberCount: members.length, words: words.slice(0, 12),
+    });
+  });
+  // Spread-vs-die trend against the previous census.
+  const prevMap = new Map();
+  for (const t of world._prevTroopWords || []) {
+    for (const w of t.words) prevMap.set(`${Math.round(t.homeX)}:${w.name}`, w.speakers);
+  }
+  for (const t of out) {
+    for (const w of t.words) {
+      const ps = prevMap.get(`${Math.round(t.homeX)}:${w.name}`);
+      w.trend = ps === undefined ? '•' : w.speakers > ps ? '▲' : w.speakers < ps ? '▼' : '•';
+    }
+  }
+  world._prevTroopWords = out;
+  return out;
 }
 
 // ---- v0.14 "Voices": the waste cycle ----
@@ -932,6 +1105,32 @@ export function tickWorld(world, dt) {
   // never assigned.
   if (Math.floor(world.time / 60) !== Math.floor((world.time - dt) / 60)) {
     world.tribes = detectTribes(world);
+  }
+  // v0.16 "Tongues": the troop lexicon census every 30 sim-seconds —
+  // cluster each tribe's entries into shared words (culture lives at the
+  // troop level, delta c). Also feeds the forget rule and the notebook.
+  if (Math.floor(world.time / 30) !== Math.floor((world.time - dt) / 30)) {
+    world.troopWords = censusTroopWords(world);
+  }
+  // v0.16: death is salient — witnesses within 400px on the same branch
+  // get 'alarm' pushed into their context window (delta a, hearer half:
+  // the most salient observable context, weighted by recency).
+  for (const ev of world.events) {
+    if (ev.type !== 'death' || !ev.creature) continue;
+    if (world.time - ev.t > dt + 0.001) continue; // only this tick's deaths
+    const dc = ev.creature;
+    for (const c of world.creatures) {
+      if (!c.alive || c === dc || c.platformIndex !== dc.platformIndex) continue;
+      if (Math.abs(c.x - dc.x) < 400) pushContextWindow(c, 'alarm', 1.0, world.time);
+    }
+    // v0.16: the teacher names the danger — the Rosetta stone's DANGER.
+    // A sharp high motif, exact pitch, where the students can hear it.
+    const te = world.teacher;
+    if (te && te.platformIndex === dc.platformIndex &&
+        Math.abs(te.x - dc.x) < 500 &&
+        !te.demoQueue.length && world.time - (te.lastDemoT || 0) > 20) {
+      teacherDemo(world, te, [0.85, 0.92, 0.85], 'danger');
+    }
   }
   // v0.13: divergence snapshot every 6 sim-minutes — Eliza's S per biome.
   // v0.14: species clustering rides the same snapshot.

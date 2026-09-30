@@ -30,6 +30,8 @@
 // across generations. Linked inheritance is what makes lineages legible:
 // a chromosome is a story, not a bag of alleles.
 
+import { createRng } from './rng.js';
+
 export const GENES = [
   // appearance
   { key: 'bodyHue', kind: 'float' },
@@ -256,6 +258,25 @@ GENES.push(
   { key: 'instWasteFlee', kind: 'float', sense: 23, action: 5, founder: 0.7 },
 );
 // === end GENOME v0.14 disgust =============================================
+// === GENOME v0.16 "Tongues": the language substrate ========================
+// Evolvable parameters of the emergent lexicon. Append-only: new genes go
+// at the end, on chromosome 8 (Culture). No new action, no new senses —
+// the lexicon rides the existing vocal action (12) and the existing
+// callHeard/callPitch senses (21/22), so no new instinct genes are needed
+// under Paul's v0.5 rule.
+GENES.push(
+  _f('lexCap', 0.65),   // lexicon slots: 4 + round(12*v) — founder ≈ 12
+  _f('lexLearn', 0.5),  // lexicon learning rate
+  _f('lexNoise', 0.3),  // production noise on emission
+  _f('lexLoud', 0.5),   // base loudness
+  _f('lexHear', 0.5),   // hearing threshold — lower is keener
+  _f('lexCrit', 0.5),   // infant critical-period learning boost
+);
+// === end GENOME v0.16 =====================================================
+// v0.16: the language-substrate loci draw from a dedicated sub-stream in
+// randomGenome (below) — new loci must never shift the main RNG sequence.
+// Worldgen order is load-bearing for determinism: founder genomes and every
+// existing test expectation sit on the main stream (v0.9 decorRng precedent).
 
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
@@ -311,10 +332,12 @@ export const CHROMOSOMES = [
   // 7 — Life history (v2: longevity, maturation, fertility, senescence)
   ['longScale', 'longAging', 'matTime', 'matBoost', 'ferPeak', 'ferLitter',
    'ferGest', 'senOnset', 'senRate'],
-  // 8 — Culture (+ v0.14 voice: speech is learned culture's acoustic half)
+  // 8 — Culture (+ v0.14 voice: speech is learned culture's acoustic half;
+  // v0.16 Tongues: the language substrate)
   ['tradition',
    'vocalPitch', 'vocalRange', 'vocalVolume', 'vocalImitate', 'matePrefCall',
-   'instHeardVocal', 'instLonelyVocal'],
+   'instHeardVocal', 'instLonelyVocal',
+   'lexCap', 'lexLearn', 'lexNoise', 'lexLoud', 'lexHear', 'lexCrit'],
 ];
 
 const MUTATION_RATE = 0.008; // per allele
@@ -360,8 +383,29 @@ export const MAX_EXTRA = 6; // cap on duplicated copies per genome
 export function randomGenome(rng) {
   const alleles = {};
   const marks = {};
+  // v0.16: the language-substrate loci (lexCap…lexCrit) draw from a
+  // dedicated sub-stream, not the main rng. Pass 1 draws the 186 pre-v0.16
+  // loci in GENES order — the main stream's sequence is bit-identical to
+  // v0.15, so founder genomes and all existing test expectations are
+  // untouched. Pass 2 seeds the language sub-stream from a hash of the
+  // main alleles: the language alleles are a deterministic function of the
+  // genome's main content, so identical genomes (same seed, different runs)
+  // get identical language alleles. (v0.9 decorRng precedent: new loci must
+  // never shift the main RNG sequence.)
   for (const gene of GENES) {
+    if (gene.key.startsWith('lex')) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
+    marks[gene.key] = 1.0;
+  }
+  let h = 0x1a6c0de;
+  for (const gene of GENES) {
+    if (gene.key.startsWith('lex')) continue;
+    for (const a of alleles[gene.key]) h = (Math.imul(h, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const langRng = createRng(h >>> 0);
+  for (const gene of GENES) {
+    if (!gene.key.startsWith('lex')) continue;
+    alleles[gene.key] = [randomAllele(gene, langRng), randomAllele(gene, langRng)];
     marks[gene.key] = 1.0;
   }
   return { alleles, marks, extra: {} };
