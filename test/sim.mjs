@@ -1904,3 +1904,70 @@ test('v0.13: genomeHash distinguishes genomes', () => {
   assert.notEqual(genomeHash(a), genomeHash(b), 'different genomes hash differently');
   assert.equal(genomeHash(a), genomeHash(a), 'same genome hashes identically');
 });
+
+// v0.13.1 — NaN guards (the seed-21 brain-corruption fix).
+function allFiniteBrain(brain) {
+  const bad = [];
+  const scan = (arr, name) => {
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (Array.isArray(v)) scan(v, name + '[' + i + ']');
+      else if (typeof v === 'number' && !Number.isFinite(v)) bad.push(name + '[' + i + ']');
+    }
+  };
+  for (const L of brain.layers) { scan(L.w, 'L.w'); scan(L.bias, 'L.bias'); }
+  scan(brain.a2m.w, 'a2m.w'); scan(brain.biasM, 'biasM');
+  for (const row of brain.traces.e) scan(row, 'traces.e');
+  if (brain.lastOut) scan(brain.lastOut, 'lastOut');
+  return bad;
+}
+
+test('v0.13.1: learn() ignores a NaN reward — no weight poisoning', () => {
+  const rng = createRng(501);
+  const brain = createBrain(testPheno(501), rng);
+  decide(brain, senseVector(MID_SENSES), 0, rng);
+  const before = snapshotBrain(brain);
+  learn(brain, testPheno(501), NaN);
+  learn(brain, testPheno(501), Infinity);
+  learn(brain, testPheno(501), -Infinity);
+  assert.equal(snapshotBrain(brain), before, 'non-finite rewards must not touch weights');
+  assert.deepEqual(allFiniteBrain(brain), [], 'brain must stay finite');
+});
+
+test('v0.13.1: learn() after neurogenesis with stale caches stays finite', () => {
+  const rng = createRng(502);
+  const pheno = testPheno(502);
+  const brain = createBrain(pheno, rng);
+  decide(brain, senseVector(MID_SENSES), 0, rng);
+  // Simulate what maybeGrow does mid-commitment: the architecture grows
+  // while lastAssoc/lastOut still address the old size. Before the fix,
+  // the next learn() indexed assoc[oldN] = undefined → NaN everywhere.
+  const L = brain.layers[brain.nLayers - 1];
+  const newIdx = L.n;
+  L.idx.push([0]); L.w.push([0.1]); L.bias.push(0); L.n++;
+  brain.a2m.idx[0].push(newIdx); brain.a2m.w[0].push(0.1); brain.traces.e[0].push(0);
+  brain.nAssoc++;
+  learn(brain, pheno, 0.8); // no fresh decide() — the stale-cache path
+  assert.deepEqual(allFiniteBrain(brain), [], 'stale-cache learn must stay finite: ' + allFiniteBrain(brain).slice(0, 5).join(','));
+  // And the brain still works afterwards.
+  const { outputs } = decide(brain, senseVector(MID_SENSES), 0, rng);
+  assert.ok(outputs.every(Number.isFinite), 'outputs finite after structural learn');
+});
+
+test('v0.13.1: forward() sanitizes NaN senses instead of poisoning outputs', () => {
+  const rng = createRng(503);
+  const brain = createBrain(testPheno(503), rng);
+  const s = { ...MID_SENSES, hunger: NaN, foodDist: Infinity };
+  const { outputs } = decide(brain, senseVector(s), 0, rng);
+  assert.ok(outputs.every(Number.isFinite), 'NaN/Inf senses must not reach the outputs');
+});
+
+test('v0.13.1: non-finite eligibility traces reset instead of spreading', () => {
+  const rng = createRng(504);
+  const pheno = testPheno(504, { mtGain: 0.5 }); // traces on
+  const brain = createBrain(pheno, rng);
+  decide(brain, senseVector(MID_SENSES), 0, rng);
+  brain.traces.e[0][0] = NaN; // simulate a poisoned trace
+  learn(brain, pheno, 0.8);
+  assert.deepEqual(allFiniteBrain(brain), [], 'poisoned traces must reset, not spread');
+});

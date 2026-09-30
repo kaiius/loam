@@ -208,6 +208,12 @@ function applyAttention(brain, input) {
 }
 
 export function forward(brain, input) {
+  // v0.13.1: sanitize the sense vector — a single NaN sense would poison
+  // every activation downstream (tanh(NaN) = NaN, and NaN comparisons in
+  // winner-take-all silently misbehave). A dead sense reads as 0.
+  for (let k = 0; k < input.length; k++) {
+    if (!Number.isFinite(input[k])) input[k] = 0;
+  }
   const gated = applyAttention(brain, input);
   // v2 (B): the neuron budget may be split across hidden layers. Layer 0
   // reads the gated senses (+ bias sense); each deeper layer reads the
@@ -293,6 +299,9 @@ export function decide(brain, input, exploration, rng, votes = null) {
 }
 
 function clampW(w) {
+  // v0.13.1: NaN passes straight through the comparisons below, so check
+  // finiteness first — a poisoned weight resets to 0 instead of spreading.
+  if (!Number.isFinite(w)) return 0;
   return w < -PLASTICITY_CLAMP ? -PLASTICITY_CLAMP : w > PLASTICITY_CLAMP ? PLASTICITY_CLAMP : w;
 }
 
@@ -313,13 +322,32 @@ function updateTraces(brain, pheno) {
     const cols = brain.a2m.idx[j];
     const es = brain.traces.e[j];
     for (let n = 0; n < cols.length; n++) {
-      es[n] = decay * es[n] + gain * assoc[cols[n]] * o[j];
+      // v0.13.1: a non-finite trace never recovers (decay × NaN = NaN),
+      // so reset it instead of propagating it.
+      const e = decay * es[n] + gain * assoc[cols[n]] * o[j];
+      es[n] = Number.isFinite(e) ? e : 0;
     }
   }
 }
 
 export function learn(brain, pheno, reward, chems = null) {
   if (!brain.lastAssoc || !brain.lastOut || !brain.lastInput || reward === 0) return;
+  // NaN guard (v0.13.1): a non-finite reward poisons every weight it
+  // touches — Math.max/Math.min pass NaN straight through, so the old
+  // clamp was no protection. Skip the update; the next tick brings a
+  // fresh reward.
+  if (!Number.isFinite(reward)) return;
+  // Structural guard (v0.13.1): neurogenesis/pruning can change the layer
+  // sizes AFTER the last forward() — decide() runs on a commitment timer
+  // while learn() runs every tick, so the cached activations may address a
+  // stale architecture (assoc[719] on a 719-long vector = undefined = NaN,
+  // which then spread through traces and weights and starved seed-21
+  // lineages next to uneaten food). Refresh the caches when they no
+  // longer match the live architecture.
+  const lastLayer = brain.layers[brain.nLayers - 1];
+  if (brain.lastAssoc.length !== lastLayer.n) {
+    forward(brain, brain.lastInput);
+  }
   updateTraces(brain, pheno);
   // v2 (B): the Hebbian rate is evolvable — founder → ×1.0, the classic rate.
   let lr = (0.02 + (pheno.learningRate ?? 0.5) * 0.18) * (2 * (pheno.bpHebb ?? 0.5));
