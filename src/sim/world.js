@@ -2,9 +2,14 @@
 // and the day/night cycle. Owns the tick orchestration.
 
 import { createRng } from './rng.js';
-import { randomGenome, inherit, genomeDistance } from './genome.js';
+import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele } from './genome.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
-import { createCreature, updateCreature, creatureRadius } from './creature.js';
+import { createCreature, updateCreature, creatureRadius, spawnPredators, tickPredators } from './creature.js';
+import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
+
+// v0.18: the biome map is the world's geography now — re-export its API so
+// world.js stays the sim's facade.
+export { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H };
 import { ageStage } from './biochem.js';
 import { createCulture, sampleCulture, pruneExtinct, adoptTradition, fidelityOf } from './culture.js';
 import { createBonds, tickBonds, detectTribes, nudgeBond } from './social.js';
@@ -19,26 +24,78 @@ export function createWorld(seed = 1) {
     rng,
     time: DAY_LENGTH * 0.32, // start mid-morning
     light: 1,
-    width: 1600,
-    height: 900,
-    groundY: 800,
-    // The canopy: the forest floor plus three tiers of branches. Branches
-    // are platforms with a kind; overlapping branches in adjacent tiers are
-    // linked by climbable gaps (computed below). Tanglekins are arboreal —
-    // the vertical is the world, not a backdrop.
+    width: WORLD_W, // v0.18 "Realms": 4800×1100 — eight biomes, west → east
+    height: WORLD_H,
+    groundY: 800, // legacy field: the jungle floor (biome 2); groundYAt(x) is the real map
+    seed, // v0.18: the world's seed, for pinned sub-streams (§13.7)
+    stats: { jumps: 0, climbs: 0 }, // v0.18: action counters for the leg experiment
+    buried: [], // v0.18 §13.1: buried food [{x, y, kind, amount, biome}] — the dig verb's pantry
+    predators: [], // v0.18 §13.6: predator roster (spawned by the creature agent)
+    noFouling: false, // v0.18 §13.7: the contamination-neutralize switch for the leg experiment
+    // The canopy: jungle region (biome 2) holds the founder 9 platforms —
+    // the v0.15 9 with x mapped into the jungle region, x' = 1200 + x×0.375,
+    // y UNCHANGED. Honest deviation from "byte-identical": uniform x-scale
+    // shrinks every overlap by 0.375, but every old climb link's overlap was
+    // ≥200px (scaled ≥75px > the 60px link threshold), so the link topology
+    // recomputes identically — and the viability battery is the real gate.
     platforms: [
-      { x1: 0, x2: 1600, y: 800, kind: 'ground' }, // forest floor
-      // lower branches
-      { x1: 60, x2: 520, y: 650, kind: 'branch' },
-      { x1: 480, x2: 980, y: 640, kind: 'branch' },
-      { x1: 940, x2: 1540, y: 650, kind: 'branch' },
-      // mid branches
-      { x1: 200, x2: 700, y: 470, kind: 'branch' },
-      { x1: 660, x2: 1180, y: 460, kind: 'branch' },
-      { x1: 1120, x2: 1560, y: 470, kind: 'branch' },
-      // upper branches
-      { x1: 320, x2: 860, y: 290, kind: 'branch' },
-      { x1: 820, x2: 1300, y: 280, kind: 'branch' },
+      // --- Emerald Jungle (indices 0–8): the founder 9, scaled ---
+      { x1: 1200, x2: 1800, y: 800, kind: 'ground' }, // jungle floor
+      { x1: 1222.5, x2: 1395, y: 650, kind: 'branch' },   // lower branches
+      { x1: 1380, x2: 1567.5, y: 640, kind: 'branch' },
+      { x1: 1552.5, x2: 1777.5, y: 650, kind: 'branch' },
+      { x1: 1275, x2: 1462.5, y: 470, kind: 'branch' },   // mid branches
+      { x1: 1447.5, x2: 1642.5, y: 460, kind: 'branch' },
+      { x1: 1620, x2: 1785, y: 470, kind: 'branch' },
+      { x1: 1320, x2: 1522.5, y: 290, kind: 'branch' },   // upper branches
+      { x1: 1507.5, x2: 1687.5, y: 280, kind: 'branch' },
+      // --- Arctic Wastes (9–14): full-width ice + 5 broad shelves ---
+      { x1: 0, x2: 600, y: 800, kind: 'ground' },
+      { x1: 30, x2: 330, y: 786, kind: 'shelf' },
+      { x1: 230, x2: 530, y: 782, kind: 'shelf' },
+      { x1: 110, x2: 410, y: 791, kind: 'shelf' },
+      { x1: 350, x2: 570, y: 787, kind: 'shelf' },
+      { x1: 60, x2: 260, y: 795, kind: 'shelf' },
+      // --- Skyreach Mountains (15–23): partial ground + 7-shaft vertical chain ---
+      { x1: 600, x2: 760, y: 800, kind: 'ground' },  // foothill shelf
+      { x1: 1040, x2: 1200, y: 800, kind: 'ground' }, // east shelf
+      { x1: 600, x2: 760, y: 700, kind: 'branch' },
+      { x1: 660, x2: 820, y: 608, kind: 'branch' },
+      { x1: 720, x2: 880, y: 517, kind: 'branch' },
+      { x1: 780, x2: 940, y: 425, kind: 'branch' },
+      { x1: 840, x2: 1000, y: 333, kind: 'branch' },
+      { x1: 900, x2: 1060, y: 242, kind: 'branch' },
+      { x1: 960, x2: 1120, y: 150, kind: 'branch' },
+      // --- Whispering Plains (24–25): open ground + one low ridge ---
+      { x1: 1800, x2: 2400, y: 820, kind: 'ground' },
+      { x1: 1950, x2: 2250, y: 700, kind: 'branch' },
+      // --- Sunscorch Desert (26–29): ground + 3 rock outcrops ---
+      { x1: 2400, x2: 3000, y: 830, kind: 'ground' },
+      { x1: 2450, x2: 2600, y: 705, kind: 'branch' },
+      { x1: 2650, x2: 2800, y: 700, kind: 'branch' },
+      { x1: 2800, x2: 2950, y: 710, kind: 'branch' },
+      // --- Mangrove Shallows (30–35): walkable seabed + 5 root platforms over water ---
+      { x1: 3000, x2: 3600, y: 950, kind: 'ground' },
+      { x1: 3020, x2: 3200, y: 770, kind: 'branch' },
+      { x1: 3220, x2: 3400, y: 765, kind: 'branch' },
+      { x1: 3420, x2: 3580, y: 770, kind: 'branch' },
+      { x1: 3050, x2: 3220, y: 778, kind: 'branch' },
+      { x1: 3280, x2: 3440, y: 772, kind: 'branch' },
+      // --- The Archipelago (36–41): 3 islands × 2 platforms.
+      // Deviation from the design's "6 islands": a 600px span cannot hold
+      // six islands with 200–400px water gaps (5×200 > 600). The selection
+      // reader is preserved — a 200px channel (3860→4060) between island
+      // groups that demands jump, glide, or swim.
+      { x1: 3600, x2: 3720, y: 780, kind: 'ground' },
+      { x1: 3620, x2: 3700, y: 700, kind: 'branch' },
+      { x1: 3740, x2: 3860, y: 780, kind: 'ground' },
+      { x1: 3760, x2: 3840, y: 700, kind: 'branch' },
+      { x1: 4060, x2: 4180, y: 780, kind: 'ground' },
+      { x1: 4080, x2: 4160, y: 700, kind: 'branch' },
+      // --- Azure Deep (42–44): 3 driftwood floes, no ground ---
+      { x1: 4250, x2: 4400, y: 690, kind: 'floe' },
+      { x1: 4450, x2: 4600, y: 690, kind: 'floe' },
+      { x1: 4650, x2: 4750, y: 690, kind: 'floe' },
     ],
     plants: [],
     foods: [],
@@ -85,20 +142,24 @@ export function createWorld(seed = 1) {
     teacherRng: createRng(seed * 101 + 13),
     teachLog: [],
     // v0.14 "Voices": the waste cycle — digestion's byproduct returns to
-    // the soil. soil[zone] = { waste, fertility }. Excretion feeds waste;
-    // decomposition feeds fertility; fertility feeds plant growth. The loop
-    // that turns a food chain into a cycle.
+    // the soil. soil[biome] = { waste, fertility }. v0.18: keyed by the 8
+    // biome keys — the detritus loop closes locally per biome.
     soil: {
-      verdant: { waste: 0, fertility: 0.5 },
-      arid: { waste: 0, fertility: 0.5 },
-      highland: { waste: 0, fertility: 0.5 },
+      arctic: { waste: 0, fertility: 0.5 },
+      mountains: { waste: 0, fertility: 0.5 },
+      jungle: { waste: 0, fertility: 0.5 },
+      plains: { waste: 0, fertility: 0.5 },
+      desert: { waste: 0, fertility: 0.5 },
+      shallows: { waste: 0, fertility: 0.5 },
+      archipelago: { waste: 0, fertility: 0.5 },
+      deep: { waste: 0, fertility: 0.5 },
     },
   };
   // Climb links: pairs of platforms whose x-ranges overlap and whose
   // vertical gap is climbable (60–240px). Computed once at worldgen —
   // the canopy's vertical roads.
   world.climbLinks = computeClimbLinks(world.platforms);
-  world.teacher = createTeacher(world, 800, 0);
+  world.teacher = createTeacher(world, 1500, 0); // jungle floor — the ancestral ground
   return world;
 }
 
@@ -146,52 +207,83 @@ function oid() {
   return nextObjId++;
 }
 
-// v0.11 biomes: the world is three ecological zones by x-slice. Different
-// fruiting rates create different selection pressures — local adaptation.
+// v0.18 "Realms": ZONES/zoneAt are a legacy alias over the biome map.
+// The old three zone keys became the biome cores: verdant→jungle,
+// arid→desert, highland→mountains. zoneAt(x) returns {key} with key ∈
+// {'jungle','desert','mountains'} — the core range containing x, or the
+// nearest core. soil/divergence/zoneCalls are keyed by the 8 biome keys;
+// this alias is for legacy consumers (chronicle prose, teacher zones,
+// renderer tints).
 export const ZONES = [
-  { key: 'verdant', name: 'Verdant Valley', x1: 0, x2: 533, fruitMul: 0.6, tint: 'rgba(60,140,70,0.10)' },
-  { key: 'arid', name: 'Arid Stretch', x1: 533, x2: 1066, fruitMul: 2.2, tint: 'rgba(190,150,80,0.12)' },
-  { key: 'highland', name: 'Highland', x1: 1066, x2: 1601, fruitMul: 1.2, tint: 'rgba(120,140,170,0.10)' },
+  { key: 'jungle', name: 'Emerald Jungle', x1: 1200, x2: 1800, fruitMul: 0.6, tint: 'rgba(60,140,70,0.10)' },
+  { key: 'desert', name: 'Sunscorch Desert', x1: 2400, x2: 3000, fruitMul: 2.2, tint: 'rgba(190,150,80,0.12)' },
+  { key: 'mountains', name: 'Skyreach Mountains', x1: 600, x2: 1200, fruitMul: 1.2, tint: 'rgba(120,140,170,0.10)' },
 ];
 
 export function zoneAt(x) {
   for (const z of ZONES) if (x >= z.x1 && x < z.x2) return z;
-  return ZONES[2];
+  let best = ZONES[0], bd = Infinity;
+  for (const z of ZONES) {
+    const d = Math.abs(x - (z.x1 + z.x2) / 2);
+    if (d < bd) { bd = d; best = z; }
+  }
+  return best;
 }
 
-export function addPlant(world, x, platformIndex, genome) {
-  const plat = world.platforms[platformIndex];
+// v0.18: per-biome fruiting pressure — the old zone fruitMul generalized.
+// Founder-neutral core: jungle 0.6 / desert 2.2 / mountains 1.2 are the
+// v0.15 values, so founder behavior in old territory is unchanged.
+export const BIOME_FRUIT_MUL = {
+  arctic: 2.8, mountains: 1.2, jungle: 0.6, plains: 1.0,
+  desert: 2.2, shallows: 0.8, archipelago: 0.9, deep: 2.6,
+};
+
+// v0.18: platformIndex -1 = floating flora (kelp) — not rooted on any
+// platform; the frond hangs just below the local water surface. This is the
+// convention for all platform-less entities (kelp, minnows): platformIndex
+// -1 means "in the water column", never "nowhere".
+function floatY(world, x) {
+  const w = waterAt(x, 2000);
+  return w ? w.surfaceY + 12 : 800;
+}
+
+export function addPlant(world, x, platformIndex, genome, opts = {}) {
   // v0.13: initial plant genomes come from the decor stream — worldgen order
   // is load-bearing for determinism, and plant genomes must never shift the
   // main stream's sequence (founder genomes, rolls, etc.).
   const g = genome || randomPlantGenome(world.decorRng || world.rng);
+  const plat = platformIndex === -1 ? null : world.platforms[platformIndex];
   world.plants.push({
-    kind: 'plant', id: oid(), x, platformIndex, y: plat.y,
+    kind: 'plant', id: oid(), x, platformIndex, y: plat ? plat.y : floatY(world, x),
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     sway: world.rng.range(0, Math.PI * 2),
-    zone: zoneAt(x).key, // v0.11: biomes
+    zone: biomeKeyAt(x), // v0.18: biome key (8)
+    morph: opts.morph || floraFor(biomeKeyAt(x)).morph, // v0.18: flora morph
+    fruitKind: opts.fruitKind || floraFor(biomeKeyAt(x)).fruitKind,
     genome: g, pheno: plantPhenotype(g), // v0.13: plant genomes
   });
 }
 
 // v0.8: medicinal herbs. Same growth mechanics as fruit plants, but they bear
 // bitter leaves (foodKind 'leaf') that purge illness instead of feeding hunger.
-export function addHerb(world, x, platformIndex, genome) {
-  const plat = world.platforms[platformIndex];
+export function addHerb(world, x, platformIndex, genome, opts = {}) {
   const g = genome || randomPlantGenome(world.decorRng || world.rng);
+  const plat = platformIndex === -1 ? null : world.platforms[platformIndex];
   world.plants.push({
-    kind: 'herb', id: oid(), x, platformIndex, y: plat.y,
+    kind: 'herb', id: oid(), x, platformIndex, y: plat ? plat.y : floatY(world, x),
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     sway: world.rng.range(0, Math.PI * 2),
-    zone: zoneAt(x).key, // v0.11: biomes
+    zone: biomeKeyAt(x), // v0.18: biome key (8)
+    morph: opts.morph || 'herb',
+    fruitKind: 'leaf',
     genome: g, pheno: plantPhenotype(g), // v0.13: plant genomes
   });
 }
 
 export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1, rotAfter = 0, opts = {}) {
-  const plat = world.platforms[platformIndex];
+  const plat = platformIndex === -1 ? null : world.platforms[platformIndex];
   world.foods.push({
-    kind: 'food', id: oid(), x, platformIndex, y: plat.y, foodKind: kind, amount,
+    kind: 'food', id: oid(), x, platformIndex, y: plat ? plat.y : floatY(world, x), foodKind: kind, amount,
     // v0.13: plant-genome provenance — which plant bore this fruit, its
     // bitterness, and its nutrition. Enables seed dispersal + learned
     // avoidance of bitter plants.
@@ -275,6 +367,12 @@ export const MINERAL_TYPES = [
   { key: 'flint', name: 'Flint', color: '#4a4a52', hardness: 0.9, blurb: 'Sharp-edged stone. Future toolheads will want this.' },
   { key: 'quartz', name: 'Quartz', color: '#cfd8e6', hardness: 0.7, blurb: 'Glassy crystal. Catches the light; good for nothing yet.' },
   { key: 'clay', name: 'Clay', color: '#a5715c', hardness: 0.3, blurb: 'Soft earth. Malleable — future hands could shape it.' },
+  // v0.18 §12.2: per-biome resource sets — timber stands, building stone,
+  // driftwood currents. Same deposit entity shape as v0.17.1 minerals;
+  // observer-only until the technology release, same as the rest.
+  { key: 'timber', name: 'Timber', color: '#6b4a2f', hardness: 0.4, blurb: 'Fallen wood. The shipwright\u2019s material, if anyone ever becomes one.' },
+  { key: 'stone', name: 'Stone', color: '#8a8a8a', hardness: 0.8, blurb: 'Building stone. Shelter waits inside the heavy stuff.' },
+  { key: 'driftwood', name: 'Driftwood', color: '#9c7a54', hardness: 0.35, blurb: 'Sea-smoothed wood. It floats — that is the whole affordance.' },
 ];
 
 export function mineralType(key) {
@@ -410,7 +508,7 @@ export function recordLineage(world, c) {
     bornAt: world.time,
     diedAt: null, // v0.14: closed by noteDeath
     cause: null,
-    zone: zoneAt(c.x).key, // v0.11: birth biome
+    zone: biomeKeyAt(c.x), // v0.18: birth biome (8 keys)
     speciesId: c.speciesId ?? null, // v0.14: species at birth (may split later)
     traits,
   });
@@ -433,10 +531,23 @@ export function recordLineage(world, c) {
 
 // v0.14: death bookkeeping — the event for toasts, and the lineage record
 // for the family tree (diedAt + cause close the creature's arc).
+// v0.18 §13.4: corpses — the door to each other, left ajar. Base rot time
+// for a corpse; cold preserves (arctic rot time triples at full cold).
+export const CORPSE_ROT = 150;
 export function noteDeath(world, c, cause) {
   world.events.push({ type: 'death', creature: c, t: world.time, cause });
   const rec = world.lineage.get(c.id);
   if (rec) { rec.diedAt = world.time; rec.cause = cause; }
+  // v0.18 §13.4: the dead leave a corpse at the death position — edible via
+  // eat (scavenging is possible from v0.18; predation is not scripted).
+  // Corpses decay; ambient cold slows decay (the Arctic keeps its dead).
+  // Replaces the v0.7 'meat' carcass previously spawned in the dead-splice
+  // of tickWorld — one corpse per death, not two. TODO(creature-agent):
+  // doEat's meatEfficiency branch should include 'corpse' (creature.js) so
+  // scavenging rewards carnivores; until then corpses eat at fruitEfficiency.
+  const plat = world.platforms[c.platformIndex];
+  const cold = ambientCold(c.x, plat ? plat.y : 800);
+  addFood(world, c.x, c.platformIndex, 'corpse', 1.2, CORPSE_ROT * (1 + 2 * cold), { nutrition: 1 });
 }
 // Two creatures share a hash only if every allele matches to 3 decimals.
 export function genomeHash(genome) {
@@ -497,7 +608,7 @@ export function emitCall(world, c, type, proto = null) {
   const loudness = ap.loudness !== undefined ? ap.loudness : baseLoud(p);
   const volume = p.vocalVolume ?? 0.5;
   const earshot = 200 + volume * 400; // kept for compatibility
-  const zkey = zoneAt(c.x).key;
+  const zkey = biomeKeyAt(c.x); // v0.18: zoneCalls keyed by the 8 biome keys
   const cplat = world.platforms[c.platformIndex];
   const call = {
     t: world.time, type,
@@ -716,25 +827,32 @@ export const LITTER_RATE = 0.004; // soil-waste per second per plant at growthRa
 // v0.14: disgust's information channel — how fouled the ground smells here,
 // 0 (clean) to 1 (full stink). Tolerates stub worlds without soil (see the
 // jumpNear range-gate test). The sense the instinct reads.
+// v0.18 §13.7: under noFouling the world reads clean — this also neutralizes
+// the illness-from-waste contraction in creature.js doEat, which multiplies
+// by this odor (bite × 0 × CONTAM_ILLNESS = 0). The contraction site itself
+// is the creature agent's file; the switch achieves the neutralization here.
 export function wasteOdorOf(world, x) {
+  if (world.noFouling) return 0;
   const soil = world.soil;
-  const s = soil && soil[zoneAt(x).key];
+  const s = soil && soil[biomeKeyAt(x)];
   return s ? Math.min(1, s.waste / WASTE_ODOR_SCALE) : 0;
 }
 
 export function excrete(c, world, dt) {
+  if (world.noFouling) return; // §13.7: the contamination-neutralize switch
   if (!c.gut || c.gut <= 0 || !world.soil) return;
   const dep = Math.min(c.gut, c.gut * EXCRETE_RATE * dt);
   if (dep <= 0) return;
   c.gut -= dep;
-  const s = world.soil[zoneAt(c.x).key];
+  const s = world.soil[biomeKeyAt(c.x)];
   if (s) s.waste += dep;
 }
 
 export function tickSoil(world, dt) {
+  if (world.noFouling) return; // §13.7: the contamination-neutralize switch
   if (!world.soil) return;
-  for (const z of ZONES) {
-    const s = world.soil[z.key];
+  for (const b of BIOMES) {
+    const s = world.soil[b.key];
     if (!s) continue;
     // Decomposition: raw waste becomes fertility.
     const conv = Math.min(s.waste, s.waste * SOIL_DECAY * dt);
@@ -746,7 +864,7 @@ export function tickSoil(world, dt) {
     // history, not just chemistry. Noted once per zone per enrichment.
     if (s.fertility >= 1.0 && !s.richNoted) {
       s.richNoted = true;
-      if (world.events) world.events.push({ type: 'soilRich', zone: z.key, t: world.time });
+      if (world.events) world.events.push({ type: 'soilRich', zone: b.key, t: world.time });
     } else if (s.fertility < 0.8) {
       s.richNoted = false; // lean times reset the record; richness can return
     }
@@ -761,7 +879,7 @@ export function compostRot(world) {
   for (let i = world.foods.length - 1; i >= 0; i--) {
     const f = world.foods[i];
     if (f.rotsAt > 0 && world.time >= f.rotsAt) {
-      const s = world.soil && world.soil[zoneAt(f.x).key];
+      const s = world.soil && world.soil[biomeKeyAt(f.x)];
       if (s) s.waste += f.amount * (f.nutrition || 1);
       world.foods.splice(i, 1);
     }
@@ -822,10 +940,10 @@ export function recordFounderMeans(world) {
 export function computeDivergence(world) {
   if (!world.founderMeans) return null;
   const snap = { t: world.time, zones: {} };
-  for (const z of ZONES) {
-    const zs = { key: z.key };
-    // Creatures: adults currently in this zone.
-    const adults = world.creatures.filter((c) => c.alive && zoneAt(c.x).key === z.key);
+  for (const b of BIOMES) { // v0.18: per-biome (8), not per-zone (3)
+    const zs = { key: b.key };
+    // Creatures: adults currently in this biome.
+    const adults = world.creatures.filter((c) => c.alive && biomeKeyAt(c.x) === b.key);
     for (const k of DIVERGENCE_CREATURE_TRAITS) {
       if (adults.length === 0) { zs[k] = 0; continue; }
       let sum = 0;
@@ -833,7 +951,7 @@ export function computeDivergence(world) {
       zs[k] = sum / adults.length - world.founderMeans[k];
     }
     // Plants: all plants rooted in this zone.
-    const plants = world.plants.filter((p) => p.zone === z.key && p.pheno);
+    const plants = world.plants.filter((p) => p.zone === b.key && p.pheno);
     for (const k of DIVERGENCE_PLANT_TRAITS) {
       const pk = 'plant_' + k;
       if (plants.length === 0) { zs[pk] = 0; continue; }
@@ -841,7 +959,7 @@ export function computeDivergence(world) {
       for (const p of plants) sum += p.pheno[k] !== undefined ? p.pheno[k] : 0.5;
       zs[pk] = sum / plants.length - world.founderMeans[pk];
     }
-    snap.zones[z.key] = zs;
+    snap.zones[b.key] = zs;
   }
   world.divergenceLog.push(snap);
   // Keep the log bounded: one snapshot per 6 sim-minutes, cap at 500.
@@ -918,7 +1036,7 @@ export function computeSpecies(world) {
       const zones = {};
       for (const c of cl) {
         pitch += c.voicePitch ?? 0.5;
-        const zk = zoneAt(c.x).key;
+        const zk = biomeKeyAt(c.x); // v0.18: home biome (8 keys)
         zones[zk] = (zones[zk] || 0) + 1;
       }
       const home = Object.keys(zones).sort((a, b) => zones[b] - zones[a])[0] || '?';
@@ -1004,19 +1122,32 @@ export function tickWorld(world, dt) {
           // v0.11 biomes + scarcity: zone sets the base rate; crowding slows
           // everything (density-dependent scarcity — more mouths, less fruit).
           // Herbs are counter-cyclical: medicine thrives where food is scarce.
+          // v0.18 "Realms": biome stress. p.zone is a biome key (8).
+          // Founder-neutral core: jungle 0.6 / desert 2.2 / mountains 1.2
+          // are the v0.15 fruitMul values, so founder behavior in old
+          // territory is unchanged — new pressures bite only in the
+          // new frontiers.
           const ph = p.pheno || {};
           const intervalGene = 0.7 + 0.6 * (ph.interval !== undefined ? ph.interval : 0.5);
+          const bk = p.zone;
+          const fruitMul = BIOME_FRUIT_MUL[bk] !== undefined ? BIOME_FRUIT_MUL[bk] : 1;
           let zoneStress;
           if (p.kind === 'herb') {
-            zoneStress = p.zone === 'arid' ? 0.9 : 1.1;
-          } else if (p.zone === 'arid') {
+            // Herbs are counter-cyclical: medicine thrives where food is scarce.
+            zoneStress = (bk === 'desert' || bk === 'arctic') ? 0.9 : 1.1;
+          } else if (bk === 'desert') {
             // Drought: thirsty plants stall; water-retainers keep fruiting.
-            zoneStress = zoneAt(p.x).fruitMul * (2 - (ph.waterRet !== undefined ? ph.waterRet : 0.5));
-          } else if (p.zone === 'highland') {
-            // Cold: the tender stall; the hardy keep fruiting.
-            zoneStress = zoneAt(p.x).fruitMul * (1.6 - 0.6 * (ph.coldTol !== undefined ? ph.coldTol : 0.5));
+            zoneStress = fruitMul * (2 - (ph.waterRet !== undefined ? ph.waterRet : 0.5));
+          } else if (bk === 'mountains' || bk === 'arctic') {
+            // Cold: the tender stall; the hardy keep fruiting. Arctic is harsher.
+            const harsh = bk === 'arctic' ? 1.8 - 0.8 * (ph.coldTol !== undefined ? ph.coldTol : 0.5)
+                                          : 1.6 - 0.6 * (ph.coldTol !== undefined ? ph.coldTol : 0.5);
+            zoneStress = fruitMul * harsh;
+          } else if (bk === 'shallows' || bk === 'archipelago' || bk === 'deep') {
+            // Salt: the intolerant stall; salt-tolerators keep fruiting.
+            zoneStress = fruitMul * (1.6 - 0.6 * (ph.saltTol !== undefined ? ph.saltTol : 0.5));
           } else {
-            zoneStress = zoneAt(p.x).fruitMul;
+            zoneStress = fruitMul;
           }
           const densityMul = 1 + (world.creatures.length / 40) * 0.6;
           interval = interval * intervalGene * zoneStress * densityMul;
@@ -1028,7 +1159,9 @@ export function tickWorld(world, dt) {
         // v0.8: herbs bear medicinal leaves instead of fruit.
         // v0.13: yield + fruitSize + bitterness from the plant genome; the
         // fruit remembers which plant bore it (seed dispersal).
-        const dropKind = p.kind === 'herb' ? 'leaf' : 'fruit';
+        // v0.18: the drop kind follows the biome flora table (kelp, seed,
+        // cactusfruit, berry, moss, propagule) — all eat at fruitEfficiency.
+        const dropKind = p.kind === 'herb' ? 'leaf' : (p.fruitKind || 'fruit');
         const ph = p.pheno || {};
         const fruits = p.kind === 'herb' ? 1 : 1 + Math.round(2 * (ph.yield !== undefined ? ph.yield : 0.5));
         const nutrition = p.kind === 'herb'
@@ -1063,6 +1196,30 @@ export function tickWorld(world, dt) {
     if (cr.x < plat.x1 + 10) { cr.x = plat.x1 + 10; cr.vx = Math.abs(cr.vx); }
     if (cr.x > plat.x2 - 10) { cr.x = plat.x2 - 10; cr.vx = -Math.abs(cr.vx); }
     if (rng.chance(dt * 0.2)) cr.vx = -cr.vx;
+  }
+
+  // v0.18 §13.3: mobile food — one system, two media. Bugs random-walk
+  // their platform; minnows random-walk their water (constrained: a minnow
+  // that would leave the water stays put). No brains, no instincts — slow
+  // random-walk morsels, the first meat. Edible via the existing eat verb.
+  for (const f of world.foods) {
+    if (f.foodKind === 'bug') {
+      if (!Number.isFinite(f.vx)) f.vx = 0;
+      const plat = world.platforms[f.platformIndex];
+      if (!plat) continue;
+      if (rng.chance(dt * 1.5)) f.vx = rng.range(-25, 25);
+      f.x += f.vx * dt;
+      if (f.x < plat.x1 + 8) { f.x = plat.x1 + 8; f.vx = Math.abs(f.vx); }
+      if (f.x > plat.x2 - 8) { f.x = plat.x2 - 8; f.vx = -Math.abs(f.vx); }
+      f.y = plat.y;
+    } else if (f.foodKind === 'minnow') {
+      if (!Number.isFinite(f.vx)) f.vx = 0;
+      if (!Number.isFinite(f.vy)) f.vy = 0;
+      if (rng.chance(dt * 2)) { f.vx = rng.range(-40, 40); f.vy = rng.range(-25, 25); }
+      const nx = f.x + f.vx * dt, ny = f.y + f.vy * dt;
+      if (waterAt(nx, ny)) { f.x = nx; f.y = ny; }
+      else { f.vx = -f.vx * 0.5; f.vy = -f.vy * 0.5; } // the water is the constraint
+    }
   }
 
   // Toys: friction.
@@ -1129,6 +1286,10 @@ export function tickWorld(world, dt) {
   for (const c of world.creatures) {
     updateCreature(c, world, dt);
   }
+  // v0.18 §13.6: predators (bears, sharks — the roster is the ecology
+  // design's; the two decided entries are arctic bears and deep sharks).
+  // No-op on worlds without predators (legacy populate() stays predator-free).
+  tickPredators(world, dt);
   // v0.14 "Voices": the Teacher — Sunny's visitor avatar. Ticks after the
   // creatures; its calls land in the 2s acoustic registry and are heard on
   // the next tick. A visitor, never interleaved with creature update order.
@@ -1174,17 +1335,15 @@ export function tickWorld(world, dt) {
     computeSpecies(world);
   }
   // Remove the dead (UI reads events first).
-  // v0.7: the dead leave carcasses — meat for the diet gene's new niche.
-  // Scavenging, not predation: nobody hunts, but carnivores finally eat
-  // at full value. Carcasses rot in 150s; they feed individuals, not the
-  // population (the v0.5 nest-cache lesson, applied).
+  // v0.18 §13.4: noteDeath already left a corpse at the death position —
+  // the splice only removes the body. (The v0.7 'meat' carcass spawn lived
+  // here; it moved to noteDeath as foodKind 'corpse' so every death,
+  // however it happens, leaves exactly one corpse.)
   const dead = [];
   for (let i = world.creatures.length - 1; i >= 0; i--) {
     if (!world.creatures[i].alive) dead.push(...world.creatures.splice(i, 1));
   }
-  for (const d of dead) {
-    addFood(world, d.x, d.platformIndex, 'meat', 1.2, 150);
-  }
+  void dead;
   // v0.7: traditions whose last carrier died go extinct here — the library
   // test, running continuously.
   const extinct = pruneExtinct(world.culture, world.creatures);
@@ -1217,6 +1376,7 @@ function rebuildSpatialIndex(world) {
 // Bind tryMate so creature code can call world.tryMate(a, b).
 export function bindWorld(world) {
   world.tryMate = tryMate.bind(world);
+  world.digAt = (x, y, radius) => digAt(world, x, y, radius); // v0.18 §13.2: the dig verb
   return world;
 }
 
@@ -1231,20 +1391,28 @@ export function uniqueName(world, name) {
 
 export function populate(world) {
   const rng = world.rng;
+  // v0.18 "Realms": the legacy jungle-only battery spawner. The founder 9
+  // platforms are indices 0–8 (the scaled jungle), so platform indices are
+  // unchanged; x-coordinates are mapped into the jungle region,
+  // x' = 1200 + x×(600/1600). The rng draw ORDER is identical to v0.17.1
+  // (same calls, same counts — bounds don't consume draws), so founder
+  // genomes are bit-identical; only positions moved. Four founders, plain
+  // founder stock, no shifts.
+  const mx = (x) => 1200 + x * 0.375;
   // The canopy's ecology: fruit trees grow ON the branches (plants are
   // indexed by platform — a tree on branch 4 fruits on branch 4); medicinal
   // herbs are undergrowth on the forest floor.
   // v0.11 biomes: verdant valley is lush, the arid stretch is harsh (one
   // fruit tree, but extra medicinal herbs), the highland is moderate.
-  addPlant(world, 200, 1); addPlant(world, 420, 1); // lower-left branch trees
-  addPlant(world, 700, 2); // lower-mid
-  addPlant(world, 1150, 3); addPlant(world, 1400, 3); // lower-right
-  addPlant(world, 450, 4); addPlant(world, 900, 5); // mid branches
-  addPlant(world, 1250, 6);
-  addPlant(world, 600, 7); addPlant(world, 1050, 8); // upper branches
+  addPlant(world, mx(200), 1); addPlant(world, mx(420), 1); // lower-left branch trees
+  addPlant(world, mx(700), 2); // lower-mid
+  addPlant(world, mx(1150), 3); addPlant(world, mx(1400), 3); // lower-right
+  addPlant(world, mx(450), 4); addPlant(world, mx(900), 5); // mid branches
+  addPlant(world, mx(1250), 6);
+  addPlant(world, mx(600), 7); addPlant(world, mx(1050), 8); // upper branches
   // v0.8: medicinal herbs, on the forest floor where the sick descend.
   // v0.11: they thrive where food is scarcest.
-  addHerb(world, 650, 0); addHerb(world, 950, 0); addHerb(world, 1300, 0);
+  addHerb(world, mx(650), 0); addHerb(world, mx(950), 0); addHerb(world, mx(1300), 0);
   // Starter food: hang fruit in the branches so the first tanglekins don't
   // starve immediately.
   const branchIdx = [1, 2, 3, 4, 5, 6];
@@ -1254,18 +1422,18 @@ export function populate(world) {
     addFood(world, rng.range(plat.x1 + 40, plat.x2 - 40), pi, 'fruit', 1);
   }
   // Critters in the branches, a ball on the forest floor.
-  for (let i = 0; i < 5; i++) addCritter(world, rng.range(100, 1500), 1 + rng.int(0, 5), 'bug');
-  for (let i = 0; i < 3; i++) addCritter(world, rng.range(200, 1400), 4 + rng.int(0, 2), 'butterfly');
-  addToy(world, 800, 0);
+  for (let i = 0; i < 5; i++) addCritter(world, rng.range(mx(100), mx(1500)), 1 + rng.int(0, 5), 'bug');
+  for (let i = 0; i < 3; i++) addCritter(world, rng.range(mx(200), mx(1400)), 4 + rng.int(0, 2), 'butterfly');
+  addToy(world, mx(800), 0);
   // v0.9: pebbles scattered on the forest floor — the world as material.
-  for (let i = 0; i < 8; i++) addPebble(world, rng.range(80, 1520), 0);
+  for (let i = 0; i < 8; i++) addPebble(world, rng.range(mx(80), mx(1520)), 0);
   // v0.17.1 "Touch": mineral deposits. Fixed positions (no rng — worldgen
   // order is load-bearing for determinism, and these must never shift the
   // main stream's sequence). Observer-only until the technology release.
-  addMineral(world, 300, 0, 'flint');   // forest floor, verdant side
-  addMineral(world, 800, 0, 'clay');    // forest floor, arid stretch
-  addMineral(world, 1300, 0, 'flint');  // forest floor, highland side
-  addMineral(world, 600, 7, 'quartz');  // upper branch — the climb is the price
+  addMineral(world, mx(300), 0, 'flint');   // jungle floor, west side
+  addMineral(world, mx(800), 0, 'clay');    // jungle floor, middle
+  addMineral(world, mx(1300), 0, 'flint');  // jungle floor, east side
+  addMineral(world, mx(600), 7, 'quartz');  // upper branch — the climb is the price
   // Four founder tanglekins with fresh random genomes, born in the lower
   // branches. (v0.5: was two. Two founders made every lineage a coin flip —
   // four founders (two breeding pairs) give the population the demographic
@@ -1275,7 +1443,7 @@ export function populate(world) {
   // Founders start on adjacent lower branches where the climb links are —
   // 180px spacing keeps adjacent founders inside the 240px breeding-backstop
   // range but outside the 150px contagion range.
-  const starts = [[400, 1], [580, 1], [760, 2], [940, 2]];
+  const starts = [[mx(400), 1], [mx(580), 1], [mx(760), 2], [mx(940), 2]];
   for (let i = 0; i < 4; i++) {
     const [fx, fpi] = starts[i];
     const c = createCreature(randomGenome(rng), fx, fpi, rng,
@@ -1314,5 +1482,266 @@ export function populate(world) {
   // founder trait means for the divergence metric (Eliza's S).
   for (const c of founders) world.seenGenomes.add(genomeHash(c.genome));
   recordFounderMeans(world);
+  return world;
+}
+
+// ==================== v0.18 "Realms" ====================
+
+// Best platform index for a position: the platform covering x whose y is
+// closest to y. Returns -1 when no platform covers x (open water / air).
+export function platformIndexAt(world, x, y = Infinity) {
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < world.platforms.length; i++) {
+    const p = world.platforms[i];
+    if (x < p.x1 || x > p.x2) continue;
+    const d = y === Infinity ? 0 : Math.abs(p.y - y);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+// ---- v0.18 §13.1/13.2: buried food + dig ----
+
+function buryFood(world, biome, kind, amount, x0, x1, y, n) {
+  const dr = world.decorRng || world.rng;
+  for (let i = 0; i < n; i++) {
+    world.buried.push({ x: dr.range(x0, x1), y, kind, amount, biome });
+  }
+}
+
+export function spawnBuriedFood(world) {
+  buryFood(world, 'plains', 'tuber', 1.6, 1850, 2350, 820, 8);       // tubers/roots — plains keep it all underground
+  buryFood(world, 'desert', 'tuber', 1.8, 2450, 2950, 830, 6);        // deep tubers — the desert classic
+  buryFood(world, 'jungle', 'grub', 1.2, 1250, 1750, 800, 6);         // grubs under leaf litter
+  buryFood(world, 'arctic', 'snowcache', 1.4, 50, 550, 800, 4);       // snow caches: roots/tubers
+  buryFood(world, 'shallows', 'morsel', 1.0, 3050, 3550, 950, 5);     // seabed morsels (wading dig)
+  buryFood(world, 'archipelago', 'sandcache', 1.3, 3610, 3710, 780, 4); // shallow sand caches
+}
+
+// digAt(world, x, y, radius): unearth buried food in a radius — the dig
+// verb's world side. Removes the buried entries, drops them as food
+// entities, returns the count unearthed. Buried food is the richest
+// per-bite in its biome: the effort must be worth learning.
+export function digAt(world, x, y, radius = 60) {
+  let n = 0;
+  for (let i = world.buried.length - 1; i >= 0; i--) {
+    const b = world.buried[i];
+    const dx = b.x - x, dy = b.y - y;
+    if (dx * dx + dy * dy <= radius * radius) {
+      world.buried.splice(i, 1);
+      addFood(world, b.x, platformIndexAt(world, b.x, b.y), b.kind, b.amount, 120, { nutrition: b.amount });
+      n++;
+    }
+  }
+  return n;
+}
+
+// ---- v0.18 §13.3: mobile food ----
+
+function addMobileFood(world, foodKind, x, platformIndex, y) {
+  addFood(world, x, platformIndex, foodKind, foodKind === 'minnow' ? 0.6 : 0.4, 0, { nutrition: 0.5 });
+  const f = world.foods[world.foods.length - 1];
+  const dr = world.decorRng || world.rng;
+  f.vx = dr.range(-25, 25);
+  f.vy = foodKind === 'minnow' ? dr.range(-15, 15) : 0;
+  if (y !== undefined) f.y = y;
+  return f;
+}
+
+export function spawnMobileFood(world) {
+  const dr = world.decorRng || world.rng;
+  const bug = (x0, x1, pi, n) => {
+    for (let i = 0; i < n; i++) addMobileFood(world, 'bug', dr.range(x0, x1), pi);
+  };
+  bug(1250, 1740, 1, 3); bug(1390, 1560, 2, 3); bug(1560, 1770, 3, 2); // jungle beetles (abundant)
+  bug(1850, 2350, 24, 6);   // plains grasshoppers
+  bug(2450, 2950, 26, 4);   // desert nocturnal insects
+  bug(620, 740, 17, 1); bug(740, 860, 19, 1); bug(860, 980, 21, 1); // mountains cliff insects
+  const minnow = (x0, x1, y0, y1, n) => {
+    for (let i = 0; i < n; i++) addMobileFood(world, 'minnow', dr.range(x0, x1), -1, dr.range(y0, y1));
+  };
+  minnow(3050, 3550, 815, 900, 8);  // shallows
+  minnow(3650, 3800, 815, 880, 3); minnow(4070, 4170, 815, 880, 3); // archipelago
+  minnow(4250, 4750, 715, 950, 6);  // deep — the only meat
+}
+
+// ---- v0.18 §12.2: per-biome resource sets ----
+
+export function spawnResources(world) {
+  // Fixed positions, no rng draws (the decorRng precedent: worldgen order
+  // is load-bearing, and resources must never shift the main stream).
+  // Observer-only until the technology release — the materials are there,
+  // the using is theirs to invent.
+  addMineral(world, 3660, 36, 'timber');    // archipelago island 1 — the shipwright's biome
+  addMineral(world, 3800, 38, 'timber');    // archipelago island 2
+  addMineral(world, 4120, 40, 'timber');    // archipelago island 3
+  addMineral(world, 3300, 31, 'timber');    // shallows mangrove stand — abundant timber
+  addMineral(world, 4325, 42, 'timber');    // deep floe timber
+  addMineral(world, 680, 17, 'stone');      // mountains shaft base — sparse timber, stone instead
+  addMineral(world, 920, 21, 'stone');      // mountains mid shaft
+  addMineral(world, 300, 9, 'stone');       // arctic shelter stone — little to build with
+  addMineral(world, 4150, 40, 'driftwood'); // archipelago drift line
+  addMineral(world, 4525, 43, 'driftwood'); // deep drift current
+  addMineral(world, 2700, 26, 'clay');      // desert sun-baked clay
+}
+
+// ---- v0.18 §5: per-biome flora ----
+
+function biasPlantGenomeFor(genome, flora) {
+  const pairs = [
+    ['heatTol', flora.heatTolBias],
+    ['coldTol', flora.coldTolBias],
+    ['saltTol', flora.saltTolBias],
+  ];
+  for (const [locus, bias] of pairs) {
+    const al = genome.alleles[locus];
+    if (!al || !bias) continue;
+    for (let i = 0; i < 2; i++) al[i] = Math.max(0, Math.min(1, al[i] + bias));
+  }
+}
+
+export function plantBiomeFlora(world, x, platformIndex, biomeKey, herb = false) {
+  const flora = floraFor(biomeKey);
+  const g = randomPlantGenome(world.decorRng || world.rng);
+  biasPlantGenomeFor(g, flora);
+  const opts = herb ? { morph: 'herb' } : { morph: flora.morph, fruitKind: flora.fruitKind };
+  if (herb) addHerb(world, x, platformIndex, g, opts);
+  else addPlant(world, x, platformIndex, g, opts);
+}
+
+export function spawnBiomeFlora(world) {
+  const dr = world.decorRng || world.rng;
+  const tree = (biome, x0, x1, pi, n, herb = false) => {
+    for (let i = 0; i < n; i++) plantBiomeFlora(world, dr.range(x0, x1), pi, biome, herb);
+  };
+  // Emerald Jungle: dense fruit trees on the branches + floor herbs (the ancestral economy)
+  tree('jungle', 1230, 1390, 1, 2); tree('jungle', 1390, 1560, 2, 2); tree('jungle', 1560, 1770, 3, 2);
+  tree('jungle', 1290, 1450, 4, 2); tree('jungle', 1460, 1630, 5, 1); tree('jungle', 1630, 1780, 6, 1);
+  tree('jungle', 1330, 1510, 7, 1); tree('jungle', 1520, 1680, 8, 1);
+  tree('jungle', 1250, 1750, 0, 3, true); // medicinal herbs on the floor
+  // Arctic Wastes: sparse ice-moss
+  tree('arctic', 50, 550, 9, 6);
+  // Skyreach Mountains: alpine shrubs — coldTol selects; the prize altitude taxes
+  tree('mountains', 610, 750, 17, 1); tree('mountains', 730, 870, 19, 1);
+  tree('mountains', 850, 990, 21, 1); tree('mountains', 970, 1110, 23, 1);
+  tree('mountains', 620, 740, 15, 2, true); // foothill herbs
+  // Whispering Plains: grasses — ALL food on the ground, no branches
+  tree('plains', 1850, 2350, 24, 12);
+  // Sunscorch Desert: sparse cacti + one oasis herb
+  tree('desert', 2450, 2950, 26, 5);
+  tree('desert', 2690, 2750, 26, 1, true);
+  // Mangrove Shallows: mangroves over water
+  tree('shallows', 3030, 3190, 31, 1); tree('shallows', 3230, 3390, 32, 1);
+  tree('shallows', 3430, 3570, 33, 1); tree('shallows', 3060, 3210, 34, 1);
+  tree('shallows', 3290, 3430, 35, 2);
+  // The Archipelago: palms on the islands + island herbs
+  tree('archipelago', 3610, 3710, 36, 2); tree('archipelago', 3750, 3850, 38, 2);
+  tree('archipelago', 4070, 4170, 40, 1);
+  tree('archipelago', 3630, 3690, 37, 1); tree('archipelago', 3770, 3830, 39, 1);
+  tree('archipelago', 3610, 3710, 36, 1, true); tree('archipelago', 3750, 3850, 38, 1, true);
+  // Azure Deep: floating kelp — platformIndex -1, the floating convention
+  for (let i = 0; i < 7; i++) plantBiomeFlora(world, dr.range(4250, 4750), -1, 'deep');
+}
+
+// ---- v0.18 §12/§12.1/§13.7: genesis spawns ----
+
+// §13.7: sub-stream pinning. RETIRED as the live path — genome.js now takes
+// {pinSub} natively (the v0.17 confound fix), and populateGenesis uses it.
+// Kept exported for its unit test and as documentation of the draw order:
+// language loci from one stream, evo-devo from another, same GENES order
+// per stream as genome.js passes 2–3.
+export function pinSubStreams(genome, pin) {
+  const p = pin | 0;
+  const lexRng = createRng((p ^ 0x1e154d) >>> 0);
+  const evoRng = createRng((p ^ 0x3a11ce) >>> 0);
+  for (const gene of GENES) {
+    const isLex = gene.key.startsWith('lex');
+    const isEvo = EVO17_KEYS.has(gene.key);
+    if (!isLex && !isEvo) continue;
+    const r = isLex ? lexRng : evoRng;
+    genome.alleles[gene.key] = [randomAllele(gene, r), randomAllele(gene, r)];
+  }
+  return genome;
+}
+
+// Standing variation (§12.1): shift both alleles partway toward the target:
+// a' = a + (target − a) × 0.5. NO organ/bud changes; instincts stay at
+// founder values. Loci absent from this genome build are skipped, never
+// invented — the shift list below documents which targets have no locus.
+export function shiftAlleles(genome, key, target) {
+  const al = genome.alleles[key];
+  if (!al) return false;
+  for (let i = 0; i < 2; i++) al[i] = Math.max(0, Math.min(1, al[i] + (target - al[i]) * 0.5));
+  return true;
+}
+
+export const GENESIS_COHORTS = [
+  // biome, spawn x, platform, biome-suited quantitative shifts (§12.1).
+  // The loci all exist (genome.js family-M thermal block + armLength);
+  // shiftAlleles still skips any locus that doesn't, so this table is
+  // forward-compatible with genome changes.
+  { biome: 0, key: 'arctic', x: 300, pi: 9, shifts: [['fur', 1], ['coldTol', 1]] },
+  { biome: 1, key: 'mountains', x: 680, pi: 17, shifts: [['armLength', 1], ['coldTol', 0.8]] },
+  { biome: 2, key: 'jungle', x: 1400, pi: 1, shifts: [] }, // the control — always plain founder stock
+  { biome: 3, key: 'plains', x: 2100, pi: 24, shifts: [['legLength', 0.8]] },
+  { biome: 4, key: 'desert', x: 2700, pi: 26, shifts: [['fur', 0.2], ['heatTol', 1]] },
+  { biome: 5, key: 'shallows', x: 3300, pi: 31, shifts: [['coldTol', 0.7]] },
+  { biome: 6, key: 'archipelago', x: 3660, pi: 36, shifts: [['armLength', 0.8]] },
+  { biome: 7, key: 'deep', x: 4325, pi: 42, shifts: [['coldTol', 0.8]] },
+];
+
+export function populateGenesis(world) {
+  const rng = world.rng;
+  const seed = world.seed === undefined ? 1 : world.seed;
+  // Worldgen west → east in fixed order; cosmetics from decorRng so the
+  // main stream's draw sequence stays clean.
+  spawnBiomeFlora(world);
+  spawnBuriedFood(world);
+  spawnMobileFood(world);
+  spawnResources(world);
+  // v0.18 §13.6: the decided predator roster (arctic bears, deep sharks) —
+  // drawn visibly and clickable per the v0.17-dev phantom-killer lesson.
+  // Legacy populate() does NOT call this: the jungle battery stays predator-free.
+  spawnPredators(world);
+  const founders = [];
+  GENESIS_COHORTS.forEach((g, bi) => {
+    const n = 3 + rng.int(0, 2); // 3–5 creatures per biome (§12)
+    const plat = world.platforms[g.pi];
+    // Sexes: at least one male and one female per cohort, the rest a coin flip.
+    const sexes = [];
+    for (let i = 0; i < n; i++) sexes.push(rng.chance(0.5) ? 'male' : 'female');
+    if (!sexes.includes('male')) sexes[rng.int(0, n - 1)] = 'male';
+    if (!sexes.includes('female')) sexes[rng.int(0, n - 1)] = 'female';
+    for (let i = 0; i < n; i++) {
+      // §13.7: pin sub-streams per founder via genome.js's native pinSub —
+      // same (seed, biome, index) ⇒ same language/evo-devo/realms alleles,
+      // independent of founder content (the v0.17 confound fix). The pin is
+      // per-founder, not per-biome, so a cohort keeps its sub-stream
+      // diversity ("starting variation, never destiny"); the 50% §12.1
+      // shifts apply on top.
+      const genome = randomGenome(rng, { pinSub: (seed * 31 + bi * 101 + i * 17) | 0 });
+      // §12.1: ~50% of each non-control cohort gets biome-suited shifts.
+      // Jungle is the control: 100% plain founder stock.
+      if (g.biome !== 2 && rng.chance(0.5)) {
+        for (const [key, target] of g.shifts) shiftAlleles(genome, key, target);
+      }
+      const x = Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, g.x + (i - (n - 1) / 2) * 130));
+      const c = createCreature(genome, x, g.pi, rng, { name: `${g.key}-${i + 1}` });
+      c.name = uniqueName(world, c.name);
+      c.sex = sexes[i];
+      c.biochem.age = c.pheno.lifespanSec * 0.4; // young adults — breedable from the first minute
+      recordLineage(world, c);
+      world.seenGenomes.add(genomeHash(c.genome));
+      founders.push(c);
+    }
+  });
+  world.creatures.push(...founders);
+  // Starter fruit near each founder — the first meal bootstraps foraging.
+  for (const c of founders) {
+    const plat = world.platforms[c.platformIndex];
+    const fx = Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, c.x + rng.range(-60, 60)));
+    addFood(world, fx, c.platformIndex, 'fruit', 1);
+  }
+  recordFounderMeans(world); // the divergence baseline across all cohorts
   return world;
 }

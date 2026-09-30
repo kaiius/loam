@@ -94,7 +94,7 @@ export function describeEntity(world, obj) {
       };
     }
     case 'food': {
-      const kindLabel = { fruit: '🍎 Fruit', leaf: '🌿 Medicinal leaf', meat: '🍖 Meat', scrap: '🍂 Scrap' }[obj.foodKind] || obj.foodKind;
+      const kindLabel = { fruit: '🍎 Fruit', leaf: '🌿 Medicinal leaf', meat: '🍖 Meat', scrap: '🍂 Scrap', bug: '🪲 Bug', minnow: '🐟 Minnow', corpse: '💀 Corpse' }[obj.foodKind] || obj.foodKind;
       const rows = [
         ['Kind', kindLabel],
         ['Nutrition', Number(obj.nutrition ?? 1).toFixed(2)],
@@ -178,6 +178,32 @@ export function describeEntity(world, obj) {
           ['Parents', obj.parents ? `#${obj.parents[0]} × #${obj.parents[1]}` : 'wild'],
         ],
         bars: [], note: null,
+      };
+    }
+    case 'shark':
+    case 'bear': {
+      // v0.18 "Realms": the danger panel — every agent of selection is
+      // visible. Kind, damage, and the physiological range that confines
+      // it (§13.6): the shark is bounded by water depth, the bear by heat.
+      const shark = obj.kind === 'shark';
+      const dmg = typeof obj.damage === 'number' ? obj.damage : null;
+      const rows = [
+        ['Kind', shark ? '🦈 Shark' : '🐻 Bear'],
+        ['Damage', dmg !== null ? dmg.toFixed(2) : 'not modeled by the sim'],
+        ['Range limit', shark
+          ? 'needs ≥90px water depth — suffocates in the shallows'
+          : 'overheats above ambient heat ~0.35 — confined by heat, not by walls'],
+        ['Zone', observerZoneName(world, obj.x)],
+      ];
+      if (obj.hunting || obj.target) rows.push(['State', '🔴 hunting']);
+      const bars = dmg !== null
+        ? [{ label: '☠️ Threat', value: Math.max(0, Math.min(1, dmg)), color: '#c0392b' }]
+        : [];
+      return {
+        title: shark ? 'Shark' : 'Bear',
+        subtitle: `predator #${obj.id}`,
+        rows, bars,
+        note: 'A real agent of selection, not scenery — it kills tanglekins. Watch it hunt.',
       };
     }
     default:

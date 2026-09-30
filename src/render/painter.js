@@ -652,6 +652,253 @@ export function drawCreature(ctx, c, groundY, t) {
 }
 
 // ---------------------------------------------------------------------------
+// v0.18 "Realms": environment painting — biome ground, water, and predators.
+//
+// The biome data module (../sim/biomes.js) is landed by the sim agents;
+// the renderer resolves it and passes it in here as plain data, so this
+// file never imports it. All colors below are keyed off the 8 biome keys.
+
+export const BIOME_KEYS = [
+  'arctic', 'mountains', 'jungle', 'plains',
+  'desert', 'shallows', 'archipelago', 'deep',
+];
+
+// Nominal palette per biome. The ground band is ambience, not physics —
+// creatures stand on platforms, not on this paint. The band's TOP comes
+// from the sim's own groundYAt(x) (null = open water, painted as abyss).
+const BIOME_GROUND = {
+  arctic:      { ground: [216, 230, 242], tint: 'rgba(190,215,235,0.15)', name: 'ARCTIC WASTES' },
+  mountains:   { ground: [74, 78, 88],    tint: 'rgba(120,125,140,0.14)', name: 'SKYREACH MOUNTAINS' },
+  jungle:      { ground: [86, 128, 74],    tint: 'rgba(110,170,100,0.12)', name: 'EMERALD JUNGLE' },
+  plains:      { ground: [126, 168, 92],  tint: 'rgba(140,180,100,0.12)', name: 'WHISPERING PLAINS' },
+  desert:      { ground: [216, 178, 120],  tint: 'rgba(225,190,130,0.15)', name: 'SUNSCORCH DESERT' },
+  shallows:    { ground: [206, 186, 138],  tint: 'rgba(120,180,200,0.12)', name: 'MANGROVE SHALLOWS' },
+  archipelago: { ground: [150, 170, 140],  tint: 'rgba(120,180,200,0.12)', name: 'THE ARCHIPELAGO' },
+  deep:        { ground: null,              tint: 'rgba(40,90,150,0.16)',  name: 'AZURE DEEP' },
+};
+
+export function biomeGroundInfo(key) {
+  return BIOME_GROUND[key] || null;
+}
+
+function groundRGB(c, light) {
+  const k = 0.5 + 0.5 * light;
+  return `rgb(${(c[0] * k) | 0},${(c[1] * k) | 0},${(c[2] * k) | 0})`;
+}
+
+// Ambient biome bands: a subtle wash over each biome's x-range, an opaque
+// ground band below the sim's own groundYAt(x) (null = open water), arctic
+// glare streaks, and a dark abyss gradient where the deep has no ground.
+// B is the resolved biomes module — every number comes from the sim.
+export function drawBiomeBands(ctx, world, B, light) {
+  const H = world.height;
+  const W = B.WORLD_W || world.width;
+  const step = 60;
+  const runs = [];
+  let runKey = null, runX0 = 0;
+  for (let x = 0; x <= W; x += step) {
+    let k = null;
+    try { k = B.biomeKeyAt(x, H * 0.5); } catch (e) { k = null; }
+    if (k !== runKey) {
+      if (runKey) runs.push({ key: runKey, x0: runX0, x1: x });
+      runKey = k; runX0 = x;
+    }
+  }
+  if (runKey) runs.push({ key: runKey, x0: runX0, x1: W });
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.font = '600 22px system-ui, sans-serif';
+  for (const r of runs) {
+    const info = biomeGroundInfo(r.key);
+    if (!info) continue;
+    const w = r.x1 - r.x0;
+    ctx.fillStyle = info.tint;
+    ctx.fillRect(r.x0, 0, w, H);
+    if (r.key === 'deep') {
+      // No ground in the deep — the abyss darkens with depth.
+      const g = ctx.createLinearGradient(0, 640, 0, H);
+      g.addColorStop(0, 'rgba(28,64,110,0.55)');
+      g.addColorStop(1, 'rgba(8,20,44,0.92)');
+      ctx.fillStyle = g;
+      ctx.fillRect(r.x0, 640, w, H - 640);
+    }
+    if (r.key === 'arctic') {
+      // Glare streaks on the ice shelf — pale diagonal slashes.
+      let top = 800;
+      try { const gt = B.groundYAt((r.x0 + r.x1) / 2); if (gt != null) top = gt; } catch (e) { /* keep nominal */ }
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 5; i++) {
+        const gx = r.x0 + w * (0.12 + i * 0.19);
+        const gy = top + 24 + (i % 2) * 30;
+        ctx.beginPath();
+        ctx.moveTo(gx, gy);
+        ctx.lineTo(gx + 70, gy - 16);
+        ctx.stroke();
+      }
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.fillText(info.name, (r.x0 + r.x1) / 2, H - 24);
+  }
+  ctx.restore();
+  // Ground: honest per-x groundYAt — the sim's own answer, including the
+  // nulls (open water between islands, the deep, mountain mid-air).
+  const gstep = 30;
+  for (let x = 0; x < W; x += gstep) {
+    let top = null, key = null;
+    try { top = B.groundYAt(x); key = B.biomeKeyAt(x, H * 0.5); } catch (e) { top = null; }
+    if (top === null || top === undefined || !isFinite(top)) continue;
+    const info = biomeGroundInfo(key);
+    if (!info || !info.ground) continue;
+    ctx.fillStyle = groundRGB(info.ground, light);
+    ctx.fillRect(x, top, gstep + 1, H - top);
+  }
+}
+
+// One water body: a translucent rect from the surface down, salt water a
+// deeper blue than fresh, plus a brighter surface line.
+export function drawWater(ctx, wr, worldH, light) {
+  const x0 = wr.x0, w = wr.x1 - wr.x0;
+  if (!(w > 0) || !isFinite(x0) || !isFinite(wr.surfaceY)) return;
+  const salt = !!wr.salt;
+  const k = 0.6 + 0.4 * light;
+  const body = salt ? [36, 108, 168] : [54, 148, 158];
+  ctx.fillStyle = `rgba(${(body[0] * k) | 0},${(body[1] * k) | 0},${(body[2] * k) | 0},0.42)`;
+  ctx.fillRect(x0, wr.surfaceY, w, worldH - wr.surfaceY);
+  ctx.fillStyle = salt ? 'rgba(150,210,245,0.85)' : 'rgba(170,230,220,0.85)';
+  ctx.fillRect(x0, wr.surfaceY - 2, w, 4);
+}
+
+// ---------------------------------------------------------------------------
+// v0.18 "Realms": predators. Every agent of selection must be visible —
+// Paul's v0.17-dev lesson: no phantom killers. Sharks and bears read as
+// dangerous at a glance and nothing like a tanglekin.
+
+export function drawPredator(ctx, pr, t, light) {
+  const x = pr.x, y = pr.y;
+  if (!isFinite(x) || !isFinite(y)) return;
+  const r = Math.max(10, pr.r || 26);
+  const facing = pr.facing || 1;
+  const hunting = !!(pr.hunting || pr.target || /hunt/i.test(pr.state || ''));
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(facing, 1);
+  const sway = Math.sin(t * 2.2 + (pr.id || 0)) * r * 0.08;
+  if (pr.kind === 'shark') {
+    // Dark mantle: a long low torpedo, slate-blue and menacing.
+    const k = 0.5 + 0.5 * light;
+    const mantle = `rgb(${(38 * k) | 0},${(58 * k) | 0},${(86 * k) | 0})`;
+    const belly = `rgb(${(120 * k) | 0},${(140 * k) | 0},${(165 * k) | 0})`;
+    ctx.fillStyle = mantle;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 1.5, r * 0.52, sway * 0.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = belly;
+    ctx.beginPath();
+    ctx.ellipse(r * 0.1, r * 0.22, r * 1.1, r * 0.28, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Dorsal fin.
+    ctx.fillStyle = mantle;
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.2, -r * 0.45);
+    ctx.lineTo(r * 0.25, -r * 1.05);
+    ctx.lineTo(r * 0.5, -r * 0.4);
+    ctx.closePath();
+    ctx.fill();
+    // Tail fin.
+    ctx.beginPath();
+    ctx.moveTo(-r * 1.45, 0);
+    ctx.lineTo(-r * 2.1, -r * 0.55 + sway);
+    ctx.lineTo(-r * 1.9, 0);
+    ctx.lineTo(-r * 2.1, r * 0.55 + sway);
+    ctx.closePath();
+    ctx.fill();
+    // Trailing tentacles from the underside — the thing that says
+    // "not a fish you know".
+    ctx.strokeStyle = mantle;
+    ctx.lineWidth = Math.max(2, r * 0.09);
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 4; i++) {
+      const tx = -r * 0.5 + i * r * 0.35;
+      const tw = Math.sin(t * 3 + i * 1.7 + (pr.id || 0)) * r * 0.18;
+      ctx.beginPath();
+      ctx.moveTo(tx, r * 0.4);
+      ctx.quadraticCurveTo(tx - r * 0.1 + tw, r * 0.9, tx - r * 0.25 + tw * 1.6, r * 1.25);
+      ctx.stroke();
+    }
+    // Large eyes — red when hunting.
+    for (const ex of [r * 0.75, r * 1.05]) {
+      ctx.fillStyle = hunting ? '#e0342b' : '#dfe8f2';
+      ctx.beginPath();
+      ctx.arc(ex, -r * 0.12, r * 0.13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#101418';
+      ctx.beginPath();
+      ctx.arc(ex + r * 0.03, -r * 0.12, r * 0.06, 0, Math.PI * 2);
+      ctx.fill();
+      if (hunting) {
+        ctx.strokeStyle = 'rgba(224,52,43,0.5)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(ex, -r * 0.12, r * 0.24, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  } else {
+    // Bear: a grey-brown quadruped — heavy body, snout, round ears,
+    // bushy tail. Reads as dangerous, reads as land.
+    const k = 0.5 + 0.5 * light;
+    const coat = `rgb(${(122 * k) | 0},${(100 * k) | 0},${(76 * k) | 0})`;
+    const dark = `rgb(${(88 * k) | 0},${(70 * k) | 0},${(52 * k) | 0})`;
+    // Bushy tail (behind).
+    ctx.strokeStyle = dark;
+    ctx.lineWidth = r * 0.3;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-r * 1.15, -r * 0.25);
+    ctx.quadraticCurveTo(-r * 1.6, -r * 0.5 + sway, -r * 1.45, -r * 0.85);
+    ctx.stroke();
+    // Body.
+    ctx.fillStyle = coat;
+    ctx.beginPath();
+    ctx.ellipse(0, -r * 0.45, r * 1.05, r * 0.62, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Legs.
+    ctx.fillStyle = dark;
+    for (const lx of [-r * 0.6, r * 0.55]) {
+      ctx.fillRect(lx - r * 0.16, -r * 0.6, r * 0.32, r * 0.62);
+    }
+    // Head + snout.
+    ctx.fillStyle = coat;
+    ctx.beginPath();
+    ctx.arc(r * 1.05, -r * 0.72, r * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = dark;
+    ctx.beginPath();
+    ctx.ellipse(r * 1.38, -r * 0.6, r * 0.24, r * 0.18, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#1a1512'; // nose
+    ctx.beginPath();
+    ctx.arc(r * 1.55, -r * 0.64, r * 0.07, 0, Math.PI * 2);
+    ctx.fill();
+    // Round ears.
+    ctx.fillStyle = dark;
+    for (const ex of [r * 0.82, r * 1.12]) {
+      ctx.beginPath();
+      ctx.arc(ex, -r * 1.08, r * 0.13, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Eyes — small, forward, unimpressed.
+    ctx.fillStyle = '#14100c';
+    ctx.beginPath();
+    ctx.arc(r * 1.12, -r * 0.78, r * 0.07, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // The Teacher — Sunny's in-sim avatar (v0.14 "Voices"). A blue monkey in a
 // jaunty newsboy cap: visually NOT a tanglekin (tanglekins never wear caps,
 // and their fur hue comes from the genome — the Teacher is always this

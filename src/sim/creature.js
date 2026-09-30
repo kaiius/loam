@@ -2,18 +2,25 @@
 // Per tick: sense → brain decides → act → learn from the outcome.
 
 import { phenotype, markLocus } from './genome.js';
-import { createBiochem, tickBiochem, ageStage, stageSize, isDead, mood } from './biochem.js';
+import { createBiochem, tickBiochem, ageStage, stageSize, isDead, mood, coldSense, heatSense } from './biochem.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
-import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION } from './world.js';
+import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION } from './world.js';
 import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, pushContextWindow, hearerSalientContext, lexiconDistance } from './language.js';
-import { expressBuds, developmentalGrowth01 } from './evodevo.js';
+import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA } from './evodevo.js';
+// v0.18 "Realms": the biome map — region layout, temperature fields,
+// waters, ground. Pure geography; every call NaN-guarded at use.
+import { biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, groundYAt } from './biomes.js';
 
 let nextId = 1;
 
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+// NaN-safe position readers (the v0.15 lesson — never let a bad coordinate
+// poison distance math).
+function cx0(c) { return Number.isFinite(c.x) ? c.x : 0; }
+function cy0(c) { return Number.isFinite(c.y) ? c.y : 800; }
 
 // --- physics: the canopy has gravity now ---------------------------------
 // y grows downward (screen space). Ground platform at y=800 spans the whole
@@ -30,6 +37,29 @@ export const JUMP_RANGE_DX = 220; // farthest sideways the jumpNear sense sees
 // beyond jump range is what farLedge (sense 25) reports.
 export const GLIDE_RANGE_DY = 520; // highest ledge a glide can reach
 export const GLIDE_RANGE_DX = 450; // farthest sideways a glide carries
+// v0.18 "Realms": water physics. Buoyancy is a spring toward the float
+// equilibrium (FLOAT_MARGIN below the surface) with damping — creatures
+// float with their backs out, reading submerged=false, breathing air.
+// The submerged line is the literal task formula: 14px+ under the surface.
+export const SUBMERGE_MARGIN = 14; // px below surfaceY = submerged (task formula)
+export const FLOAT_MARGIN = 11; // px below surface at the float equilibrium
+export const BUOY_K = 20; // buoyancy spring constant
+export const BUOY_DAMP = 4; // buoyancy damping (settles in ~2s; 9 overdamps the discrete integrator)
+export const WATER_VEL_DAMP = 2.5; // per-second velocity damping in water
+export const WATER_NEAR_RANGE = 240; // px — the waterNear sense horizon
+export const BURIED_NEAR_RANGE = 240; // px — the buriedNear sense horizon
+export const DRINK_REACH = 40; // px above the surface that still counts as adjacent
+export const DIG_TIME = 3; // seconds of digging to unearth buried food
+export const DIG_RADIUS = 60; // px — digAt search radius
+// v0.18 "Realms": the diet. Meat kinds burn through meatEfficiency;
+// small prey and corpses have fixed nutrition overrides. Plant kinds burn
+// through fruitEfficiency. Leaves are medicine, scraps desperation.
+// Anything not listed is unknown — skipped, never crashed on.
+export const MEAT_KINDS = new Set(['meat', 'bug', 'minnow', 'corpse', 'grub', 'morsel']);
+export const PLANT_KINDS = new Set(['fruit', 'tuber', 'kelp', 'moss', 'seed',
+  'propagule', 'cactusfruit', 'berry', 'snowcache', 'sandcache']);
+export const PREY_NUTRITION = 0.15; // bug/minnow/grub/morsel — small mouthfuls
+export const CORPSE_NUTRITION = 0.4; // corpse — rotten, but food
 
 const NAMES = [
   'Pip', 'Moss', 'Wren', 'Pebble', 'Fig', 'Nix', 'Bramble', 'Tansy',
@@ -38,7 +68,9 @@ const NAMES = [
 ];
 
 export function createCreature(genome, x, platformIndex, rng, opts = {}) {
-  const pheno = phenotype(genome);
+  // v0.18 "Realms": the aquatic derivations (swimSpeed/sailDump/waterDrag)
+  // overwrite the old fin-based swimSpeed with the membrane formula.
+  const pheno = deriveAquaticPheno(phenotype(genome));
   return {
     kind: 'creature',
     id: nextId++,
@@ -64,6 +96,13 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     vx: 0,
     vy: 0,
     grounded: true,
+    // v0.18 "Realms": water state — set each tick by stepPhysics.
+    // submerged: 14px+ below the surface (the literal formula).
+    // _water: the waterAt() record ({surfaceY, salt}) or null.
+    // _waterNear: water within 240px (sense 27).
+    submerged: false,
+    _water: null,
+    _waterNear: false,
     // v0.12: home-range imprinting. Birthplace is home — permanent.
     // Philopatry, not a leash: the brain (via homeDist + instHomeSeek)
     // decides how much it matters.
@@ -115,8 +154,50 @@ export function creatureRadius(c) {
   return c.pheno.bodyRadius * stageSize(ageStage(c.biochem, c.pheno));
 }
 
+// v0.18 "Realms": water state — refreshed every tick. waterAt is null
+// outside water; submerged is the literal formula: 14px+ below the
+// surface. waterNear scans ±240px. NaN-guarded (the v0.15 lesson).
+export function refreshWaterState(c, world) {
+  const cx = cx0(c);
+  const cy = Number.isFinite(c.y) ? c.y : 800;
+  let w = null;
+  try { w = waterAt(cx, cy); } catch (e) { w = null; }
+  c._water = w;
+  c.submerged = !!w && Number.isFinite(w.surfaceY) && cy > w.surfaceY + SUBMERGE_MARGIN;
+  let near = !!w;
+  if (!near) {
+    try {
+      near = !!waterAt(cx - WATER_NEAR_RANGE, cy) || !!waterAt(cx + WATER_NEAR_RANGE, cy);
+    } catch (e) { near = false; }
+  }
+  c._waterNear = near;
+  return w;
+}
+
 const SENSE_RANGE = 420;
 const EAT_RANGE = 30;
+
+// v0.18 "Realms": homesickness scales by biome-center distance, not just
+// raw displacement — leaving the birth biome costs more than leaving the
+// birth zone did (BIOMES_DESIGN §4). The v0.13 base (|x−homeX|/800) is kept
+// and multiplied by (1+dist/1200), where dist is the creature's distance
+// to its birth biome's center; clamped to [0,1]. NaN anywhere (no home,
+// no biome map) falls back to the v0.13 behavior — the v0.15 lesson.
+export function scaledHomeDist(c, world) {
+  if (c.homeX === undefined || c.homeX === null) return 0;
+  const cx = Number.isFinite(c.x) ? c.x : c.homeX;
+  const base = Math.abs(cx - c.homeX) / 800;
+  if (!Number.isFinite(base)) return 0;
+  let dist = 0;
+  let ok = false;
+  try {
+    const hb = biomeAt(c.homeX, Number.isFinite(c.y) ? c.y : 800);
+    const bcx = biomeCenterX(hb);
+    if (Number.isFinite(bcx)) { dist = Math.abs(cx - bcx); ok = true; }
+  } catch (e) { ok = false; }
+  if (!ok || !Number.isFinite(dist)) return clamp01(base);
+  return clamp01(base * (1 + dist / 1200));
+}
 
 function nearest(list, x, platformIndex, range, excludeId) {
   let best = null;
@@ -318,6 +399,19 @@ export function gatherSenses(c, world) {
   // v0.14 "Voices": what the acoustic commons sounds like right now —
   // the loudest recent call on this platform within earshot.
   const heard = callsHeardBy(world, c);
+  // v0.18 "Realms": buriedNear (sense 31) — the dig verb's reader. Nearest
+  // buried food within 240px; 0 when the world has no pantry (guarded).
+  let buriedNear = 0;
+  {
+    const buried = world.buried || [];
+    let bd = Infinity;
+    for (const bf of buried) {
+      if (!Number.isFinite(bf.x) || !Number.isFinite(bf.y)) continue;
+      const d = Math.hypot(bf.x - c.x, bf.y - (c.y ?? bf.y));
+      if (d < bd) bd = d;
+    }
+    if (bd <= BURIED_NEAR_RANGE) buriedNear = 1 - bd / BURIED_NEAR_RANGE;
+  }
   const senses = {
     _range: range, // px base for dist normalization (used by contagion/mating checks)
     hunger: b.hunger,
@@ -327,13 +421,19 @@ export function gatherSenses(c, world) {
     fear: b.fear,
     illness: b.illness, // v0.8: the 15th sense — feeling sick is learnable
     light: world.light,
-    homeDist: c.homeX !== undefined ? clamp01(Math.abs(c.x - c.homeX) / 800) : 0,
+    homeDist: scaledHomeDist(c, world), // v0.18: biome-center-scaled (was |x−homeX|/800)
     kinNear: otherObj ? pedigreeKin(world, c, otherObj) : 0,
     bondNear: otherObj && world.bonds ? getBond(world.bonds, c, otherObj) : 0,
     climbUp, climbDown, jumpNear, groomNear,
     callHeard: heard.heard, callPitch: heard.pitch,
     airborne, farLedge, // v0.17: the body-plan senses
-    submerged: c.submerged ? 1 : 0, waterNear: c._waterNear ? 1 : 0, // v0.17: 0 until v0.18's water
+    submerged: c.submerged ? 1 : 0, waterNear: c._waterNear ? 1 : 0, // v0.18: live from stepPhysics
+    // v0.18 "Realms": thirst = 1 − hydration (design doc §6); cold/heat are
+    // the coreTemp readouts (senses, not drives — BIOMES_DESIGN §6).
+    thirst: 1 - (Number.isFinite(b.hydration) ? b.hydration : 1),
+    cold: coldSense(b, c.pheno),
+    heat: heatSense(b, c.pheno),
+    buriedNear,
     _heardCall: heard.call || null, // v0.16: the full acoustic event for the lexicon
     wasteOdor: wasteOdorOf(world, c.x), // v0.14: disgust — the smell of fouled ground
     _alarmHeard: heard.alarm, // v0.14: alarm calls reassure — fear drains slightly
@@ -404,6 +504,9 @@ function moveAlong(c, world, dir, dt, mult = 1, edge = 'turn') {
 
 // Integrate gravity, land on platforms, take fall damage. The world's own
 // natural law — cause and effect, never dice.
+// v0.18 "Realms": water gains its own branch — buoyancy replaces gravity.
+// Every term NaN-guarded (the v0.15 lesson); with no water the old path
+// runs bit-identically.
 export function stepPhysics(c, world, dt) {
   const plat = world.platforms[c.platformIndex];
   if (c.y === undefined || c.y === null) {
@@ -412,6 +515,36 @@ export function stepPhysics(c, world, dt) {
     // already set grounded=false and a velocity; don't stomp the launch.
     c.y = plat.y;
     if (c.grounded) { c.vx = 0; c.vy = 0; }
+  }
+  // v0.18: water state, every tick (also refreshed in executeAction so the
+  // water verbs see this tick's state, not last tick's).
+  const w = refreshWaterState(c, world);
+  const cy = Number.isFinite(c.y) ? c.y : 0;
+  if (w && Number.isFinite(w.surfaceY)) {
+    // In water: buoyancy replaces gravity. A spring toward the float
+    // equilibrium (11px below the surface) with damping, plus drag —
+    // floating bodies read submerged=false and breathe. No gravity here;
+    // the swim verb steers, the dive verb holds depth.
+    c.grounded = false;
+    // The dive verb's depth hold: pin to the held depth instead of
+    // floating up (gills or held breath pay for it in oxygen).
+    const holdY = c._holdDepth;
+    const targetY = (holdY !== undefined && Number.isFinite(holdY))
+      ? holdY : w.surfaceY + FLOAT_MARGIN;
+    const spring = (targetY - cy) * BUOY_K;
+    if (Number.isFinite(spring)) c.vy = (Number.isFinite(c.vy) ? c.vy : 0) + spring * dt;
+    const dampK = Math.max(0, 1 - BUOY_DAMP * dt);
+    c.vy *= dampK;
+    const vDampK = Math.max(0, 1 - WATER_VEL_DAMP * dt);
+    c.vx = (Number.isFinite(c.vx) ? c.vx : 0) * vDampK;
+    c.x += c.vx * dt;
+    c.y += c.vy * dt;
+    // The world has walls: nobody leaves sideways. And nobody sinks
+    // through the floor of the world.
+    if (c.x < 0) { c.x = 0; c.vx = Math.abs(c.vx) * 0.3; }
+    if (c.x > world.width) { c.x = world.width; c.vx = -Math.abs(c.vx) * 0.3; }
+    if (c.y > world.height) { c.y = world.height; c.vy = 0; }
+    return;
   }
   if (c.grounded) {
     c.y = plat.y; // stand on the branch
@@ -447,6 +580,15 @@ export function stepPhysics(c, world, dt) {
         break;
       }
     }
+  }
+  // v0.18: the world has a floor — nobody falls through it. (The water
+  // branch already clamps; the gravity branch needs it too, now that
+  // creatures can exit water over pool regions with no platform below.)
+  if (c.y > world.height) {
+    c.y = world.height;
+    c.vy = 0;
+    c.vx = 0;
+    c.grounded = true;
   }
 }
 
@@ -546,7 +688,17 @@ export function doEat(c, world) {
   const s = c._senses;
   const food = s._food && Math.abs(s._food.x - c.x) < EAT_RANGE ? s._food : null;
   if (!food) return false;
-  // v0.6 morphology: bite size from mouthSize gene; fruit efficiency from diet.
+  // v0.18 "Realms": explicit diet branches. Meat kinds (meat, bug, minnow,
+  // corpse, grub, morsel) burn through meatEfficiency — small prey and
+  // corpses have fixed nutrition overrides. Plant kinds (fruit, tuber,
+  // kelp, moss, …) burn through fruitEfficiency. Leaves are medicine,
+  // scraps desperation — both keep their existing logic. A truly unknown
+  // kind is skipped (return false), never crashed on.
+  const kind = food.foodKind;
+  const isMeat = MEAT_KINDS.has(kind);
+  const isPlant = PLANT_KINDS.has(kind);
+  if (kind !== 'leaf' && kind !== 'scrap' && !isMeat && !isPlant) return false;
+  // v0.6 morphology: bite size from mouthSize gene; diet efficiencies.
   // v0.7: meat efficiency — carcasses feed carnivores at full value.
   const bite = Math.min(food.amount, c.pheno.biteSize);
   food.amount -= bite;
@@ -559,21 +711,29 @@ export function doEat(c, world) {
   if (scrapAmt > 0.005 && world.foods.length < 90) {
     addFood(world, c.x + world.rng.range(-8, 8), c.platformIndex, 'scrap', scrapAmt, SCRAP_ROT, { nutrition: SCRAP_NUTRITION });
   }
-  const eff = food.foodKind === 'meat' ? c.pheno.meatEfficiency : c.pheno.fruitEfficiency;
   // v0.8: medicinal leaves. Bitter and barely nutritious, but they purge
   // illness — self-medication. The illness reward term (below) makes recovery
   // reinforcing, so the brain learns: sick → seek leaf → feel better.
-  if (food.foodKind === 'leaf') {
+  if (kind === 'leaf') {
     const wasSick = c.biochem.illness > 0.25;
     c.biochem.illness = Math.max(0, c.biochem.illness - 0.4);
     // Bitter medicine: barely nutritious (small ate), powerfully purging.
-    c._ate = (c._ate || 0) + bite * 0.3 * eff;
+    c._ate = (c._ate || 0) + bite * 0.3 * c.pheno.fruitEfficiency;
     c.actionLabel = 'chewing bitter leaf';
     // Bitter when well, medicine when sick — the differential that teaches
     // self-medication. A healthy creature finds leaves meh; a sick one that
     // chews a leaf feels better, and the brain (which senses illness) learns
     // the conditional.
     c.reward += wasSick ? 0.6 : 0.15;
+  } else if (isMeat) {
+    // Meat: small prey (bug/minnow/grub/morsel) are fixed small mouthfuls;
+    // corpse is rotten but substantial; meat uses the food's own nutrition.
+    let nut = food.nutrition || 1;
+    if (kind === 'bug' || kind === 'minnow' || kind === 'grub' || kind === 'morsel') nut = PREY_NUTRITION;
+    else if (kind === 'corpse') nut = CORPSE_NUTRITION;
+    c._ate = (c._ate || 0) + bite * 1.1 * c.pheno.meatEfficiency * nut;
+    c.actionLabel = `eating ${kind}`;
+    c.reward += 0.6;
   } else {
     // Food becomes blood sugar via the chemistry tick (c._ate is consumed
     // by tickBiochem before the next action) — the body, not the action,
@@ -581,13 +741,14 @@ export function doEat(c, world) {
     // v0.13: bitterness from the plant genome — bitter fruit is less
     // rewarding, so the brain learns to avoid bitter plants. The differential
     // (not a hardcoded rule) is what teaches foraging discrimination.
+    const eff = c.pheno.fruitEfficiency;
     const bitter = food.bitterness || 0;
     const palatability = 1 - 0.5 * bitter;
     const nutrition = (food.nutrition || 1) * palatability;
     c._ate = (c._ate || 0) + bite * 1.1 * eff * nutrition;
     // v0.14.1: scraps are desperation food — eaten, but joylessly.
-    const isScrap = food.foodKind === 'scrap';
-    c.actionLabel = isScrap ? 'picking at scraps' : `eating ${food.foodKind === 'meat' ? 'meat' : 'fruit'}`;
+    const isScrap = kind === 'scrap';
+    c.actionLabel = isScrap ? 'picking at scraps' : `eating ${kind === 'fruit' ? 'fruit' : kind}`;
     c.reward += (isScrap ? 0.25 : 0.6) * palatability; // bitter meals reinforce less
     // v0.13: seed dispersal — the eaten fruit's plant may ride along.
     disperseSeed(world, c, food);
@@ -664,12 +825,20 @@ export function ownSalientContext(c, s) {
 
 function executeAction(c, world, dt, s) {
   const rng = world.rng;
+  // v0.18: the water verbs (swim/dive/drink) read c._water — refresh it
+  // here so they see this tick's state (executeAction runs before
+  // stepPhysics in the tick).
+  refreshWaterState(c, world);
   c.playing = false;
   c.grooming = false; // set by the groom action — consumed by tickBiochem
   c.gliding = false; // set by the glide action — true flight needs real wings
   c.brachiating = false; // set by the brachiate action — needs a 3rd grasp pair
   c.diving = false; // set by the dive action — needs real gills to stay down
   c._active = 0; // exertion this tick — consumed by tickBiochem
+  c._basking = 0; // set by the bask action — consumed by tickBiochem
+  c._flail = false; // set by the swim action — flailing bills extra oxygen
+  if (c.action !== 'dig') c._digT = 0; // digging progress resets off-action
+  if (c.action !== 'dive') c._holdDepth = undefined; // depth hold releases off-action
   switch (c.action) {
     case 'seekFood':
       c.actionLabel = 'looking for food';
@@ -852,6 +1021,7 @@ function executeAction(c, world, dt, s) {
         c.actionTimer = 0; // re-decide from the new branch
         c.reward += 0.05; // climbing somewhere new feels good
         c._active = 1;
+        if (world.stats) world.stats.climbs++; // v0.18 §13.7: the leg experiment counts climbs
         world.events.push({ type: 'climbed', creature: c, to: best.to, t: world.time });
       }
       break;
@@ -889,6 +1059,7 @@ function executeAction(c, world, dt, s) {
         c.grounded = false;
         c._active = 1; // jumping is work — the chemistry bills it
         c.reward += 0.05; // airtime feels good
+        if (world.stats) world.stats.jumps++; // v0.18 §13.7: the leg experiment counts leaps
         world.events.push({ type: 'jumped', creature: c, t: world.time });
       } else {
         c.action = 'wander';
@@ -969,60 +1140,129 @@ function executeAction(c, world, dt, s) {
       break;
     }
     case 'swim': {
-      // The dormant water verb — v0.18 brings the water; the verb sleeps
-      // until then. Dog-paddles badly without fins, well with them;
-      // drowning is the honest cost without gills. On land: an honest flop.
-      const finArea = (c.bodyPlan && c.bodyPlan.finArea) || 0;
-      const gillArea = (c.bodyPlan && c.bodyPlan.gillArea) || 0;
-      if (c.submerged) {
-        const swimMult = 0.3 + Math.min(1, finArea * 1.2); // 0.3× dog-paddle → finned
-        c.actionLabel = 'swimming';
+      // v0.18 "Realms": the water verb wakes. Membranes are the organ —
+      // swimSpeed comes from the aquatic phenotype (evodevo): real membranes
+      // swim at 40+wingArea×120 px/s; without them it's a flailing
+      // dog-paddle at ~12px/s that costs 3× the oxygen (billed in
+      // updateCreature — the chemistry doesn't read ctx.flail). Steering is
+      // 2D: toward the move target at swimSpeed. On land: an honest flop.
+      const w = c._water; // set by stepPhysics this tick
+      if (w) {
+        const wingArea = c.pheno.wingArea || 0; // the canonical value deriveAquaticPheno read
+        const flail = wingArea < SWIM_FLAIL_AREA;
+        c._flail = flail;
+        c.actionLabel = flail ? 'flailing' : 'swimming';
+        const speed = Number.isFinite(c.pheno.swimSpeed) ? c.pheno.swimSpeed : 12;
+        // 2D steering: toward food, else the wander heading. Vertical:
+        // paddle toward the food's depth, else ride the float equilibrium.
+        let tx = c.x + c.wanderDir * 100;
+        let ty = w.surfaceY + FLOAT_MARGIN;
         if (s._food) {
-          if (moveToward(c, world, s._food.x, dt, swimMult)) {
-            c.actionTimer = 0;
-            doEat(c, world);
-          }
-        } else {
-          moveAlong(c, world, c.wanderDir, dt, swimMult);
+          tx = s._food.x;
+          if (Number.isFinite(s._food.y)) ty = s._food.y;
         }
-        if (gillArea <= 0.4) {
-          // No real gills: the breath timer runs. Past it, drowning bills
-          // the chemistry directly — the honest cost of staying down.
-          c.breathT = (c.breathT ?? c.pheno.breathTime ?? 30) - dt;
-          if (c.breathT <= 0) {
-            c.biochem.bloodSugar = clamp01(c.biochem.bloodSugar - 0.08 * dt);
-            c.reward -= 0.3 * dt;
-          }
+        const dx = tx - c.x;
+        if (Math.abs(dx) > 2) c.x += Math.sign(dx) * Math.min(Math.abs(dx), speed * dt);
+        const dy = ty - c.y;
+        if (Math.abs(dy) > 2) c.y += Math.sign(dy) * Math.min(Math.abs(dy), speed * 0.7 * dt);
+        if (dx !== 0) c.facing = Math.sign(dx);
+        c._active = flail ? 1 : 0.8; // flailing is desperate work
+        if (s._food && Math.abs(s._food.x - c.x) < EAT_RANGE) {
+          c.actionTimer = 0;
+          doEat(c, world);
         }
-        c._active = 0.8;
       } else {
         c.actionLabel = 'flopping';
         moveAlong(c, world, c.wanderDir, dt, 0.5); // an honest flop
-        c.breathT = c.pheno.breathTime ?? 30; // the lungs refill on land
       }
+      // The lungs refill at the surface or on land; the chemistry bills
+      // the dive. (Kept for pre-oxygen bodies; the chem exists now.)
+      if (!c.submerged) c.breathT = c.pheno.breathTime ?? 30;
       break;
     }
     case 'dive': {
-      // Hold depth while submerged — needs real gills to stay down.
-      // Without them: a brief duck, forced up after breathTime. On land:
-      // nothing to dive into; the verb degrades to wandering.
-      const gillArea = (c.bodyPlan && c.bodyPlan.gillArea) || 0;
-      if (c.submerged) {
+      // Hold depth while in water — needs real gills to stay down.
+      // Oxygen-gated: the oxygen chem (not breathT) limits the dive now;
+      // at critical oxygen a gill-less diver releases depth and floats up
+      // — the honest limit. On land: nothing to dive into; degrades.
+      const gillArea = c.pheno.gillArea || 0;
+      const w = c._water;
+      if (w) {
         c.actionLabel = 'diving';
         c.diving = true;
-        if (gillArea <= 0.4) {
-          c.breathT = (c.breathT ?? c.pheno.breathTime ?? 30) - dt;
-          if (c.breathT <= 0) {
-            c.submerged = false; // forced up — the honest limit
-            c.breathT = c.pheno.breathTime ?? 30;
-            c.action = 'wander';
-            c.actionTimer = 0;
-          }
-        }
         c._active = 0.5;
+        const oxy = c.biochem.oxygen;
+        let outOfAir;
+        if (oxy !== undefined) {
+          outOfAir = oxy <= 0.05;
+        } else {
+          // Pre-oxygen fallback: the breath timer.
+          c.breathT = (c.breathT ?? c.pheno.breathTime ?? 30) - dt;
+          outOfAir = c.breathT <= 0;
+          if (outOfAir) c.breathT = c.pheno.breathTime ?? 30;
+        }
+        if (outOfAir && gillArea <= 0.4) {
+          c._holdDepth = undefined; // release — buoyancy floats the body up
+          c.action = 'wander';
+          c.actionTimer = 0;
+        } else {
+          // Hold this depth against the float spring (stepPhysics reads it).
+          if (c._holdDepth === undefined) c._holdDepth = c.y;
+        }
       } else {
         c.actionLabel = 'ducking';
         c.action = 'wander';
+        c.actionTimer = 0;
+      }
+      break;
+    }
+    case 'drink': {
+      // v0.18: drink adjacent water — restores hydration (ctx.drank).
+      // Adjacent means at/below the surface or within 40px above it;
+      // water merely in sight (waterNear) is not drinkable.
+      c.actionLabel = 'drinking';
+      const w = c._water;
+      let adjacent = false;
+      if (w) {
+        adjacent = c.y >= w.surfaceY - DRINK_REACH;
+      } else {
+        try { adjacent = !!waterAt(c.x, c.y + DRINK_REACH); } catch (e) { adjacent = false; }
+      }
+      if (adjacent) {
+        c._drank = 1; // consumed by tickBiochem as ctx.drank
+        c._active = 0.2;
+        c.reward += 0.1 * dt;
+      } else {
+        c.action = 'wander';
+        c.actionTimer = 0;
+      }
+      break;
+    }
+    case 'bask': {
+      // v0.18: stationary sunning — restores coreTemp in warmth.
+      // Always sets ctx.basking; the warmth gate lives in the chemistry
+      // (basking only pays when ambient is warm — a parka in the cold is
+      // just standing around). Basking is restful and stationary.
+      c.actionLabel = 'basking';
+      c._basking = 1;
+      c._active = 0.1;
+      break;
+    }
+    case 'dig': {
+      // v0.18: dig at the ground — unearths buried food (world.digAt).
+      // Three seconds of work; the ground must actually hold something.
+      // Digging is work; the find (if any) re-decides toward eating.
+      c.actionLabel = 'digging';
+      c._digT = (c._digT || 0) + dt;
+      c._active = 0.7;
+      if (c._digT >= DIG_TIME) {
+        let n = 0;
+        try { n = digAt(world, c.x, c.y, DIG_RADIUS); } catch (e) { n = 0; }
+        if (n > 0) {
+          c.reward += 0.4;
+          world.events.push({ type: 'dugUp', creature: c, n, t: world.time });
+        }
+        c._digT = 0;
         c.actionTimer = 0;
       }
       break;
@@ -1153,12 +1393,39 @@ export function updateCreature(c, world, dt) {
   // converts it to blood sugar now.
   const ate = c._ate || 0;
   c._ate = 0;
+  // v0.18 "Realms": drinking — the drink action sets c._drank; the chemistry
+  // converts it to hydration now.
+  const drank = c._drank || 0;
+  c._drank = 0;
   // v0.13 migration friction: homesickness — comfort drains in proportion
   // to distance from the imprinted home range, scaled by the instHomeSeek
   // gene. Homebodies feel the pull; wanderers (low instHomeSeek) range free.
   // This is the cost that lets biomes diverge instead of homogenizing
   // (Paul's v0.11 honest negative: zones alone don't differentiate).
-  const homeDist = c.homeX !== undefined ? clamp01(Math.abs(c.x - c.homeX) / 800) : 0;
+  // v0.18: scaled by biome-center distance (leaving the birth biome costs
+  // more than leaving the birth zone did).
+  const homeDist = scaledHomeDist(c, world);
+  // v0.18 "Realms": predators are the threat channel — fear enters the
+  // chemistry through proximity, not through the fear readout itself
+  // (which would feed back).
+  let threat = 0;
+  if (world.predators) {
+    for (const p of world.predators) {
+      if (!p.alive) continue;
+      const pd = Math.hypot(p.x - cx0(c), (p.y ?? 800) - cy0(c));
+      if (pd < 300) threat = Math.max(threat, 1 - pd / 300);
+    }
+  }
+  // v0.18 "Realms": the water/thermal context — the biome map's real fields.
+  // submerged/heat/ambientTemp are NaN-guarded by the chemistry; drank and
+  // basking were set by this tick's action; sailDump is the body plan.
+  let ambTemp = 0.5, ambHeat = 0;
+  try {
+    ambTemp = ambientTemp(c.x, c.y);
+    ambHeat = ambientHeat(c.x, c.y);
+  } catch (e) { /* chemistry defaults cover it */ }
+  if (!Number.isFinite(ambTemp)) ambTemp = 0.5;
+  if (!Number.isFinite(ambHeat)) ambHeat = 0;
   // v0.17 "Bauplan": growing novel structures costs fuel. Juveniles pay
   // the developmental cost through hunger (the chemistry bills it below);
   // adults pay maintenance upkeep after the tick. Founder 0 → silent.
@@ -1173,9 +1440,24 @@ export function updateCreature(c, world, dt) {
     groomed: wasGroomed,
     ate,
     active: c._active || 0,
+    threat,
     homesick: homeDist * (pheno.instHomeSeek !== undefined ? pheno.instHomeSeek : 0.5),
     develop: (devStage === 'baby' || devStage === 'child') ? (pheno.developDrain || 0) : 0,
+    submerged: c.submerged ? 1 : 0,
+    heat: ambHeat,
+    ambientTemp: ambTemp,
+    drank,
+    basking: c._basking || 0,
+    sailDump: pheno.sailDump || 0,
   });
+  // v0.18: flailing (swimming without membranes) costs 3× the oxygen.
+  // The chemistry doesn't read a flail flag, so the surcharge is billed
+  // here — 2× extra on top of the base rate = 3× total. No double-billing:
+  // this is the only flail charge. (Kept only when the oxygen chem exists.)
+  if (c._flail && c.submerged && Number.isFinite(b.oxygen)) {
+    const bt = Math.max(1, pheno.breathTime ?? 30);
+    b.oxygen = clamp01(b.oxygen - 0.08 * (30 / bt) * dt);
+  }
   // v0.17 "Bauplan": adult maintenance — novel structures cost fuel to keep.
   if ((pheno.wingUpkeep || 0) + (pheno.gillUpkeep || 0) + (pheno.finUpkeep || 0) > 0) {
     const upStage = ageStage(b, pheno);
@@ -1434,7 +1716,7 @@ export function updateCreature(c, world, dt) {
   }
   epi.wasSick = sickNow;
   if (marked) {
-    c.pheno = phenotype(c.genome); // marks change expression — refresh
+    c.pheno = deriveAquaticPheno(phenotype(c.genome)); // marks change expression — refresh (v0.18: +aquatic)
     // v0.17: the body plan re-expresses too — the same developmental moment.
     const g01 = c.bodyPlan ? c.bodyPlan.growth01 : 1;
     c.bodyPlan = expressBuds(c.pheno, g01);
@@ -1482,5 +1764,229 @@ export function scoldCreature(c) {
       input: c.brain.lastInput, action: ACTIONS.indexOf(c.action),
       reward: -0.7, tick: 0, kind: 'lived', critical: false,
     });
+  }
+}
+
+// ---- v0.18 "Realms": predators ----
+// Sharks (water-breathers, live 3D) and bears (thermal, arctic-native).
+// The brain agent owns the neural substrate; these live here because
+// creature.js owns bodies, chemistry context, and per-tick physiology.
+// Exported for world.js (spawning is the world agent's call — creature.js
+// only provides the constructor and the tick). NaN-guarded throughout.
+
+const SHARK_SPEED = 90; // px/s cruise
+const SHARK_TOUCH_RANGE = 30; // px — a bump that kills
+const SHARK_HUNGER_RANGE = 480; // px — scent range
+const BEAR_THERMAL_LOAD = 0.05; // health/s per unit of thermal load (fallback)
+
+function makeShark(world, x, y) {
+  return {
+    kind: 'shark',
+    id: nextId++,
+    alive: true,
+    // Gill-breathers: 3000s of "breath" — the oxygen chem drains at
+    // 0.0004/s submerged (tickBiochem), so a shark's gills are effectively
+    // inexhaustible. The beaching rule (below) is what kills them.
+    pheno: {
+      breathTime: 3000,
+      furInsulation: 0,
+      coldTol: 1.0, // deep water is cold; a shark's genes expect it
+      heatTol: 0.1,
+      swimSpeed: 160,
+    },
+    biochem: createBiochem(world.rng),
+    x, y, vx: 0, vy: 0,
+    facing: x < world.width / 2 ? 1 : -1,
+    wanderT: 0, wanderDir: 1,
+    submerged: y > 0,
+    _water: null,
+  };
+}
+
+function makeBear(world, x, y) {
+  return {
+    kind: 'bear',
+    id: nextId++,
+    alive: true,
+    // Arctic-native: maximal insulation, cold-tolerant, heat-fragile.
+    pheno: {
+      furInsulation: 1.0,
+      coldTol: 0.9,
+      heatTol: 0.1,
+      breathTime: 30,
+      swimSpeed: 50, // bears can swim, badly
+    },
+    biochem: createBiochem(world.rng),
+    x, y, vx: 0, vy: 0, grounded: true,
+    facing: x < world.width / 2 ? 1 : -1,
+    wanderT: 0, wanderDir: 1,
+  };
+}
+
+// 5 sharks (3 deep, 1 archipelago, 1 shallows) + 2 arctic bears.
+// Positions read the biome map — NaN-guarded; falls back to raw x.
+export function spawnPredators(world) {
+  world.predators = world.predators || [];
+  // Decor stream: predator placement must not shift the main rng sequence
+  // (founder genomes/cohort sizes stay pinned). The v0.9 decorRng lesson.
+  const rng = world.decorRng || world.rng || { range: (a, b) => a + (b - a) / 2 };
+  const sharkBiomes = [7, 7, 7, 6, 5]; // deep×3, archipelago, shallows
+  for (const bi of sharkBiomes) {
+    let sx = null;
+    try { sx = biomeCenterX(bi); } catch (e) { sx = null; }
+    if (!Number.isFinite(sx)) sx = [4500, 4400, 4600, 3900, 3300][sharkBiomes.indexOf(bi)] || 4500;
+    let w = null;
+    try { w = waterAt(sx, 800); } catch (e) { w = null; }
+    const sy = w && Number.isFinite(w.surfaceY) ? w.surfaceY + 120 : 980;
+    world.predators.push(makeShark(world, sx + rng.range(-80, 80), sy));
+  }
+  for (let i = 0; i < 2; i++) {
+    let bx = null;
+    try { bx = biomeCenterX(0); } catch (e) { bx = null; }
+    if (!Number.isFinite(bx)) bx = 300;
+    let gy = 800;
+    try { gy = groundYAt(bx, 800); } catch (e) { gy = 800; }
+    if (!Number.isFinite(gy)) gy = 800;
+    world.predators.push(makeBear(world, bx + rng.range(-100, 100), gy));
+  }
+  return world.predators;
+}
+
+// Per-tick predator physiology and behavior. Sharks seek the nearest
+// creature in water within 480px and kill on contact; out of water they
+// lose 0.1 health/s (dead in 10s). Bears amble; their thermal fallback
+// (the chemistry degenerates at furInsulation=1.0 — zero ambient coupling)
+// applies health −0.05×load/s with load = max(0, ambient−0.45)×(0.5+fur)×
+// (1.2−heatTol). The dead are kept, not culled — the chronicle may need them.
+export function tickPredators(world, dt) {
+  if (!world.predators) return;
+  for (const p of world.predators) {
+    if (!p.alive) continue;
+    const b = p.biochem;
+    if (p.kind === 'shark') {
+      // Water state (same literal formula as creatures).
+      let w = null;
+      try { w = waterAt(cx0(p), cy0(p)); } catch (e) { w = null; }
+      p._water = w;
+      const inWater = !!w && p.y > w.surfaceY - 4;
+      p.submerged = !!w && p.y > w.surfaceY + SUBMERGE_MARGIN;
+      if (!inWater) {
+        // Beached: 0.1 health/s — dead in ten seconds, honestly.
+        b.health = clamp01(b.health - 0.1 * dt);
+      } else {
+        // Gill breath: the chemistry drains oxygen while submerged; a
+        // shark's 3000s breathTime makes it negligible. Buoyancy-ish:
+        // sharks hold depth by swimming, not floating.
+        p.vy *= Math.max(0, 1 - 3 * dt);
+      }
+      // Hunt: nearest living creature in water within scent range.
+      let target = null, td = SHARK_HUNGER_RANGE;
+      for (const c of world.creatures || []) {
+        if (!c.alive || !c.submerged) continue;
+        const d = Math.hypot(cx0(c) - cx0(p), cy0(c) - cy0(p));
+        if (d < td) { td = d; target = c; }
+      }
+      if (target && inWater) {
+        const dx = cx0(target) - cx0(p), dy = cy0(target) - cy0(p);
+        const d = Math.hypot(dx, dy) || 1;
+        p.vx = dx / d * SHARK_SPEED;
+        p.vy = dy / d * SHARK_SPEED * 0.8;
+        p.facing = dx >= 0 ? 1 : -1;
+      } else {
+        p.wanderT -= dt;
+        if (p.wanderT <= 0) {
+          p.wanderT = 2 + Math.random() * 3;
+          p.wanderDir = Math.random() < 0.5 ? -1 : 1;
+        }
+        p.vx = p.wanderDir * SHARK_SPEED * 0.4;
+      }
+      p.x = cx0(p) + p.vx * dt;
+      p.y = cy0(p) + p.vy * dt;
+      if (p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx); }
+      if (p.x > world.width) { p.x = world.width; p.vx = -Math.abs(p.vx); }
+      // Contact: the kill. Prey dies; the chronicle records it.
+      for (const c of world.creatures || []) {
+        if (!c.alive) continue;
+        if (Math.hypot(cx0(c) - cx0(p), cy0(c) - cy0(p)) < SHARK_TOUCH_RANGE) {
+          c.alive = false;
+          c.biochem.health = 0;
+          world.events.push({ type: 'killed', predator: p, creature: c, t: world.time });
+          // The carcass feeds the sea: a corpse food item.
+          addFood(world, c.x, c.platformIndex, 'corpse', 1, 0, { nutrition: CORPSE_NUTRITION });
+        }
+      }
+      // Physiology: the full chemistry context, sharks included.
+      let ambTemp = 0.5;
+      try { ambTemp = ambientTemp(p.x, p.y); } catch (e) { /* default */ }
+      if (!Number.isFinite(ambTemp)) ambTemp = 0.5;
+      const before = b.health;
+      tickBiochem(b, p.pheno, dt, {
+        sleeping: false, playing: false, nearFriend: false, petted: false,
+        scolded: false, grooming: false, groomed: false,
+        ate: 0, active: target ? 0.9 : 0.4, threat: 0, homesick: 0,
+        develop: 0,
+        submerged: p.submerged ? 1 : 0,
+        heat: 0, ambientTemp: ambTemp, drank: 0, basking: 0,
+        sailDump: 0,
+      });
+      void before;
+      if (b.health <= 0 || isDead(b, p.pheno)) {
+        p.alive = false;
+        world.events.push({ type: 'predatorDied', predator: p, t: world.time });
+      }
+    } else if (p.kind === 'bear') {
+      // Bears amble on the ground (simple wander; gravity keeps them down).
+      p.wanderT -= dt;
+      if (p.wanderT <= 0) {
+        p.wanderT = 3 + Math.random() * 4;
+        p.wanderDir = Math.random() < 0.5 ? -1 : 1;
+        p.facing = p.wanderDir;
+      }
+      const spd = 30;
+      p.x = cx0(p) + p.wanderDir * spd * dt;
+      if (p.x < 0) { p.x = 0; p.wanderDir = 1; }
+      if (p.x > world.width) { p.x = world.width; p.wanderDir = -1; }
+      let gy = 800;
+      try { gy = groundYAt(p.x, p.y); } catch (e) { gy = 800; }
+      if (Number.isFinite(gy)) p.y = gy;
+      p.vx = 0; p.vy = 0;
+      // Thermal: the chemistry degenerates at furInsulation=1.0
+      // (driftK = 0.02×(1−1) = 0 — zero ambient coupling, so metabolic
+      // heat accumulates and an arctic bear would die in its home biome).
+      // Feature-detect the degeneracy and apply the specified fallback
+      // directly: health −0.05×load/s, load = max(0, ambient−0.45)×
+      // (0.5+fur)×(1.2−heatTol). Arctic (ambient 0) → load 0, survives;
+      // jungle (0.55) → dead ~133s; desert (1.0) → dead ~24s.
+      let ambTemp = 0.5;
+      try { ambTemp = ambientTemp(p.x, p.y); } catch (e) { /* default */ }
+      if (!Number.isFinite(ambTemp)) ambTemp = 0.5;
+      const fur = p.pheno.furInsulation ?? 0;
+      if (fur >= 1) {
+        const load = Math.max(0, ambTemp - 0.45) * (0.5 + fur) * (1.2 - (p.pheno.heatTol ?? 0.5));
+        b.health = clamp01(b.health - BEAR_THERMAL_LOAD * load * dt);
+        // Keep the coreTemp readout sane under the fallback (lagged
+        // toward ambient + metabolic offset, so the senses stay honest).
+        b.coreTemp = clamp01((Number.isFinite(b.coreTemp) ? b.coreTemp : 0.5) + (ambTemp + 0.1 - b.coreTemp) * 0.1 * dt);
+        if (b.health <= 0) {
+          p.alive = false;
+          world.events.push({ type: 'predatorDied', predator: p, t: world.time });
+        }
+      } else {
+        const before = b.health;
+        tickBiochem(b, p.pheno, dt, {
+          sleeping: false, playing: false, nearFriend: false, petted: false,
+          scolded: false, grooming: false, groomed: false,
+          ate: 0, active: 0.3, threat: 0, homesick: 0,
+          develop: 0,
+          submerged: 0, heat: 0, ambientTemp: ambTemp, drank: 0, basking: 0,
+          sailDump: 0,
+        });
+        void before;
+        if (b.health <= 0 || isDead(b, p.pheno)) {
+          p.alive = false;
+          world.events.push({ type: 'predatorDied', predator: p, t: world.time });
+        }
+      }
+    }
   }
 }

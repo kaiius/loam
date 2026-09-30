@@ -1,10 +1,43 @@
 // Canvas renderer: sky, parallax hills, platforms, plants, food, eggs,
 // toys, critters, creatures. Camera fits the whole terrarium.
 
-import { drawCreature, drawTeacher } from './painter.js';
+import { drawCreature, drawTeacher, drawBiomeBands, drawWater, drawPredator } from './painter.js';
 import { creatureRadius } from '../sim/creature.js';
 import { ageStage } from '../sim/biochem.js';
 import { timeOfDay, ZONES } from '../sim/world.js';
+
+// v0.18 "Realms": the biome data module (../sim/biomes.js) is landed by the
+// sim agents. Load it lazily and degrade gracefully — worlds without it keep
+// the legacy ZONES washes. In the single-file dist bundle its exports live
+// as top-level bindings, detected here without an import. Call biomesReady()
+// and await it before asserting anything about water/biomes.
+let _biomes = null;
+let _biomesPromise = null;
+function bundledBiomes() {
+  try {
+    if (typeof waterRects === 'function' && typeof biomeKeyAt === 'function') {
+      return { waterRects, biomeKeyAt, WORLD_W, WORLD_H };
+    }
+  } catch (e) { /* names not in scope — not the bundle */ }
+  return null;
+}
+export function biomesReady() {
+  if (!_biomesPromise) {
+    _biomesPromise = (async () => {
+      const b = bundledBiomes();
+      if (b) return (_biomes = b);
+      try {
+        _biomes = await import('../sim/biomes.js');
+      } catch (e) {
+        _biomes = null; // not landed yet — render the world without biomes
+      }
+      return _biomes;
+    })();
+  }
+  return _biomesPromise;
+}
+biomesReady(); // warm the cache at module load; render() reads the result
+function biomes() { return _biomes; }
 
 export function createRenderer(canvas) {
   const r = {
@@ -99,9 +132,13 @@ export function recenterCamera(r, world) {
 }
 
 // Center the camera on a world point, keeping the current zoom.
-// Used by follow-the-selected-creature.
+// Used by follow-the-selected-creature. The point is clamped to the world
+// rect — v0.18's 4800×1100 world is followed the same way as the old one,
+// via world.width/world.height, never hardcoded.
 export function followPoint(r, world, x, y) {
   if (!(r.fitScale > 0)) fitCamera(r, world);
+  x = Math.max(0, Math.min(world.width, x));
+  y = Math.max(0, Math.min(world.height, y));
   r.ox = r.canvas.width / 2 - x * r.scale;
   r.oy = r.canvas.height / 2 - y * r.scale;
   r.cam.manual = true;
@@ -168,24 +205,49 @@ export function render(r, world, ui, t) {
   drawHills(ctx, world, light, 0.35, [mix([60,70,110],[150,190,150],light), 560]);
   drawHills(ctx, world, light, 0.6, [mix([45,55,90],[120,175,130],light), 660]);
 
-  // v0.11 biome tints: the zones are sim state (they set fruiting rates),
-  // so painting them is honest. Subtle vertical washes + a name label.
-  ctx.save();
-  for (const z of ZONES) {
-    ctx.fillStyle = z.tint;
-    ctx.fillRect(z.x1, 0, z.x2 - z.x1, world.groundY + 80);
+  // v0.18 "Realms": biome ground + water from the biomes module. Older
+  // worlds (no biomes module yet) keep the legacy zone washes.
+  const B = biomes();
+  const waters = (B && typeof B.waterRects === 'function') ? B.waterRects() : [];
+  if (B && typeof B.biomeKeyAt === 'function') {
+    drawBiomeBands(ctx, world, B, light);
+    for (const wr of waters) drawWater(ctx, wr, world.height, light);
+  } else {
+    // v0.11 biome tints: the zones are sim state (they set fruiting rates),
+    // so painting them is honest. Subtle vertical washes + a name label.
+    ctx.save();
+    for (const z of ZONES) {
+      ctx.fillStyle = z.tint;
+      ctx.fillRect(z.x1, 0, z.x2 - z.x1, world.groundY + 80);
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.font = '600 22px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    for (const z of ZONES) {
+      ctx.fillText(z.name.toUpperCase(), (z.x1 + z.x2) / 2, world.groundY + 52);
+    }
+    ctx.restore();
   }
-  ctx.fillStyle = 'rgba(255,255,255,0.28)';
-  ctx.font = '600 22px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  for (const z of ZONES) {
-    ctx.fillText(z.name.toUpperCase(), (z.x1 + z.x2) / 2, world.groundY + 52);
-  }
-  ctx.restore();
 
   // Platforms.
   for (const pl of world.platforms) {
     const pw = pl.x2 - pl.x1;
+    if (pl.kind === 'floe') {
+      // v0.18 "Realms": ice floes render as driftwood — weathered timber,
+      // plank seams, no grass cap. A raft, not a branch.
+      ctx.fillStyle = rgb(mix([58, 44, 32], [148, 112, 74], light));
+      roundRect(ctx, pl.x1, pl.y, pw, 34, 10);
+      ctx.fill();
+      ctx.strokeStyle = rgb(mix([40, 30, 22], [110, 82, 54], light));
+      ctx.lineWidth = 2;
+      for (const fx of [0.25, 0.5, 0.75]) {
+        ctx.beginPath();
+        ctx.moveTo(pl.x1 + pw * fx, pl.y + 5);
+        ctx.lineTo(pl.x1 + pw * fx, pl.y + 29);
+        ctx.stroke();
+      }
+      continue;
+    }
     ctx.fillStyle = rgb(mix([52, 44, 70], [139, 117, 82], light));
     roundRect(ctx, pl.x1, pl.y, pw, 60, 10);
     ctx.fill();
@@ -229,6 +291,13 @@ export function render(r, world, ui, t) {
   // Critters.
   for (const cr of world.critters) drawCritter(ctx, cr, t, light);
 
+  // v0.18 "Realms": predators — every agent of selection is visible.
+  // Paul's v0.17-dev lesson: no phantom killers.
+  for (const pr of world.predators || []) {
+    drawPredator(ctx, pr, t, light);
+    if (ui.selected === pr) drawInspectRing(ctx, pr.x, (pr.y || 0) - 20, 46, 36, t);
+  }
+
   // Creatures (selected last, with ring).
   const sorted = [...world.creatures].sort((a, b) =>
     (ui.selected === a ? 1 : 0) - (ui.selected === b ? 1 : 0));
@@ -238,6 +307,15 @@ export function render(r, world, ui, t) {
     const cy = (c.y !== undefined && c.y !== null) ? c.y : plat.y;
     if (ui.selected === c) drawSelectionRing(ctx, c, cy, t);
     drawCreature(ctx, c, cy, t);
+    // v0.18: underwater creatures get a blue tint overlay — you can see
+    // at a glance who is swimming and who is drowning.
+    if (waters.length && submergedRect(waters, c.x, cy)) {
+      const cr2 = creatureRadius(c);
+      ctx.fillStyle = 'rgba(50,120,190,0.28)';
+      ctx.beginPath();
+      ctx.ellipse(c.x, cy - cr2 * 0.9, cr2 * 1.15, cr2 * 1.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
     drawLabel(ctx, c, cy, ui);
   }
 
@@ -283,6 +361,14 @@ function roundRect(ctx, x, y, w, h, rad) {
   ctx.closePath();
 }
 
+// v0.18 "Realms": which water body (if any) covers the point (x, y).
+function submergedRect(waters, x, y) {
+  for (const wr of waters) {
+    if (x >= wr.x0 && x <= wr.x1 && y > wr.surfaceY) return wr;
+  }
+  return null;
+}
+
 function drawHills(ctx, world, light, parallax, [color, baseY]) {
   ctx.fillStyle = rgb(color);
   ctx.globalAlpha = parallax;
@@ -299,6 +385,11 @@ function drawHills(ctx, world, light, parallax, [color, baseY]) {
 }
 
 function drawPlant(ctx, p, t, light) {
+  // v0.18 "Realms": flora morphs from floraFor(biomeKey) — plants carry a
+  // morph field. Unknown morphs fall through to the classic tree: the
+  // painter never draws nothing.
+  const morph = p.morph || 'tree';
+  if (PLANT_MORPHS.has(morph)) { drawPlantMorph(ctx, p, t, light, morph); return; }
   const h = 40 + p.growth * 70;
   const sway = Math.sin(p.sway) * 8 * p.growth;
   // v0.8: herbs are violet where fruit plants are green — unmistakable.
@@ -336,6 +427,128 @@ function drawPlant(ctx, p, t, light) {
       ctx.arc(fx - 3, fy - 3, 3, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = herb ? '#9a6ee8' : '#e4574f';
+    }
+  }
+}
+
+// v0.18 "Realms": per-morph plant bodies. p.x/p.y is the base (on the
+// platform, or on the seabed for kelp); growth scales, sway moves.
+const PLANT_MORPHS = new Set(['grass', 'cactus', 'shrub', 'moss', 'mangrove', 'palm', 'kelp']);
+
+function drawPlantMorph(ctx, p, t, light, morph) {
+  const herb = p.kind === 'herb';
+  const s = 0.5 + 0.5 * (p.growth || 0);
+  const sw = p.sway || 0;
+  const sway = Math.sin(sw + t * 0.7) * 6 * s;
+  const leaf = herb
+    ? rgb(mix([58, 44, 96], [128, 96, 190], light))
+    : rgb(mix([45, 80, 55], [84, 168, 100], light));
+  const stem = herb
+    ? rgb(mix([52, 40, 78], [96, 72, 148], light))
+    : rgb(mix([40, 70, 50], [62, 140, 78], light));
+  const x = p.x, y = p.y;
+  ctx.lineCap = 'round';
+  if (morph === 'grass') {
+    // Tufts: a few curved blades.
+    ctx.strokeStyle = leaf;
+    ctx.lineWidth = 4;
+    for (let i = -2; i <= 2; i++) {
+      const bx = x + i * 7 * s;
+      ctx.beginPath();
+      ctx.moveTo(bx, y);
+      ctx.quadraticCurveTo(bx + sway * 0.5, y - 24 * s, bx + sway + i * 4, y - 40 * s);
+      ctx.stroke();
+    }
+  } else if (morph === 'cactus') {
+    // Ribbed column with small arms — the desert's water tower.
+    const w = 26 * s, h = 96 * s;
+    ctx.fillStyle = leaf;
+    roundRect(ctx, x - w / 2, y - h, w, h, w / 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = 2;
+    for (const fx of [-0.25, 0, 0.25]) {
+      ctx.beginPath();
+      ctx.moveTo(x + w * fx, y - 6);
+      ctx.lineTo(x + w * fx, y - h + 10);
+      ctx.stroke();
+    }
+    ctx.fillStyle = leaf;
+    roundRect(ctx, x - w / 2 - 13 * s, y - h * 0.62, 13 * s, 30 * s, 6 * s);
+    ctx.fill();
+    roundRect(ctx, x + w / 2, y - h * 0.52, 13 * s, 26 * s, 6 * s);
+    ctx.fill();
+  } else if (morph === 'shrub') {
+    // Low bush: a cluster of overlapping ellipses.
+    ctx.fillStyle = leaf;
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 + sw;
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(a) * 16 * s, y - 16 * s + Math.sin(a) * 8 * s,
+        16 * s, 12 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (morph === 'moss') {
+    // Low ground haze: a wide flat translucent smudge.
+    ctx.fillStyle = leaf;
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.ellipse(x, y - 6 * s, 44 * s, 9 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  } else if (morph === 'mangrove') {
+    // Prop roots arch down into the water; the canopy floats above it.
+    ctx.strokeStyle = stem;
+    ctx.lineWidth = 6;
+    for (const sgn of [-1, 1]) for (const k of [0.4, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(x, y - 44 * s);
+      ctx.quadraticCurveTo(x + sgn * 18 * s * k, y - 18 * s, x + sgn * 34 * s * k, y + 6);
+      ctx.stroke();
+    }
+    ctx.fillStyle = leaf;
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + sw;
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(a) * 26 * s + sway * 0.4, y - 92 * s + Math.sin(a) * 12 * s,
+        24 * s, 16 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (morph === 'palm') {
+    // Trunk + fronds.
+    ctx.strokeStyle = rgb(mix([60, 48, 36], [130, 100, 66], light));
+    ctx.lineWidth = 9;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.quadraticCurveTo(x + sway * 0.5, y - 70 * s, x + sway, y - 130 * s);
+    ctx.stroke();
+    const tx = x + sway, ty = y - 130 * s;
+    ctx.strokeStyle = leaf;
+    ctx.lineWidth = 5;
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI * 0.15 - (i / 4) * Math.PI * 0.7;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.quadraticCurveTo(tx + Math.cos(a) * 34 * s, ty + Math.sin(a) * 20 * s - 10,
+        tx + Math.cos(a) * 58 * s, ty + Math.sin(a) * 34 * s + 8);
+      ctx.stroke();
+    }
+  } else if (morph === 'kelp') {
+    // Vertical wavy fronds rising from the seabed.
+    ctx.strokeStyle = leaf;
+    ctx.lineWidth = 7;
+    for (let i = -1; i <= 1; i++) {
+      const bx = x + i * 12 * s;
+      ctx.beginPath();
+      ctx.moveTo(bx, y);
+      for (let k = 1; k <= 4; k++) {
+        const yy = y - k * 34 * s;
+        const xx = bx + Math.sin(t * 1.3 + sw + k * 1.2 + i) * 10 * s;
+        ctx.quadraticCurveTo(
+          bx + Math.sin(t * 1.3 + sw + (k - 0.5) * 1.2 + i) * 10 * s,
+          y - (k - 0.5) * 34 * s, xx, yy);
+      }
+      ctx.stroke();
     }
   }
 }
@@ -378,6 +591,42 @@ function drawFood(ctx, f, t) {
     ctx.arc(f.x - 4, f.y - 6 + bob, 3.5, 0, Math.PI * 2);
     ctx.arc(f.x + 3, f.y - 4 + bob * 0.7, 2.8, 0, Math.PI * 2);
     ctx.arc(f.x, f.y - 9 + bob * 1.2, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (f.foodKind === 'minnow') {
+    // v0.18: a small silver fish — washed up or provisioned.
+    ctx.fillStyle = '#b9c8d4';
+    ctx.beginPath();
+    ctx.ellipse(f.x, f.y - 10 + bob, 10, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(f.x - 10, f.y - 10 + bob);
+    ctx.lineTo(f.x - 16, f.y - 15 + bob);
+    ctx.lineTo(f.x - 16, f.y - 5 + bob);
+    ctx.closePath();
+    ctx.fill();
+  } else if (f.foodKind === 'bug') {
+    // v0.18: a dark little beetle with legs.
+    ctx.fillStyle = '#4a3f5a';
+    ctx.beginPath();
+    ctx.ellipse(f.x, f.y - 8 + bob, 7, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#4a3f5a';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(f.x - 3 + i * 3, f.y - 4 + bob);
+      ctx.lineTo(f.x - 4 + i * 3, f.y + 2);
+      ctx.stroke();
+    }
+  } else if (f.foodKind === 'corpse') {
+    // v0.18: the small dead — a grey-brown lump.
+    ctx.fillStyle = '#6e6259';
+    ctx.beginPath();
+    ctx.ellipse(f.x, f.y - 7 + bob * 0.5, 12, 7, 0.15, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#8d8177';
+    ctx.beginPath();
+    ctx.ellipse(f.x - 3, f.y - 9 + bob * 0.5, 5, 3.5, 0.15, 0, Math.PI * 2);
     ctx.fill();
   } else {
     ctx.fillStyle = '#c9a86a';

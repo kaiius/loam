@@ -10,6 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const MODULES = [
   'src/sim/rng.js',
+  'src/sim/biomes.js', // v0.18 "Realms": pure geography — before creature.js/world.js/renderer.js (TDZ)
   'src/sim/genome.js',
   'src/sim/evodevo.js', // v0.17 "Bauplan": the developmental program
   'src/sim/plantgenome.js',
@@ -37,6 +38,7 @@ function bundleModule(path) {
   for (const line of lines) {
     const t = line.trim();
     if (t.startsWith('import ') && (t.includes(' from ') || t.endsWith(';'))) continue;
+    if (t.startsWith('export {')) continue; // re-export facade — names are bundle-global anyway
     kept.push(line);
   }
   return kept.join('\n')

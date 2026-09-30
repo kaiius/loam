@@ -7,6 +7,10 @@
 // different. The drive fields keep their v0.12 names and pacing so the
 // brain, UI, and QA baselines keep working — what's new is that they're
 // readouts of chemistry, not the chemistry itself.
+//
+// v0.18 "Realms": seven chemicals (oxygen, hydration join the five).
+// thirst/cold/heat are SENSES, not drives — the chemistry invariant holds:
+// drives are readouts of chemicals; hazards are chemicals and body states.
 
 export function createBiochem() {
   return {
@@ -16,6 +20,10 @@ export function createBiochem() {
     oxytocin: 0.5, // rises with grooming and bonded company, decays
     endorphin: 0.5, // rises with play, decays
     adrenaline: 0, // spikes on fear events, decays fast
+    oxygen: 1, // v0.18: breath — drains while submerged (~25s of air at founder)
+    hydration: 0.8, // v0.18: body water — drains with heat × exertion
+    // body states — not chemicals, not drives
+    coreTemp: 0.5, // v0.18: 0..1, 0.5 neutral — drifts toward ambient
     // drives — computed readouts (refreshed every tick)
     hunger: 0.25, // need for food
     energy: 0.9, // 1 = fully rested
@@ -48,17 +56,51 @@ export function stageSize(stage) {
 function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
+// v0.18: context hygiene — a non-finite ctx value falls back to its default
+// instead of poisoning the body (the v0.15 NaN lesson).
+function cf(v, dflt) {
+  return Number.isFinite(v) ? v : dflt;
+}
+function cf01(v, dflt) {
+  const x = Number.isFinite(v) ? v : dflt;
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
 
 // ctx: { sleeping, playing, nearFriend, petted, scolded,
 //        grooming, groomed, ate (0..1 food value this tick),
 //        active (0..1 exertion), threat (0..1) } — set by creature.
 export function tickBiochem(b, pheno, dt, ctx = {}) {
+  // --- ctx hygiene ---------------------------------------------------------
+  // v0.18 (the v0.15 NaN lesson): normalize every context input once, up
+  // front. A non-finite value falls back to its default instead of
+  // poisoning the body — Math.max/Math.min-style clamps pass NaN straight
+  // through, so the guard has to happen here, before any arithmetic.
+  ctx = {
+    sleeping: !!ctx.sleeping,
+    playing: !!ctx.playing,
+    nearFriend: !!ctx.nearFriend,
+    petted: !!ctx.petted,
+    scolded: !!ctx.scolded,
+    grooming: !!ctx.grooming,
+    groomed: !!ctx.groomed,
+    ate: cf(ctx.ate, 0),
+    active: cf(ctx.active, 0.6),
+    threat: cf(ctx.threat, 0),
+    homesick: cf(ctx.homesick, 0),
+    develop: cf(ctx.develop, 0),
+    submerged: cf01(ctx.submerged, 0),
+    heat: cf01(ctx.heat, 0),
+    drank: cf01(ctx.drank, 0),
+    ambientTemp: cf(ctx.ambientTemp, 0.5),
+    basking: cf01(ctx.basking, 0),
+    sailDump: cf01(ctx.sailDump, 0),
+  };
   // --- chemistry ---------------------------------------------------------
   // Fuel: eating fills the tank, living drains it. A full belly lasts a
   // few minutes — the same pacing as v0.12, now as a chemical.
   // v0.17 "Bauplan": ctx.develop — juveniles growing novel structures burn
   // extra fuel. It enters as a hungerRate term, not a new chemical: drives
-  // stay readouts of the five chemicals.
+  // stay readouts of the seven chemicals.
   const hungerRate = 0.004 + pheno.hungerRate * 0.014 + (ctx.develop || 0); // per second
   const exert = ctx.sleeping ? 0.6 : (0.5 + (ctx.active ?? 0.6) * 0.5);
   b.bloodSugar = clamp01(b.bloodSugar + (ctx.ate ?? 0) * 0.9 - hungerRate * dt * exert);
@@ -70,7 +112,9 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   if (ctx.sleeping) {
     b.fatigue = clamp01(b.fatigue - 0.09 * dt);
   } else {
-    b.fatigue = clamp01(b.fatigue + drainRate * dt);
+    // v0.18: hypothermia doubles fatigue gain — the cold exhausts.
+    const hypoGain = b.coreTemp < (0.25 - (pheno.coldTol ?? 0.5) * 0.1) ? 2 : 1;
+    b.fatigue = clamp01(b.fatigue + drainRate * hypoGain * dt);
   }
 
   // Oxytocin: the bonding chemical. Grooming is the troop's ritual —
@@ -89,6 +133,78 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   if (ctx.scolded) b.adrenaline = clamp01(b.adrenaline + 0.6);
   if (ctx.threat) b.adrenaline = clamp01(b.adrenaline + ctx.threat * 0.8);
   b.adrenaline = clamp01(b.adrenaline - 0.25 * dt);
+
+  // --- v0.18 "Realms": the survival chemistry --------------------------------
+  // Every ctx term below was normalized up front (see ctx hygiene) — all
+  // are finite here. Every new term is clamp01'd.
+  const sub01 = ctx.submerged; // 1 = fully submerged
+  const heat01 = ctx.heat; // ambientHeat 0..1 (desert interior)
+  const drank01 = ctx.drank; // 0..1 drinking this tick
+  const active01 = ctx.active; // exertion 0..1
+  const ambient = clamp01(ctx.ambientTemp); // 0..1, 0.5 neutral
+  const basking01 = ctx.basking; // basking in warmth this tick
+  const sailDump01 = ctx.sailDump; // sail as heat radiator
+
+  // Oxygen: drains while submerged (~25s of air at founder breathTime 30),
+  // refills fast in air. Gills (breathTime) stretch the dive honestly —
+  // founder ×1.0, so the control group is untouched. At 0: health drains
+  // and adrenaline spikes — drowning is terrifying, and fear already knows
+  // what to do with it.
+  const breathTime = Math.max(1, pheno.breathTime ?? 30);
+  if (sub01 > 0) {
+    b.oxygen = clamp01(b.oxygen - 0.04 * (30 / breathTime) * sub01 * dt);
+  } else {
+    b.oxygen = clamp01(b.oxygen + 0.5 * dt);
+  }
+  const drowning = b.oxygen <= 0.001;
+  if (drowning) {
+    b.health = clamp01(b.health - 0.03 * dt);
+    b.adrenaline = clamp01(b.adrenaline + 0.9 * dt);
+  }
+
+  // Hydration: drains with heat × exertion — base ~0.004/s, up to ~0.02/s
+  // hot and sprinting. ctx.drank restores it; fruit is mostly water, so
+  // eating (ctx.ate) restores a little too — the founder-neutral hydration
+  // source that keeps the jungle control group viable without teaching it
+  // to drink in four minutes. At 0: dehydration drains health.
+  const hydroRate = 0.004 + 0.016 * heat01 * exert;
+  b.hydration = clamp01(b.hydration - hydroRate * dt + drank01 * 0.3 + (ctx.ate ?? 0) * 0.5);
+  const dehydrated = b.hydration <= 0.001;
+  if (dehydrated) b.health = clamp01(b.health - 0.03 * dt);
+
+  // Core temperature: drifts toward ambient; fur insulation slows the drift
+  // BOTH ways (a parka in the desert is a liability); metabolic heat rises
+  // with exertion; basking in warmth pushes up; sails dump heat.
+  // TUNING (BIOMES_DESIGN §13.6): k = 0.02/s with metabolic 0.00228 +
+  // 0.0024×active puts the equilibria exactly where the probes need them:
+  //   max-fur (ins 0.3) walking (active 0.8) at ambient 0.55 → eq 0.85,
+  //     crosses the hyper threshold (0.80 at heatTol 0.5) at ~139s
+  //     (inside the 60–180s window), dead ~67s later — ~3.4 min total.
+  //   founder (ins 0.15) walking in the jungle (ambient 0.5) → eq 0.747
+  //     < 0.80: the ancestral territory stays thermally neutral.
+  //   founder resting in arctic ambient 0.1 (active 0.1) → eq 0.248
+  //     > hypo threshold 0.20: cold but alive — no hypothermia death.
+  // A bear (max fur) walking south equilibrates AT ~0.80 in the jungle —
+  // it can cross only by evolving thinner fur or better heatTol. Ranges
+  // are physiological, not geographical.
+  const subCold = sub01 * 0.35; // water chill — submerged is cold
+  const ambientEff = clamp01(ambient - subCold);
+  const driftK = 0.02 * (1 - (pheno.furInsulation ?? 0));
+  const metabolic = 0.00228 + 0.0024 * active01;
+  const warmthFrac = clamp01((ambientEff - 0.4) / 0.5); // basking only pays in warmth
+  b.coreTemp = clamp01(b.coreTemp
+    + driftK * (ambientEff - b.coreTemp) * dt
+    + metabolic * dt
+    + basking01 * 0.008 * warmthFrac * dt
+    - sailDump01 * 0.01 * dt);
+  // Hypothermia: health drains, fatigue accumulates 2×. Hyperthermia:
+  // health drains. Thresholds shift with the thermal-tolerance loci.
+  const hypoThr = 0.25 - (pheno.coldTol ?? 0.5) * 0.1;
+  const hyperThr = 0.75 + (pheno.heatTol ?? 0.5) * 0.1;
+  const hypothermic = b.coreTemp < hypoThr;
+  const hyperthermic = b.coreTemp > hyperThr;
+  if (hypothermic) b.health = clamp01(b.health - 0.015 * dt);
+  if (hyperthermic) b.health = clamp01(b.health - 0.015 * dt);
 
   // Comfort stays direct: touch soothes, scolding wounds.
   // v0.13: homesickness — being far from the imprinted home range wears
@@ -122,7 +238,7 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
 
   // --- drives computed from chemistry ------------------------------------
   // v2 (D): gain + baseline tune the readout. The chemistry invariant
-  // stands — drives are still readouts of the five chemicals; the tuning
+  // stands — drives are still readouts of the seven chemicals; the tuning
   // is genetic. Founder defaults are the identity (gain 1, baseline 0).
   const dg = (d) => pheno['driveGain' + d] ?? 1;
   const db = (d) => pheno['driveBase' + d] ?? 0;
@@ -178,6 +294,21 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
 
 export function isDead(b, pheno) {
   return b.health <= 0 || b.age >= pheno.lifespanSec;
+}
+
+// v0.18 "Realms": the thermal senses — 0..1 readouts of coreTemp for the
+// brain (senses 29/30), wired by the realms pass in creature.js. Cold and
+// heat are SENSES, not drives: the brain can learn to seek warmth or shade,
+// but no new need enters the drive economy.
+export function coldSense(b, pheno) {
+  void pheno;
+  const t = Number.isFinite(b.coreTemp) ? b.coreTemp : 0.5;
+  return clamp01((0.5 - t) * 2);
+}
+export function heatSense(b, pheno) {
+  void pheno;
+  const t = Number.isFinite(b.coreTemp) ? b.coreTemp : 0.5;
+  return clamp01((t - 0.5) * 2);
 }
 
 // Dominant readable state for UI / behavior priority.

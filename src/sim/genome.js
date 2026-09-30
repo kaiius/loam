@@ -104,14 +104,20 @@ export const GENES = [
 // Append-only: everything below is new. The original 43 loci keep their
 // indices. Choice vocabularies shared by the families:
 export const CHEM5 = ['bloodSugar', 'fatigue', 'oxytocin', 'endorphin', 'adrenaline'];
-// The 28 real senses (bias excluded) — mirrors brain.js senseVector order.
+// v0.18 "Realms": oxygen (drowning) and hydration (thirst) join the
+// chemistry. Old indices 0–4 keep their meaning — append-only.
+export const CHEM7 = [...CHEM5, 'oxygen', 'hydration'];
+// The 32 real senses (bias excluded) — mirrors brain.js senseVector order.
 // Append-only: a new sense goes at the END, never renumbered, so old
 // brains and old saved genomes keep their meaning.
 // v0.17 "Bauplan": airborne 24 (off the branch — the glide verb's reader),
 // farLedge 25 (a ledge within glide range but beyond jump range),
 // submerged 26, waterNear 27. The water senses read 0 until v0.18 brings
 // water — the sense exists and works; the world just lacks water.
-export const SENSE28 = [
+// v0.18 "Realms": thirst 28 (1 − hydration — the felt sense of the new
+// chemical), cold 29, heat 30 (body-state readers, not drives), buriedNear
+// 31 (scent of buried food — the dig verb's reader).
+export const SENSE32 = [
   'hunger', 'tiredness', 'boredom', 'loneliness', 'fear', 'light',
   'foodDist', 'foodDir', 'creatureDist', 'creatureDir', 'toyDist', 'toyDir',
   'isAdult', 'illness', 'homeDist', 'kinNear', 'bondNear',
@@ -119,18 +125,20 @@ export const SENSE28 = [
   'callHeard', 'callPitch',
   'wasteOdor', // v0.14: disgust — the smell of fouled ground
   'airborne', 'farLedge', 'submerged', 'waterNear', // v0.17: the body-plan senses
+  'thirst', 'cold', 'heat', 'buriedNear', // v0.18: the realms senses
 ];
 // The pre-v0.17 vocabulary — family-C genes name senses against these
 // indices, which are never renumbered.
-export const SENSE24 = SENSE28.slice(0, 24);
-export const ACT17 = [
+export const SENSE24 = SENSE32.slice(0, 24);
+export const ACT20 = [
   'seekFood', 'eat', 'sleep', 'play', 'approach', 'flee',
   'mate', 'wander', 'seekHome', 'climb', 'groom', 'jump', 'vocal',
   'glide', 'brachiate', 'swim', 'dive', // v0.17: the dormant verbs
+  'drink', 'bask', 'dig', // v0.18: water, warmth, earth — wired by the realms pass
 ];
 // The pre-v0.17 vocabulary — family-E genes name actions against these
 // indices, which are never renumbered.
-export const ACT13 = ACT17.slice(0, 13);
+export const ACT13 = ACT20.slice(0, 13);
 // Stimulus events that actually occur in the tick (rain/thunder were cut —
 // Canopy has no weather; fed-by-other was cut — no food-sharing mechanic).
 export const STIM4 = ['groomed', 'petted', 'scolded', 'hardLanding'];
@@ -148,7 +156,7 @@ const _c = (key, choices, founder) => ({ key, kind: 'choice', choices, founder }
   const sub = [0, 1, 2, 3, 4, 0, 1, 2];
   const prod = [1, 2, 3, 4, 0, 2, 3, 4];
   for (let i = 0; i < 8; i++) {
-    GENES.push(_c(`rx${i}sub`, CHEM5, sub[i]), _c(`rx${i}prod`, CHEM5, prod[i]),
+    GENES.push(_c(`rx${i}sub`, CHEM7, sub[i]), _c(`rx${i}prod`, CHEM7, prod[i]),
       _f(`rx${i}rate`, 0.03), _f(`rx${i}thr`, 0.5));
   }
 }
@@ -158,7 +166,7 @@ const _c = (key, choices, founder) => ({ key, kind: 'choice', choices, founder }
 {
   const senses = [0, 3, 1, 4, 13, 2]; // hunger, loneliness, tiredness, fear, illness, boredom
   for (let i = 0; i < 6; i++) {
-    GENES.push(_c(`rc${i}chem`, CHEM5, i % 5), _c(`rc${i}sense`, SENSE24, senses[i]),
+    GENES.push(_c(`rc${i}chem`, CHEM7, i % 5), _c(`rc${i}sense`, SENSE24, senses[i]),
       _s(`rc${i}gain`, 0), _f(`rc${i}thr`, 0.5));
   }
 }
@@ -168,7 +176,7 @@ const _c = (key, choices, founder) => ({ key, kind: 'choice', choices, founder }
 {
   const trig = [1, 2, 3, 10, 5, 6]; // eat, sleep, play, groom, flee, mate
   for (let i = 0; i < 6; i++) {
-    GENES.push(_c(`em${i}trig`, ACT13, trig[i]), _c(`em${i}chem`, CHEM5, (i * 2) % 5),
+    GENES.push(_c(`em${i}trig`, ACT13, trig[i]), _c(`em${i}chem`, CHEM7, (i * 2) % 5),
       _f(`em${i}amt`, 0.05));
   }
 }
@@ -237,7 +245,7 @@ for (let i = 0; i < 4; i++) {
 }
 // --- Family D: drive tuning ×5 (chr 5) ------------------------------------
 // Gain + baseline on the chemical→drive readout. The chemistry invariant
-// stands: drives are still readouts of the five chemicals; only the tuning
+// stands: drives are still readouts of the seven chemicals; only the tuning
 // is genetic. Founder defaults are the identity (gain 1.0, baseline 0).
 for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) {
   GENES.push(_f(`drv${d}Gain`, 0.5), _f(`drv${d}Base`, 0.5));
@@ -335,6 +343,39 @@ export const EVO17_KEYS = new Set(GENES.slice(EVO17_START).map((g) => g.key));
 // Worldgen order is load-bearing for determinism: founder genomes and every
 // existing test expectation sit on the main stream (v0.9 decorRng precedent).
 
+// === GENOME v0.18 "Realms": water, heat, and earth (append-only) ==========
+// Four new instinct genes (Paul's v0.5 rule: every new action needs one) —
+// waterNear→drink and thirst→drink (both founder 0: the verbs sleep until
+// water teaches them), cold→bask (founder 0), buriedNear→dig (founder 0.15:
+// scratching at dirt is cheap to attempt, so the ramp starts nonzero but
+// small). Plus family M's thermal-tolerance loci: coldTol and heatTol
+// (floats, founder 0.5) — the creature-side analogues of the plants'
+// coldTol/waterRet, shifting the hypo/hyperthermia thresholds in biochem.
+// Like v0.16/v0.17, these loci draw from their own sub-stream in
+// randomGenome — new loci never shift the main RNG sequence.
+const REALMS18_START = GENES.length;
+GENES.push(
+  { key: 'instWaterDrink', kind: 'float', sense: 27, action: 17, founder: 0 },
+  { key: 'instThirstDrink', kind: 'float', sense: 28, action: 17, founder: 0 },
+  { key: 'instColdBask', kind: 'float', sense: 29, action: 18, founder: 0 },
+  { key: 'instDig', kind: 'float', sense: 31, action: 19, founder: 0.15 },
+  // family M (morphology — thermal morphology travels with fur on chr 1)
+  _f('coldTol', 0.5),
+  _f('heatTol', 0.5),
+);
+// === end GENOME v0.18 creature loci =======================================
+// v0.18 "Realms": plant loci — heatTol and saltTol (floats, founder 0.5),
+// the flora-side analogues of coldTol/waterRet. Defined here; the realms
+// integration pass wires them into PLANT_GENES (plantgenome.js owns that
+// list — append-only there too).
+export const PLANT_REALMS_LOCI = [
+  { key: 'heatTol', kind: 'float', founder: 0.5 },
+  { key: 'saltTol', kind: 'float', founder: 0.5 },
+];
+// v0.18: the realms loci draw from their own sub-stream in randomGenome
+// (below) — new loci must never shift the main RNG sequence.
+export const REALMS18_KEYS = new Set(GENES.slice(REALMS18_START).map((g) => g.key));
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
@@ -364,7 +405,10 @@ export const CHROMOSOMES = [
    'pigTorsoHue', 'pigTorsoSat', 'pigTorsoPat',
    'pigLimbsHue', 'pigLimbsSat', 'pigLimbsPat',
    'earSize', 'earTilt', 'armLength',
-   'matePrefHue', 'matePrefSat', 'matePrefChoosy'],
+   'matePrefHue', 'matePrefSat', 'matePrefChoosy',
+   // v0.18: thermal morphology — coldTol/heatTol travel with fur (the
+   // thermal reader's own loci ride the thermal morphology's chromosome)
+   'coldTol', 'heatTol'],
   // 2 — Metabolism
   ['hungerRate', 'energyDrain', 'lifespan', 'growthRate', 'fertility', 'immunity'],
   // 3 — Neuroarchitecture (+ v2 family B: brain plan, attention gates,
@@ -381,6 +425,8 @@ export const CHROMOSOMES = [
    'instIllnessSeek', 'instHomeSeek', 'instClimbUp', 'instClimbDown', 'instLonelyGroom',
    'instJump',
    'instWasteFlee', // v0.14: disgust — waste-odor → flee
+   // v0.18 "Realms": the water/heat/earth instincts ride the instinct chromosome
+   'instWaterDrink', 'instThirstDrink', 'instColdBask', 'instDig',
    ..._chrS],
   // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
   [..._chrD, ..._chrC],
@@ -441,7 +487,35 @@ export function randomAllele(gene, rng) {
 export const DUP_RATE = 0.001; // per gene per generation: whole-gene duplication
 export const DEL_RATE = 0.002; // per extra copy per generation: deletion (prunes the neutral)
 export const MAX_EXTRA = 6; // cap on duplicated copies per genome
-export function randomGenome(rng) {
+// v0.18 "Realms": pin a sub-stream seed from an experiment pin instead of
+// the genome's content hash. Distinct per-pass salts keep the passes
+// independent: the same pin gives the same language alleles, the same
+// evo-devo alleles, and the same realms alleles, whatever the founder's
+// main-stream content. A legPower sweep with a pinned sub-stream changes
+// ONLY legPower — the §13.7 confound fix.
+function hashPin(pin, salt) {
+  let h = salt | 0;
+  h = (Math.imul(h, 31) + (pin | 0)) | 0;
+  h = (Math.imul(h, 31) + 0x9e3779b9) | 0;
+  h ^= h >>> 13;
+  return h >>> 0;
+}
+const PIN_SALT_LANG = 0x16; // v0.16 language pass
+const PIN_SALT_EVO = 0x17; // v0.17 evo-devo pass
+const PIN_SALT_REALMS = 0x18; // v0.18 realms pass
+export function randomGenome(rng, opts = {}) {
+  // opts.pinSub (number): when set, the language (v0.16), evo-devo (v0.17)
+  // and realms (v0.18) sub-stream passes seed from hash(pin, passSalt)
+  // instead of the content hash — identical sub-stream alleles across
+  // founders with different main-stream content.
+  // opts.overrides ({ key: value | [a, b] }): pin specific alleles after
+  // the draws (e.g. { legPower: 0.3 } sets both homologs). The legPower
+  // sweep is: same rng seed + same pinSub + different legPower override →
+  // every allele except legPower bit-identical.
+  // When opts is absent (or pinSub unset): EXACT current behavior — main
+  // stream bit-identical to v0.15, content-hash sub-streams.
+  const { pinSub, overrides } = opts;
+  const pinned = pinSub !== undefined && pinSub !== null;
   const alleles = {};
   const marks = {};
   // v0.16: the language-substrate loci (lexCap…lexCrit) draw from a
@@ -457,18 +531,24 @@ export function randomGenome(rng) {
   // sub-stream in pass 3, seeded by a hash of the full pre-v0.17 genome —
   // deterministic, and the main + language streams stay bit-identical
   // to v0.16.
+  // v0.18: the realms loci (4 instincts + coldTol/heatTol) draw from their
+  // own sub-stream in pass 4, seeded by a hash of the full pre-v0.18 genome
+  // — deterministic, and the main + language + evo-devo streams stay
+  // bit-identical to v0.17. With opts.pinSub, passes 2–4 seed from the pin
+  // instead of the content hashes.
   const isNew17 = (k) => EVO17_KEYS.has(k);
+  const isNew18 = (k) => REALMS18_KEYS.has(k);
   for (const gene of GENES) {
-    if (gene.key.startsWith('lex') || isNew17(gene.key)) continue;
+    if (gene.key.startsWith('lex') || isNew17(gene.key) || isNew18(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
     marks[gene.key] = 1.0;
   }
   let h = 0x1a6c0de;
   for (const gene of GENES) {
-    if (gene.key.startsWith('lex') || isNew17(gene.key)) continue;
+    if (gene.key.startsWith('lex') || isNew17(gene.key) || isNew18(gene.key)) continue;
     for (const a of alleles[gene.key]) h = (Math.imul(h, 31) + Math.floor(a * 1e9)) | 0;
   }
-  const langRng = createRng(h >>> 0);
+  const langRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_LANG) : h >>> 0);
   for (const gene of GENES) {
     if (!gene.key.startsWith('lex')) continue;
     alleles[gene.key] = [randomAllele(gene, langRng), randomAllele(gene, langRng)];
@@ -476,14 +556,34 @@ export function randomGenome(rng) {
   }
   let h2 = 0x5eed17;
   for (const gene of GENES) {
-    if (isNew17(gene.key)) continue;
+    if (isNew17(gene.key) || isNew18(gene.key)) continue;
     for (const a of alleles[gene.key]) h2 = (Math.imul(h2, 31) + Math.floor(a * 1e9)) | 0;
   }
-  const evoRng = createRng(h2 >>> 0);
+  const evoRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_EVO) : h2 >>> 0);
   for (const gene of GENES) {
     if (!isNew17(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, evoRng), randomAllele(gene, evoRng)];
     marks[gene.key] = 1.0;
+  }
+  let h3 = 0x18ea1d;
+  for (const gene of GENES) {
+    if (isNew18(gene.key)) continue;
+    for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
+  for (const gene of GENES) {
+    if (!isNew18(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, realmsRng), randomAllele(gene, realmsRng)];
+    marks[gene.key] = 1.0;
+  }
+  // v0.18: allele overrides — applied after the draws, so a sweep can pin
+  // one locus (e.g. legPower) while the pinned sub-streams hold everything
+  // else constant. A single number sets both homologs.
+  if (overrides) {
+    for (const [key, v] of Object.entries(overrides)) {
+      if (!alleles[key]) continue;
+      alleles[key] = Array.isArray(v) ? [v[0], v[1]] : [v, v];
+    }
   }
   return { alleles, marks, extra: {} };
 }
