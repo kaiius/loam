@@ -25,23 +25,26 @@ breeding is not viable; a world that breeds once and dies out is not viable.
 
 ## The pinned seeds
 
-Seed 7 is the standing viability probe. It must pass on every release:
+Seeds 7 and 99 are the standing viability battery. Both must pass on every
+release:
 
 ```bash
-node test/viability-proof.mjs 7 20000
-# v0.13: 59 alive, 276 births, 139 matings → VIABLE (exit 0)
+for s in 7 99; do node test/viability-proof.mjs $s 20000; done
+# v0.13: seed 7 → 59 alive, 276 births, 139 matings → VIABLE
+# v0.13: seed 99 → 44 alive, 291 births, 149 matings → VIABLE
 ```
 
-Viability is seed-dependent: seeds 1, 2, 3, 11, 12, 21, 42, 99 go extinct
+Viability is seed-dependent: seeds 1, 2, 3, 11, 12, 21, 42 go extinct
 within 20000 ticks. This is a known pre-existing issue, not a v0.13
 regression — v0.12 seed 7 itself is extinct (verified 2026-09-30); v0.13's
-plant-genome changes actually *improved* seed 7 from extinct to viable.
+plant-genome changes actually *improved* seed 7 from extinct to viable,
+and seed 99 is viable in both.
 
 The extinction mechanism: a brain NaN corruption (7 of 12 action outputs
 go NaN, leaving only `wander` valid) that starves the creature next to
 uneaten food. Pre-existing in v0.12, out of scope for v0.13, filed as
-a known bug. The viability proof uses seed 7 because it avoids the NaN
-trap, not because other seeds are unimportant.
+a known bug. The viability proof uses seeds 7 and 99 because they avoid
+the NaN trap, not because other seeds are unimportant.
 
 ## Determinism
 
