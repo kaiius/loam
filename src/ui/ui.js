@@ -4,7 +4,8 @@
 import { screenToWorld } from '../render/renderer.js';
 import { petCreature, scoldCreature, creatureRadius } from '../sim/creature.js';
 import { ageStage, mood } from '../sim/biochem.js';
-import { layEgg, DAY_LENGTH } from '../sim/world.js';
+import { layEgg, DAY_LENGTH, LINEAGE_TRAITS, zoneAt } from '../sim/world.js';
+import { strongestBond } from '../sim/social.js';
 import { randomGenome } from '../sim/genome.js';
 
 const MOOD_EMOJI = {
@@ -128,12 +129,17 @@ export function createUI(canvas, renderer, world) {
       : tod < 0.78 ? 'afternoon' : tod < 0.9 ? 'dusk' : 'night';
     clockEl.textContent = `${icon} Day ${day}, ${part}`;
     censusEl.textContent = `👥 ${world.creatures.length} creatures · 🥚 ${world.eggs.length} eggs`;
+    const nTrad = world.culture.traditions.length;
+    if (nTrad > 0) censusEl.textContent += ` · 📜 ${nTrad} tradition${nTrad > 1 ? 's' : ''}`;
 
     // Toasts from world events.
     for (const ev of world.events.splice(0)) {
       if (ev.type === 'hatch') toast(toastsEl, `🥚 ${ev.creature.name} hatched!`);
       else if (ev.type === 'death') toast(toastsEl, `💀 ${ev.creature.name} died (${ev.cause}).`);
       else if (ev.type === 'mating') toast(toastsEl, `💕 ${ev.a.name} & ${ev.b.name} are expecting!`);
+      else if (ev.type === 'traditionFounded') toast(toastsEl, `📜 ${ev.creature.name} founded "${ev.name}"!`);
+      else if (ev.type === 'traditionAdopted') toast(toastsEl, `📜 ${ev.creature.name} learned "${ev.name}".`);
+      else if (ev.type === 'traditionLost') toast(toastsEl, `🌫️ "${ev.name}" is forgotten.`);
     }
 
     // Selection may have died.
@@ -208,6 +214,10 @@ function temperament(c) {
   else if (p.boldness < 0.34) t.push('timid');
   if (p.hungerRate > 0.66) t.push('big appetite');
   if (p.learningRate > 0.66) t.push('quick learner');
+  if (p.instFearFlee > 0.75) t.push('jumpy');
+  if (p.instBoredPlay > 0.75) t.push('playful');
+  if (p.immunity > 0.75) t.push('hardy');
+  else if (p.immunity < 0.25) t.push('sickly');
   return t.join(' · ');
 }
 
@@ -225,7 +235,6 @@ function refreshPanel(panel, ui) {
     const stage = ageStage(b, c.pheno);
     const m = c.mood || mood(b);
     const hue = c.pheno.hueDeg.toFixed(0);
-    const dad = c.parents ? `Egg of #${c.parents[0]} × #${c.parents[1]}` : 'Wild founder';
     panel.innerHTML = `
       <div class="p-head">
         <span class="swatch" style="background:hsl(${hue},58%,60%)"></span>
@@ -233,14 +242,21 @@ function refreshPanel(panel, ui) {
         <button id="p-close">✕</button>
       </div>
       <div class="badges">${stage} · ${c.sex} · ${MOOD_EMOJI[m] || ''} ${m}</div>
+      <div class="zone">📍 ${zoneAt(c.x).name}</div>
+      ${c.homeX !== undefined ? `<div class="zone">🏠 Home: ${zoneAt(c.homeX).name}</div>` : ''}
+      ${tribeHtml(ui, c)}
+      ${bondHtml(ui, c)}
       ${bar('🍽️ Satiation', 1 - b.hunger, '#e8a13c')}
       ${bar('⚡ Energy', b.energy, '#7ccf5f')}
       ${bar('🎾 Fun', 1 - b.fun, '#c77ce8')}
       ${bar('💕 Company', 1 - b.social, '#e87ca8')}
       ${bar('🏥 Health', b.health, '#e85c5c')}
+      ${b.illness > 0.05 ? bar('🤒 Illness', b.illness, '#9db33c') : ''}
       <div class="traits">${temperament(c)}</div>
-      <div class="family">🧬 ${dad}<br>👶 ${c.children.length} offspring</div>
+      ${lineageHtml(ui, c)}
       <div class="doing">Now: <i>${escapeHtml(c.actionLabel || c.action)}</i></div>
+      <div class="doing">🧠 ${c.memory.episodes.length}/${c.memory.capacity} memories</div>
+      ${c.traditions && c.traditions.length ? `<div class="doing">📜 ${c.traditions.map((id) => { const t = ui.world.culture.traditions.find((x) => x.id === id); return t ? escapeHtml(t.name) : null; }).filter(Boolean).join(' · ')}</div>` : ''}
       <div class="p-actions">
         <button id="p-pet">💕 Pet</button>
         <button id="p-scold">😠 Scold</button>
@@ -248,6 +264,12 @@ function refreshPanel(panel, ui) {
     panel.querySelector('#p-close').onclick = () => { ui.selected = null; refreshPanel(panel, ui); };
     panel.querySelector('#p-pet').onclick = () => petCreature(c);
     panel.querySelector('#p-scold').onclick = () => scoldCreature(c);
+    panel.querySelectorAll('.l-kid').forEach((btn) => {
+      btn.onclick = () => {
+        const kid = ui.world.creatures.find((o) => String(o.id) === btn.dataset.kid);
+        if (kid) { ui.selected = kid; refreshPanel(panel, ui); }
+      };
+    });
   } else if (sel.kind === 'egg') {
     panel.innerHTML = `
       <div class="p-head"><h2>🥚 Egg</h2><button id="p-close">✕</button></div>
@@ -258,8 +280,97 @@ function refreshPanel(panel, ui) {
   }
 }
 
+// v0.12 tribes & bonds: the band this creature's home range falls in
+// (detected, never assigned), and its strongest pairwise bond.
+function tribeHtml(ui, c) {
+  const t = (ui.world.tribes || []).find((t) => t.members.includes(c.id));
+  if (!t) return '';
+  return `<div class="zone">🪶 Band: <span style="color:${t.color}">⬤</span> ${escapeHtml(t.name)} (${t.members.length})</div>`;
+}
+
+function bondHtml(ui, c) {
+  if (!ui.world.bonds) return '';
+  const sb = strongestBond(ui.world, c);
+  if (!sb || Math.abs(sb.v) < 0.15) return '';
+  const label = sb.v > 0 ? 'friend' : 'rival';
+  return `<div class="zone">💞 Closest bond: ${escapeHtml(sb.other.name || '?')} <i>(${label} ${sb.v >= 0 ? '+' : ''}${sb.v.toFixed(2)})</i></div>`;
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[ch]));
+}
+
+// v0.10 lineage view: ancestry chain + trait comparison across generations.
+// Walks the world's lineage registry (dead ancestors stay resolvable).
+function lineageHtml(ui, c) {
+  const lin = ui.world.lineage;
+  const rec = lin.get(c.id);
+  if (!rec || !rec.parents) {
+    return `<div class="lineage"><div class="l-title">🧬 Lineage</div>
+      <div class="l-chain">Wild founder — no recorded parents.</div></div>`;
+  }
+  // Ancestor chain, up to 3 generations back: F(n): A × B → ...
+  const chain = [];
+  let current = [rec];
+  for (let g = 0; g < 3 && current.length; g++) {
+    const names = current.map((r) => `${escapeHtml(r.name)} <span class="l-gen">F${r.generation}</span>`);
+    chain.unshift(names.join(' × '));
+    const next = [];
+    for (const r of current) {
+      if (r.parents) for (const pid of r.parents) {
+        const p = lin.get(pid);
+        if (p && !next.includes(p)) next.push(p);
+      }
+    }
+    current = next;
+  }
+  // Trait comparison: you vs parents' average vs grandparents' average.
+  const avg = (recs, k) => {
+    const vs = recs.map((r) => r.traits[k]).filter((v) => typeof v === 'number');
+    return vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
+  };
+  const parents = rec.parents.map((pid) => lin.get(pid)).filter(Boolean);
+  const grandparents = [];
+  for (const p of parents) {
+    if (p.parents) for (const gpid of p.parents) {
+      const gp = lin.get(gpid);
+      if (gp && !grandparents.includes(gp)) grandparents.push(gp);
+    }
+  }
+  const TRAIT_LABEL = {
+    size: 'Size', legLength: 'Legs', spikes: 'Spikes', fur: 'Fur',
+    eyeSize: 'Eyes', mouthSize: 'Mouth', immunity: 'Immunity',
+    learningRate: 'Learning', boldness: 'Boldness', lifespan: 'Lifespan',
+  };
+  const arrow = (mine, theirs) => {
+    if (theirs === null) return '';
+    const d = mine - theirs;
+    if (Math.abs(d) < 0.02) return '<span class="l-same">=</span>';
+    return d > 0 ? '<span class="l-up">▲</span>' : '<span class="l-dn">▼</span>';
+  };
+  const rows = LINEAGE_TRAITS.map((k) => {
+    const mine = rec.traits[k];
+    const pAvg = avg(parents, k), gAvg = avg(grandparents, k);
+    const fmt = (v) => v === null ? '–' : v.toFixed(2);
+    return `<tr><td>${TRAIT_LABEL[k] || k}</td><td class="l-you">${fmt(mine)} ${arrow(mine, pAvg)}</td><td>${fmt(pAvg)}</td><td>${fmt(gAvg)}</td></tr>`;
+  }).join('');
+  // Diet is a choice gene — show values, no arrows.
+  const dietRow = (() => {
+    const mine = rec.traits.diet;
+    const pDiets = parents.map((p) => p.traits.diet).filter(Boolean);
+    const gDiets = grandparents.map((p) => p.traits.diet).filter(Boolean);
+    const uniq = (ds) => [...new Set(ds)].join('/');
+    return `<tr><td>Diet</td><td class="l-you">${escapeHtml(mine || '–')}</td><td>${escapeHtml(uniq(pDiets) || '–')}</td><td>${escapeHtml(uniq(gDiets) || '–')}</td></tr>`;
+  })();
+  // Living children as clickable chips.
+  const kids = ui.world.creatures.filter((o) => o.parents && o.parents.includes(c.id));
+  const kidChips = kids.length
+    ? kids.map((k) => `<button class="l-kid" data-kid="${k.id}">${escapeHtml(k.name)}</button>`).join('')
+    : '<span class="l-none">none yet</span>';
+  return `<div class="lineage"><div class="l-title">🧬 Lineage</div>
+    <div class="l-chain">${chain.join(' → ')}</div>
+    <table class="l-table"><tr><th></th><th>You</th><th>Parents</th><th>Grandparents</th></tr>${rows}${dietRow}</table>
+    <div class="l-kids">👶 ${kidChips}</div></div>`;
 }

@@ -4,7 +4,7 @@
 import { drawCreature } from './painter.js';
 import { creatureRadius } from '../sim/creature.js';
 import { ageStage } from '../sim/biochem.js';
-import { timeOfDay } from '../sim/world.js';
+import { timeOfDay, ZONES } from '../sim/world.js';
 
 export function createRenderer(canvas) {
   const r = {
@@ -102,6 +102,21 @@ export function render(r, world, ui, t) {
   drawHills(ctx, world, light, 0.35, [mix([60,70,110],[150,190,150],light), 560]);
   drawHills(ctx, world, light, 0.6, [mix([45,55,90],[120,175,130],light), 660]);
 
+  // v0.11 biome tints: the zones are sim state (they set fruiting rates),
+  // so painting them is honest. Subtle vertical washes + a name label.
+  ctx.save();
+  for (const z of ZONES) {
+    ctx.fillStyle = z.tint;
+    ctx.fillRect(z.x1, 0, z.x2 - z.x1, world.groundY + 80);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.28)';
+  ctx.font = '600 22px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  for (const z of ZONES) {
+    ctx.fillText(z.name.toUpperCase(), (z.x1 + z.x2) / 2, world.groundY + 52);
+  }
+  ctx.restore();
+
   // Platforms.
   for (const pl of world.platforms) {
     const pw = pl.x2 - pl.x1;
@@ -119,11 +134,21 @@ export function render(r, world, ui, t) {
   // Foods.
   for (const f of world.foods) drawFood(ctx, f, t);
 
+  // v0.7: visible culture — grove tradition rings on the ground.
+  drawGroves(ctx, world, t);
+
+  // v0.12: home-range ticks — each living creature's imprinted homeX, drawn
+  // in its band's color. Honest: homeX is sim state, bands are detected.
+  drawHomeTicks(ctx, world);
+
   // Eggs.
   for (const e of world.eggs) drawEgg(ctx, e, t, ui);
 
   // Toys.
   for (const toy of world.toys) drawBall(ctx, toy, t);
+
+  // v0.9: pebbles — the world as material, not decoration.
+  for (const pb of world.pebbles || []) drawPebble(ctx, pb);
 
   // Critters.
   for (const cr of world.critters) drawCritter(ctx, cr, t, light);
@@ -177,7 +202,11 @@ function drawHills(ctx, world, light, parallax, [color, baseY]) {
 function drawPlant(ctx, p, t, light) {
   const h = 40 + p.growth * 70;
   const sway = Math.sin(p.sway) * 8 * p.growth;
-  ctx.strokeStyle = rgb(mix([40, 70, 50], [62, 140, 78], light));
+  // v0.8: herbs are violet where fruit plants are green — unmistakable.
+  const herb = p.kind === 'herb';
+  ctx.strokeStyle = herb
+    ? rgb(mix([52, 40, 78], [96, 72, 148], light))
+    : rgb(mix([40, 70, 50], [62, 140, 78], light));
   ctx.lineWidth = 7;
   ctx.lineCap = 'round';
   ctx.beginPath();
@@ -185,15 +214,17 @@ function drawPlant(ctx, p, t, light) {
   ctx.quadraticCurveTo(p.x + sway * 0.4, p.y - h * 0.6, p.x + sway, p.y - h);
   ctx.stroke();
   // Leaves.
-  ctx.fillStyle = rgb(mix([45, 80, 55], [84, 168, 100], light));
+  ctx.fillStyle = herb
+    ? rgb(mix([58, 44, 96], [128, 96, 190], light))
+    : rgb(mix([45, 80, 55], [84, 168, 100], light));
   for (const s of [-1, 1]) {
     ctx.beginPath();
     ctx.ellipse(p.x + s * 20 + sway * 0.5, p.y - h * 0.55, 20, 9, s * 0.5, 0, Math.PI * 2);
     ctx.fill();
   }
-  // Fruits.
+  // Fruits (or medicinal buds on herbs).
   if (p.growth >= 1) {
-    ctx.fillStyle = '#e4574f';
+    ctx.fillStyle = herb ? '#9a6ee8' : '#e4574f';
     const fruits = 3;
     for (let i = 0; i < fruits; i++) {
       const fx = p.x + sway + Math.sin(i * 2.4 + p.sway) * 26;
@@ -205,7 +236,7 @@ function drawPlant(ctx, p, t, light) {
       ctx.beginPath();
       ctx.arc(fx - 3, fy - 3, 3, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#e4574f';
+      ctx.fillStyle = herb ? '#9a6ee8' : '#e4574f';
     }
   }
 }
@@ -221,12 +252,92 @@ function drawFood(ctx, f, t) {
     ctx.beginPath();
     ctx.ellipse(f.x + 4, f.y - 22 + bob, 6, 3, 0.6, 0, Math.PI * 2);
     ctx.fill();
+  } else if (f.foodKind === 'leaf') {
+    // v0.8: medicinal leaves — violet, bitter, unmistakable.
+    ctx.fillStyle = '#9a6ee8';
+    ctx.beginPath();
+    ctx.ellipse(f.x, f.y - 10 + bob, 9, 6, 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#c4aef2';
+    ctx.beginPath();
+    ctx.ellipse(f.x - 2, f.y - 12 + bob, 4, 2.5, 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (f.foodKind === 'meat') {
+    // v0.7: carcasses — dark red, unmistakable.
+    ctx.fillStyle = '#8f2f2a';
+    ctx.beginPath();
+    ctx.ellipse(f.x, f.y - 8 + bob * 0.5, 13, 8, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#c05a4a';
+    ctx.beginPath();
+    ctx.ellipse(f.x - 3, f.y - 10 + bob * 0.5, 6, 4, 0.2, 0, Math.PI * 2);
+    ctx.fill();
   } else {
     ctx.fillStyle = '#c9a86a';
     ctx.beginPath();
     ctx.ellipse(f.x, f.y - 6 + bob, 8, 5, 0, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+// v0.7: grove traditions are visible — a faint ring where the culture says
+// the eating is good. What the creatures know, the player can see.
+function drawHomeTicks(ctx, world) {
+  const tribes = world.tribes;
+  if (!tribes || tribes.length === 0) return;
+  const plat = world.platforms[0];
+  const colorOf = new Map();
+  for (const t of tribes) for (const id of t.members) colorOf.set(id, t.color);
+  ctx.save();
+  ctx.lineWidth = 3;
+  ctx.textAlign = 'center';
+  for (const c of world.creatures) {
+    if (!c.alive || c.homeX === undefined) continue;
+    const col = colorOf.get(c.id) || '#ffffff';
+    ctx.strokeStyle = hexA(col, 0.35);
+    ctx.beginPath();
+    ctx.moveTo(c.homeX, plat.y - 2);
+    ctx.lineTo(c.homeX, plat.y - 14);
+    ctx.stroke();
+  }
+  // Band labels at each band's home center.
+  ctx.font = '600 13px system-ui, sans-serif';
+  for (const t of tribes) {
+    ctx.fillStyle = hexA(t.color, 0.55);
+    ctx.fillText(`🪶 ${t.name}`, t.homeX, plat.y + 34);
+  }
+  ctx.restore();
+}
+
+// #rrggbb + alpha -> rgba() string.
+function hexA(hex, a) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+function drawGroves(ctx, world, t) {
+  const cu = world.culture;
+  if (!cu || cu.traditions.length === 0) return;
+  const plat = world.platforms[0];
+  ctx.save();
+  for (const tr of cu.traditions) {
+    if (tr.kind !== 'grove') continue;
+    const pulse = 0.5 + 0.5 * Math.sin(t * 2 + tr.id);
+    ctx.strokeStyle = `rgba(212,175,55,${0.25 + pulse * 0.2})`;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([10, 8]);
+    ctx.beginPath();
+    ctx.ellipse(tr.x, plat.y - 30, tr.r, 26, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = `rgba(212,175,55,${0.5 + pulse * 0.3})`;
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`📜 ${tr.name} · ${tr.carriers.size}`, tr.x, plat.y - 62);
+  }
+  ctx.restore();
 }
 
 function drawEgg(ctx, e, t, ui) {
@@ -271,7 +382,24 @@ function drawEgg(ctx, e, t, ui) {
   }
 }
 
+function drawBeacon(ctx, toy, t) {
+  const pulse = 0.6 + 0.4 * Math.sin(t * 4);
+  ctx.save();
+  ctx.translate(toy.x, toy.y - 30);
+  ctx.rotate(Math.PI / 4);
+  const s = 14 + 4 * pulse;
+  ctx.fillStyle = `rgba(255, 200, 60, ${0.55 + 0.35 * pulse})`;
+  ctx.fillRect(-s / 2, -s / 2, s, s);
+  ctx.strokeStyle = '#fff3c4';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(-s / 2, -s / 2, s, s);
+  ctx.restore();
+}
+
 function drawBall(ctx, toy, t) {
+  // v0.8: the exam beacon renders as a pulsing diamond, not a ball — it's a
+  // cue marker, not a plaything (though creatures may still investigate it).
+  if (toy.kind === 'beacon') return drawBeacon(ctx, toy, t);
   ctx.save();
   ctx.translate(toy.x, toy.y - toy.r);
   ctx.rotate(toy.x * 0.05);
@@ -287,6 +415,23 @@ function drawBall(ctx, toy, t) {
   ctx.beginPath();
   ctx.arc(0, 0, toy.r - 3, Math.PI + 0.3, Math.PI * 2 - 0.3);
   ctx.stroke();
+  ctx.restore();
+}
+
+// v0.9: pebbles — irregular gray stones, deterministic per pebble.
+function drawPebble(ctx, pb) {
+  ctx.save();
+  ctx.translate(pb.x, pb.y - pb.r * 0.45);
+  const wob = Math.sin(pb.id * 3.7) * 0.16;
+  ctx.rotate(wob);
+  ctx.fillStyle = '#8d8b96';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, pb.r, pb.r * 0.72, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#a9a7b2';
+  ctx.beginPath();
+  ctx.ellipse(-pb.r * 0.2, -pb.r * 0.18, pb.r * 0.55, pb.r * 0.34, -0.3, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 

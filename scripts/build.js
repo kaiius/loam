@@ -13,6 +13,8 @@ const MODULES = [
   'src/sim/genome.js',
   'src/sim/biochem.js',
   'src/sim/brain.js',
+  'src/sim/memory.js',
+  'src/sim/culture.js',
   'src/sim/creature.js',
   'src/sim/world.js',
   'src/render/painter.js',

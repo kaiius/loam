@@ -1,0 +1,1311 @@
+// Unit tests for the v0.3 systems (evolvable instincts, deep brain learning,
+// illness + immunity) and v0.4 (episodic memory, recall, sleep consolidation,
+// observational social learning). Run: node --test test/sim.mjs
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { GENES, randomGenome, inherit, phenotype } from '../src/sim/genome.js';
+import { createBrain, decide, learn, senseVector, ACTIONS } from '../src/sim/brain.js';
+import { createBiochem, tickBiochem, mood } from '../src/sim/biochem.js';
+import { createRng } from '../src/sim/rng.js';
+import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES } from '../src/sim/world.js';
+import {
+  createMemory, writeEpisode, shouldWrite, recall, consolidate,
+  memoryCapacity, RECALL_BUDGET,
+} from '../src/sim/memory.js';
+import {
+  createCulture, foundGrove, adoptTradition, traditionVotes, groveTarget,
+  pruneExtinct, sampleCulture, ratchetIndex, fidelityOf,
+} from '../src/sim/culture.js';
+import { finalizeEpisode, maybeFoundGrove, doEat, createCreature, creatureRadius } from '../src/sim/creature.js';
+import { createBonds, getBond, nudgeBond, tickBonds, pedigreeKin, detectTribes, socialStats } from '../src/sim/social.js';
+
+const N_SENSES = 18; // v0.12: +3 social senses (homeDist, kinNear, bondNear)
+
+function testPheno(seed, overrides = {}) {
+  const p = phenotype(randomGenome(createRng(seed)));
+  return { ...p, ...overrides };
+}
+
+const MID_SENSES = {
+  hunger: 0.5, tiredness: 0.5, boredom: 0.5, loneliness: 0.5, fear: 0,
+  light: 1, foodDist: 0.5, foodDir: 1, creatureDist: 1, creatureDir: 0,
+  toyDist: 1, toyDir: 0, isAdult: 1, illness: 0,
+};
+
+test('instinct genes map to valid sense/action indices', () => {
+  const inst = GENES.filter((g) => g.sense !== undefined);
+  assert.equal(inst.length, 13); // v0.12: +1 instHomeSeek
+  for (const g of inst) {
+    assert.ok(g.sense >= 0 && g.sense < N_SENSES, g.key);
+    assert.ok(g.action >= 0 && g.action < ACTIONS.length, g.key);
+  }
+});
+
+test('instinct alleles inherit from parents (no mutation)', () => {
+  const rng = createRng(7);
+  const mom = randomGenome(rng);
+  const dad = randomGenome(rng);
+  const child = inherit(mom, dad, rng, 0);
+  for (const g of GENES) {
+    const [a, b] = child.alleles[g.key];
+    assert.ok(mom.alleles[g.key].includes(a), g.key);
+    assert.ok(dad.alleles[g.key].includes(b), g.key);
+  }
+});
+
+test('founder genomes bias instincts toward sensible defaults', () => {
+  const rng = createRng(99);
+  let sum = 0;
+  const N = 200;
+  for (let i = 0; i < N; i++) sum += phenotype(randomGenome(rng)).instHungerSeek;
+  const mean = sum / N;
+  assert.ok(mean > 0.6 && mean < 1.0, `mean instHungerSeek ${mean.toFixed(3)}`);
+});
+
+test('brain builds instinct weights from the genome', () => {
+  const rng = createRng(11);
+  const overrides = { instHungerSeek: 1, instHungerEat: 0 };
+  for (const g of GENES) {
+    if (g.sense !== undefined && !(g.key in overrides)) overrides[g.key] = 0.5;
+  }
+  const brain = createBrain(testPheno(11, overrides), rng);
+  assert.equal(brain.instW[0][0], (1 - 0.5) * 2.4); // seekFood <- hunger
+  assert.equal(brain.instW[1][0], (0 - 0.5) * 2.4); // eat <- hunger (inhibitory)
+  assert.equal(brain.instW[3][2], 0); // play <- boredom neutral
+});
+
+test('a strong hunger instinct biases the action choice', () => {
+  const rng = createRng(21);
+  const overrides = { curiosity: 0, sociability: 0, boldness: 0.5, learningRate: 0 };
+  for (const g of GENES) {
+    if (g.sense !== undefined) overrides[g.key] = 0.5;
+  }
+  overrides.instHungerSeek = 1;
+  overrides.instHungerEat = 1;
+  const brain = createBrain(testPheno(21, overrides), rng);
+  // Silence the learned pathway to isolate the instinct pathway.
+  brain.w1 = brain.w1.map((r) => r.map(() => 0));
+  brain.w2 = brain.w2.map((r) => r.map(() => 0));
+  brain.b1 = brain.b1.map(() => 0);
+  brain.b2 = brain.b2.map(() => 0);
+  const s = { ...MID_SENSES, hunger: 1, foodDist: 0.5 };
+  const { action } = decide(brain, senseVector(s), 0, rng);
+  assert.equal(action, 'seekFood');
+});
+
+test('hidden-layer weights change with reward, and freeze without it', () => {
+  const rng = createRng(31);
+  const brain = createBrain(testPheno(31), rng);
+  const before = brain.w1.map((r) => r.slice());
+  decide(brain, senseVector(MID_SENSES), 0, rng);
+  learn(brain, testPheno(31), 0.8);
+  const changed = brain.w1.some((r, i) => r.some((w, k) => w !== before[i][k]));
+  assert.ok(changed, 'w1 should update on reward');
+  // Zero reward: no change.
+  const frozen = brain.w1.map((r) => r.slice());
+  decide(brain, senseVector(MID_SENSES), 0, rng);
+  learn(brain, testPheno(31), 0);
+  assert.deepEqual(brain.w1, frozen);
+});
+
+test('low immunity lets a mild case worsen past contagious levels', () => {
+  const b = createBiochem();
+  b.illness = 0.35; // natural spontaneous-onset level
+  b.energy = 0.9;
+  b.hunger = 0.2;
+  const p = { immunity: 0, hungerRate: 0.5, energyDrain: 0.5 };
+  for (let t = 0; t < 120; t++) tickBiochem(b, p, 1);
+  assert.ok(
+    b.illness > 0.5,
+    `mild case should turn contagious (got ${b.illness.toFixed(3)})`
+  );
+});
+
+test('high immunity clears illness entirely', () => {
+  const b = createBiochem();
+  b.illness = 1;
+  b.energy = 0.9;
+  b.hunger = 0.2;
+  const p = { immunity: 1, hungerRate: 0.5, energyDrain: 0.5 };
+  for (let t = 0; t < 120; t++) tickBiochem(b, p, 1);
+  assert.equal(
+    b.illness,
+    0,
+    `high immunity should clear illness (got ${b.illness.toFixed(3)})`
+  );
+});
+
+test('mild cases become contagious and infect neighbors naturally', () => {
+  const world = bindWorld(createWorld(789));
+  populate(world);
+  const [a, b] = world.creatures;
+  a.pheno.immunity = 0;
+  b.pheno.immunity = 0;
+  a.biochem.illness = 0.35; // natural spontaneous-onset level, not pinned
+  let contagious = false;
+  let transmitted = false;
+  for (let t = 0; t < 1500 && !transmitted; t++) {
+    a.biochem.health = 1; // keep the source alive; lethality is tested separately
+    b.biochem.health = 1;
+    b.x = a.x + 50; // stay side by side
+    b.platformIndex = a.platformIndex;
+    tickWorld(world, 0.1);
+    if (a.biochem.illness > 0.5) contagious = true;
+    if (contagious && b.biochem.illness > 0) transmitted = true;
+  }
+  assert.ok(
+    contagious,
+    'a mild case should worsen past the contagious threshold on its own'
+  );
+  assert.ok(transmitted, 'the worsened case should infect a nearby creature');
+});
+
+test('serious illness damages health and reads as sick', () => {
+  const b = createBiochem();
+  b.illness = 0.9;
+  b.hunger = 0.2;
+  b.energy = 0.9;
+  const p = { immunity: 0.5, hungerRate: 0.5, energyDrain: 0.5 };
+  const h0 = b.health;
+  tickBiochem(b, p, 10);
+  assert.ok(b.health < h0, 'illness should damage health');
+  assert.equal(mood(b), 'sick');
+});
+
+test('illness spreads between close creatures', () => {
+  const world = bindWorld(createWorld(123));
+  populate(world);
+  const [a, b] = world.creatures;
+  b.pheno.immunity = 0; // maximally susceptible
+  let infected = false;
+  for (let t = 0; t < 300 && !infected; t++) {
+    a.biochem.illness = 1; // keep the source contagious
+    b.x = a.x + 50; // keep them side by side
+    b.platformIndex = a.platformIndex;
+    tickWorld(world, 0.1);
+    if (b.biochem.illness > 0) infected = true;
+  }
+  assert.ok(infected, 'a nearby creature should catch the illness');
+});
+
+test('severe illness kills and is recorded as the cause', () => {
+  const world = bindWorld(createWorld(456));
+  populate(world);
+  const c = world.creatures[0];
+  c.biochem.illness = 1;
+  c.biochem.health = 0.05;
+  c.biochem.hunger = 0.2; // rule out starvation
+  c.biochem.energy = 0.9;
+  c.pheno.immunity = 0; // slow recovery
+  let cause = null;
+  for (let t = 0; t < 200 && c.alive; t++) {
+    tickWorld(world, 0.5);
+    const d = world.events.find((e) => e.type === 'death' && e.creature === c);
+    if (d) cause = d.cause;
+  }
+  assert.equal(cause, 'illness');
+});
+
+// ---- v0.4: episodic memory ----
+
+test('episodes are written for salient outcomes, not trivia', () => {
+  assert.ok(shouldWrite({ reward: 0.6, critical: false, kind: 'lived' }), 'salient reward writes');
+  assert.ok(shouldWrite({ reward: -0.6, critical: false, kind: 'lived' }), 'salient punishment writes');
+  assert.ok(!shouldWrite({ reward: 0.05, critical: false, kind: 'lived' }), 'trivia does not write');
+  assert.ok(shouldWrite({ reward: 0.05, critical: true, kind: 'lived' }), 'critical drive states write');
+  assert.ok(shouldWrite({ reward: 0.2, critical: false, kind: 'observed' }), 'observed writes at a lower bar');
+  assert.ok(!shouldWrite({ reward: 0.05, critical: false, kind: 'observed' }), 'dim observations do not write');
+});
+
+test('a full memory forgets the dimmest episode first', () => {
+  const mem = createMemory(testPheno(2, { memory: 0 }));
+  assert.equal(mem.capacity, 16);
+  const input = senseVector(MID_SENSES);
+  for (let i = 0; i < 16; i++) {
+    assert.ok(writeEpisode(mem, { input, action: i % 8, reward: 0.4, tick: i, kind: 'lived', critical: false }));
+  }
+  assert.equal(mem.episodes.length, 16);
+  // A dimmer episode is rejected outright...
+  assert.ok(!writeEpisode(mem, { input, action: 0, reward: 0.35, tick: 99, kind: 'lived', critical: false }));
+  assert.equal(mem.episodes.length, 16);
+  // ...while a brighter one displaces the dimmest.
+  assert.ok(writeEpisode(mem, { input, action: 0, reward: 0.9, tick: 100, kind: 'lived', critical: false }));
+  assert.equal(mem.episodes.length, 16);
+  assert.ok(mem.episodes.some((e) => e.reward === 0.9), 'bright episode kept');
+  assert.ok(!mem.episodes.some((e) => e.tick === 0), 'dimmest episode forgotten');
+});
+
+test('recall votes for the remembered action in similar senses', () => {
+  const mem = createMemory(testPheno(3));
+  const input = senseVector(MID_SENSES);
+  writeEpisode(mem, { input, action: 1, reward: 0.8, tick: 0, kind: 'lived', critical: false }); // eat felt good
+  writeEpisode(mem, { input, action: 5, reward: -0.8, tick: 1, kind: 'lived', critical: false }); // flee felt bad
+  const votes = recall(mem, input);
+  assert.ok(votes[1] > 0, 'votes for the rewarded action');
+  assert.ok(votes[5] < 0, 'votes against the punished action');
+  const total = votes.reduce((s, v) => s + Math.abs(v), 0);
+  assert.ok(total <= RECALL_BUDGET + 1e-9, `shared budget respected, got ${total}`);
+  // Direction matters: among competing memories, the most similar dominates.
+  const hungry = senseVector({ ...MID_SENSES, hunger: 1, fear: 0 });
+  const afraid = senseVector({ ...MID_SENSES, hunger: 0, fear: 1 });
+  const mem2 = createMemory(testPheno(3));
+  writeEpisode(mem2, { input: hungry, action: 1, reward: 0.8, tick: 0, kind: 'lived', critical: false });
+  writeEpisode(mem2, { input: afraid, action: 5, reward: 0.8, tick: 1, kind: 'lived', critical: false });
+  const v2 = recall(mem2, hungry);
+  assert.ok(v2[1] > v2[5], 'the most similar episode dominates the vote');
+});
+
+test('recall votes nudge the choice without polluting learned outputs', () => {
+  const rng = createRng(4);
+  const brain = createBrain(testPheno(4), rng);
+  const input = senseVector(MID_SENSES);
+  const votes = new Array(8).fill(0);
+  votes[3] = 10; // overwhelming nudge toward play
+  const r = decide(brain, input, 0, rng, votes);
+  assert.equal(r.action, 'play');
+  // lastOut holds the brain's own computation — learning never sees the nudge.
+  const clean = decide(brain, input, 0, rng);
+  for (let j = 0; j < 8; j++) {
+    assert.ok(Math.abs(brain.lastOut[j] - clean.outputs[j]) < 1e-12, `output ${j} unpolluted`);
+  }
+});
+
+test('sleep consolidation replays salient episodes into the brain', () => {
+  const rng = createRng(5);
+  const pheno = testPheno(5);
+  const brain = createBrain(pheno, rng);
+  const mem = createMemory(pheno);
+  const input = senseVector(MID_SENSES);
+  writeEpisode(mem, { input, action: 1, reward: 0.9, tick: 0, kind: 'lived', critical: false });
+  const before = brain.w2.map((row) => row.slice());
+  assert.equal(consolidate(mem, brain, pheno), 1);
+  let changed = false;
+  for (let j = 0; j < 8; j++) {
+    for (let i = 0; i < 10; i++) {
+      if (Math.abs(brain.w2[j][i] - before[j][i]) > 1e-12) changed = true;
+    }
+  }
+  assert.ok(changed, 'replay should move weights');
+});
+
+test('consolidation with no episodes changes nothing', () => {
+  const rng = createRng(6);
+  const pheno = testPheno(6);
+  const brain = createBrain(pheno, rng);
+  const mem = createMemory(pheno);
+  const before = JSON.stringify([brain.w1, brain.w2, brain.b1, brain.b2]);
+  assert.equal(consolidate(mem, brain, pheno), 0);
+  assert.equal(JSON.stringify([brain.w1, brain.w2, brain.b1, brain.b2]), before);
+});
+
+test('witnesses learn by observation at a discount', () => {
+  const world = bindWorld(createWorld(7));
+  populate(world);
+  const [actor, witness] = world.creatures;
+  tickWorld(world, 0.1); // everyone senses + decides once
+  // Stage a salient lived outcome for the actor, witness close by and awake.
+  witness.platformIndex = actor.platformIndex;
+  witness.x = actor.x + 100;
+  witness.sleeping = false;
+  actor.episodeInput = senseVector(MID_SENSES);
+  actor.episodeAction = 1; // eat
+  actor.episodeReward = 0.8;
+  const before = witness.memory.episodes.length;
+  finalizeEpisode(actor, world);
+  const observed = witness.memory.episodes.slice(before).filter((e) => e.kind === 'observed');
+  assert.ok(observed.length > 0, 'witness should record an observed episode');
+  assert.ok(observed.every((e) => e.action === 1), 'observes the acted action');
+  assert.ok(
+    observed.every((e) => Math.abs(e.reward - 0.4) < 1e-9),
+    'watching is worth half of doing'
+  );
+});
+
+test('a salient outcome becomes an episode through the live tick', () => {
+  const world = bindWorld(createWorld(21));
+  populate(world);
+  const c = world.creatures[0];
+  tickWorld(world, 0.1); // senses + first decision
+  const before = c.memory.episodes.length;
+  // Hand-feed: food adjacent, committed to eating, kept awake.
+  addFood(world, c.x + 5, c.platformIndex, 'fruit', 1);
+  tickWorld(world, 0.1);
+  c.sleeping = false;
+  c.action = 'eat';
+  c.actionTimer = 5;
+  for (let t = 0; t < 5; t++) tickWorld(world, 0.1);
+  c.sleepTicks = 0;
+  c.sleeping = false;
+  c.actionTimer = 0; // force re-decision → finalize the meal
+  tickWorld(world, 0.1);
+  assert.ok(c.memory.episodes.length > before, 'the meal should be remembered');
+  const ep = c.memory.episodes[c.memory.episodes.length - 1];
+  assert.ok(ep.reward > 0.3, `episode reward ${ep.reward.toFixed(2)} clears the write bar`);
+});
+
+test('memory capacity is set by an evolvable gene', () => {
+  assert.equal(memoryCapacity(testPheno(8, { memory: 0 })), 16);
+  assert.equal(memoryCapacity(testPheno(8, { memory: 1 })), 64);
+  assert.ok(GENES.some((g) => g.key === 'memory'), 'memory is a registered gene');
+  const rng = createRng(8);
+  const mom = randomGenome(rng);
+  const dad = randomGenome(rng);
+  const child = inherit(mom, dad, rng, 0);
+  const [a, b] = child.alleles.memory;
+  assert.ok(mom.alleles.memory.includes(a) && dad.alleles.memory.includes(b), 'memory alleles inherit');
+});
+
+// ---- v0.5: the extinction fix ----
+
+test('v0.5: mate finally has an instinct pathway', () => {
+  const inst = GENES.filter((g) => g.sense !== undefined);
+  assert.equal(inst.length, 13);
+  const g = GENES.find((g) => g.key === 'instLonelyMate');
+  assert.ok(g, 'instLonelyMate is a registered gene');
+  assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
+  assert.equal(g.action, 6, 'drives the mate action');
+  assert.equal(ACTIONS[6], 'mate');
+  assert.equal(GENES.length, 37); // v0.6: +5 morphology genes; v0.7: +1 tradition gene; v0.8: +1 illness instinct; v0.12: +1 home instinct
+});
+
+test('v0.5: a lonely brain with the mating instinct chooses to court', () => {
+  const rng = createRng(42);
+  const overrides = { curiosity: 0, sociability: 0, boldness: 0 };
+  for (const g of GENES) if (g.sense !== undefined) overrides[g.key] = 0;
+  overrides.instLonelyMate = 1;
+  const brain = createBrain(testPheno(42, overrides), rng);
+  // Isolate the instinct pathway: silence the learned layers.
+  brain.w1 = brain.w1.map((r) => r.map(() => 0));
+  brain.w2 = brain.w2.map((r) => r.map(() => 0));
+  const senses = {
+    ...MID_SENSES, loneliness: 1, hunger: 0, tiredness: 0,
+    boredom: 0, fear: 0, creatureDist: 0.1,
+  };
+  const { action } = decide(brain, senseVector(senses), 0, rng);
+  assert.equal(action, 'mate', 'loneliness + instinct → courtship');
+  const calm = decide(brain, senseVector({ ...senses, loneliness: 0 }), 0, rng);
+  assert.notEqual(calm.action, 'mate', 'no loneliness → no courtship');
+});
+
+test('v0.5: founders are always two breeding pairs', () => {
+  for (let seed = 1; seed <= 20; seed++) {
+    const world = bindWorld(createWorld(seed));
+    populate(world);
+    assert.equal(world.creatures.length, 4, `seed ${seed}: four founders`);
+    const sexes = world.creatures.map((c) => c.sex).sort();
+    assert.deepEqual(sexes, ['female', 'female', 'male', 'male'], `seed ${seed} must be breedable`);
+    const names = world.creatures.map((c) => c.name);
+    assert.ok(names.includes('Pip') && names.includes('Moss'), 'Pip and Moss still found the colony');
+  }
+});
+
+test('v0.5: every hatch comes with a nest cache', () => {
+  const world = bindWorld(createWorld(3));
+  populate(world);
+  const rng = createRng(31);
+  layEgg(world, 500, 0, randomGenome(rng), null);
+  let hatchX = null;
+  for (let t = 0; t < 400 && hatchX === null; t++) {
+    tickWorld(world, 0.1);
+    const h = world.events.find((e) => e.type === 'hatch');
+    if (h) hatchX = h.creature.x;
+  }
+  assert.ok(hatchX !== null, 'the egg should hatch');
+  // The cache is one bite that the newborn eats immediately (rooting reflex),
+  // so it may already be gone — what matters is the baby got its first meal.
+  const cached = world.foods.some(
+    (f) => f.platformIndex === 0 && Math.abs(f.x - hatchX) < 40
+  );
+  const hatchling = world.creatures.find((c) => c.alive && Math.abs(c.x - hatchX) < 60);
+  const fed = hatchling && hatchling.biochem.hunger < 0.6;
+  assert.ok(cached || fed, 'a fruit should be cached at the nest (or the newborn already ate it)');
+});
+
+test('v0.5: a lonely adult pair courts and mates end to end', () => {
+  const world = bindWorld(createWorld(9));
+  populate(world);
+  const [a, b] = world.creatures;
+  a.sex = 'male';
+  b.sex = 'female';
+  for (const c of [a, b]) {
+    c.biochem.age = c.pheno.lifespanSec * 0.5; // adult
+    c.mateCooldown = 0;
+    c.x = 700 + (c === a ? -40 : 40);
+    c.platformIndex = 0;
+    // Isolate the loop under test: silence every reflex except mate.
+    for (let j = 0; j < ACTIONS.length; j++) c.brain.instW[j].fill(0);
+    c.brain.instW[6][3] = 1.2; // loneliness → mate, strong
+  }
+  let mated = false;
+  for (let t = 0; t < 6000 && !mated; t++) {
+    tickWorld(world, 0.1);
+    // Pin the drives under test so competing needs can't interfere.
+    for (const c of [a, b]) {
+      c.biochem.social = 0.95;
+      c.biochem.hunger = 0.3;
+      c.biochem.energy = 0.8;
+      c.biochem.fear = 0;
+    }
+    if (world.events.some((e) => e.type === 'mating')) mated = true;
+  }
+  assert.ok(mated, 'the pair should mate within 600 sim-seconds');
+  assert.ok(world.eggs.length > 0, 'mating should lay an egg');
+});
+
+test('v0.5: company satisfies the social need (nearFriend wiring)', () => {
+  const world = bindWorld(createWorld(4));
+  populate(world);
+  const [a, b] = world.creatures;
+  a.biochem.social = 1;
+  a.x = 700; b.x = 720; // side by side
+  a.platformIndex = 0; b.platformIndex = 0;
+  a.action = 'approach'; a.actionTimer = 5; // will set nearFriend this tick
+  const before = a.biochem.social;
+  for (let t = 0; t < 50; t++) tickWorld(world, 0.1);
+  assert.ok(
+    a.biochem.social < before,
+    `social should drain near a friend (${before.toFixed(2)} → ${a.biochem.social.toFixed(2)})`
+  );
+});
+
+test('v0.6: founders are herbivores; diet maps to fruit efficiency', () => {
+  for (let seed = 1; seed <= 10; seed++) {
+    const p = phenotype(randomGenome(createRng(seed)));
+    assert.equal(p.diet, 'herbivore', `founder should be herbivore, got ${p.diet}`);
+    assert.equal(p.fruitEfficiency, 1.0);
+  }
+  // Choice-gene expression is deterministic (maternal allele).
+  const g = randomGenome(createRng(7));
+  g.alleles.diet = [2, 2]; // carnivore/carnivore
+  const pc = phenotype(g);
+  assert.equal(pc.diet, 'carnivore');
+  assert.equal(pc.fruitEfficiency, 0.5);
+  g.alleles.diet = [1, 1]; // omnivore
+  assert.equal(phenotype(g).fruitEfficiency, 0.8);
+});
+
+test('v0.6: bite size follows the mouthSize gene', () => {
+  const g = randomGenome(createRng(3));
+  g.alleles.mouthSize = [0, 0];
+  assert.ok(Math.abs(phenotype(g).biteSize - 0.2) < 1e-9);
+  g.alleles.mouthSize = [1, 1];
+  assert.ok(Math.abs(phenotype(g).biteSize - 0.5) < 1e-9);
+});
+
+test('v0.6: sight range follows the eyeSize gene', () => {
+  const g = randomGenome(createRng(3));
+  g.alleles.eyeSize = [0, 0];
+  assert.ok(Math.abs(phenotype(g).sightRange - 294) < 1e-9);
+  g.alleles.eyeSize = [1, 1];
+  assert.ok(Math.abs(phenotype(g).sightRange - 546) < 1e-9);
+});
+
+test('v0.6: legs trade speed for energy', () => {
+  const g = randomGenome(createRng(3));
+  g.alleles.legLength = [0, 0];
+  const slow = phenotype(g);
+  g.alleles.legLength = [1, 1];
+  const fast = phenotype(g);
+  assert.ok(fast.legSpeedMult > slow.legSpeedMult, 'long legs are faster');
+  assert.ok(fast.legDrainMult > slow.legDrainMult, 'long legs burn more');
+  assert.ok(Math.abs(slow.legSpeedMult - 0.7) < 1e-9);
+  assert.ok(Math.abs(fast.legSpeedMult - 1.3) < 1e-9);
+});
+
+test('v0.6: fur insulates but weighs down', () => {
+  const g = randomGenome(createRng(3));
+  g.alleles.fur = [1, 1];
+  const p = phenotype(g);
+  assert.ok(Math.abs(p.furInsulation - 0.3) < 1e-9);
+  assert.ok(Math.abs(p.furWeight - 0.15) < 1e-9);
+  // Insulation actually slows the energy drain.
+  const b1 = createBiochem(); const b2 = createBiochem();
+  const bare = { ...p, furInsulation: 0, legDrainMult: 1 };
+  tickBiochem(b1, bare, 10);
+  tickBiochem(b2, { ...p, legDrainMult: 1 }, 10);
+  assert.ok(b2.energy > b1.energy, 'furry creature keeps more energy');
+});
+
+test('v0.6: spikes intimidate neighbors and armor against illness', () => {
+  const g = randomGenome(createRng(3));
+  g.alleles.spikes = [1, 1];
+  const p = phenotype(g);
+  assert.ok(Math.abs(p.spikeFear - 0.25) < 1e-9);
+  assert.ok(Math.abs(p.spikeArmor - 0.3) < 1e-9);
+});
+
+test('v0.6: a spiky neighbor raises fear through the live tick', () => {
+  const world = createWorld(7);
+  bindWorld(world);
+  populate(world);
+  const [a, b] = world.creatures;
+  // Make b maximally spiky and park it next to a.
+  b.genome.alleles.spikes = [1, 1];
+  b.pheno = phenotype(b.genome);
+  a.x = 700; b.x = 710;
+  a.platformIndex = 0; b.platformIndex = 0;
+  a.biochem.fear = 0;
+  a.action = 'wander'; a.actionTimer = 5;
+  for (let t = 0; t < 30; t++) tickWorld(world, 0.1);
+  assert.ok(a.biochem.fear > 0, `fear should rise near spikes (got ${a.biochem.fear.toFixed(3)})`);
+});
+
+test('v0.6: per-creature sight range is used for sensing', () => {
+  const world = createWorld(11);
+  bindWorld(world);
+  populate(world);
+  const [a] = world.creatures;
+  a.genome.alleles.eyeSize = [1, 1]; // max eyes
+  a.pheno = phenotype(a.genome);
+  // Food at 500px: visible to max-eyes (546 range), invisible at default (420).
+  addFood(world, a.x + 500, 0, 1);
+  const s = a._senses; // from last tick; force a fresh sense pass
+  for (let t = 0; t < 5; t++) tickWorld(world, 0.1);
+  assert.ok(
+    a._senses._range > 500,
+    `max eyes should see past 500px (range ${a._senses._range.toFixed(0)})`
+  );
+  assert.ok(a._senses._food, 'food at 500px should be sensed with max eyes');
+});
+
+// ---- v0.7: the cultural ratchet ----
+
+function v07world(seed) {
+  const world = bindWorld(createWorld(seed));
+  populate(world);
+  return world;
+}
+
+function makeCarrier(world, x = 700) {
+  const c = world.creatures[0];
+  c.x = x;
+  c.platformIndex = 0;
+  c.traditions = [];
+  c.traditionAim = {};
+  c.mealLog = [];
+  return c;
+}
+
+test('v0.7: the tradition gene sets copying fidelity', () => {
+  const g = randomGenome(createRng(3));
+  g.alleles.tradition = [0, 0];
+  assert.ok(Math.abs(fidelityOf(phenotype(g)) - 0.5) < 1e-9, 'min fidelity 0.5');
+  g.alleles.tradition = [1, 1];
+  assert.ok(Math.abs(fidelityOf(phenotype(g)) - 1.0) < 1e-9, 'max fidelity 1.0');
+  // Founders start near the middle — the channel is open but not maxed.
+  let sum = 0;
+  for (let i = 0; i < 200; i++) sum += phenotype(randomGenome(createRng(1000 + i))).tradition;
+  const mean = sum / 200;
+  assert.ok(mean > 0.35 && mean < 0.65, `founder tradition mean ${mean.toFixed(3)}`);
+});
+
+test('v0.7: clustered meals found a grove tradition', () => {
+  const world = v07world(21);
+  const c = makeCarrier(world);
+  c.pheno.curiosity = 1; // maximize the invention roll
+  c.mealLog = [
+    { x: 690, t: 10 }, { x: 710, t: 60 }, { x: 700, t: 120 },
+  ];
+  let t = null;
+  for (let i = 0; i < 300 && !t; i++) t = maybeFoundGrove(c, world);
+  assert.ok(t, 'clustered success should invent a tradition');
+  assert.equal(t.kind, 'grove');
+  assert.ok(Math.abs(t.x - 700) < 60, `grove near the meals, got ${t.x}`);
+  assert.ok(t.carriers.has(c.id), 'inventor is a carrier');
+  assert.ok(c.traditions.includes(t.id), 'inventor holds the tradition');
+  assert.ok(t.name.includes(c.name), `named for the inventor: ${t.name}`);
+  assert.equal(world.culture.founded, 1);
+});
+
+test('v0.7: spread-out meals found nothing; nearby groves block duplicates', () => {
+  const world = v07world(22);
+  const c = makeCarrier(world);
+  c.pheno.curiosity = 1;
+  c.mealLog = [
+    { x: 200, t: 10 }, { x: 900, t: 60 }, { x: 1400, t: 120 },
+  ];
+  for (let i = 0; i < 100; i++) assert.equal(maybeFoundGrove(c, world), null);
+  assert.equal(world.culture.traditions.length, 0, 'no tradition from scattered meals');
+  // Now a real cluster, then a second cluster nearby: only one grove.
+  c.mealLog = [{ x: 690, t: 200 }, { x: 710, t: 250 }, { x: 700, t: 300 }];
+  let first = null;
+  for (let i = 0; i < 300 && !first; i++) first = maybeFoundGrove(c, world);
+  assert.ok(first, 'first grove founds');
+  c.mealLog = [{ x: 750, t: 400 }, { x: 760, t: 450 }, { x: 755, t: 500 }];
+  for (let i = 0; i < 100; i++) assert.equal(maybeFoundGrove(c, world), null);
+  assert.equal(world.culture.traditions.length, 1, 'no duplicate grove nearby');
+});
+
+test('v0.7: witnesses adopt traditions horizontally, near-lossless', () => {
+  const world = v07world(23);
+  const demo = makeCarrier(world, 700);
+  const witness = world.creatures[1];
+  witness.x = 750; witness.platformIndex = 0;
+  witness.traditions = [];
+  witness._senses = { platformIndex: 0 };
+  const t = foundGrove(world.culture, demo, 700, 150, 0, 0, world.rng);
+  assert.ok(t, 'grove founded');
+  // Rig a successful meal episode for the demonstrator.
+  demo.episodeInput = new Array(14).fill(0.1);
+  demo.episodeAction = ACTIONS.indexOf('eat');
+  demo.episodeReward = 0.6;
+  let adopted = false;
+  for (let i = 0; i < 60 && !adopted; i++) {
+    witness.traditions = [];
+    t.carriers.delete(witness.id);
+    finalizeEpisode(demo, world);
+    adopted = witness.traditions.includes(t.id);
+    demo.episodeInput = new Array(14).fill(0.1);
+    demo.episodeAction = ACTIONS.indexOf('eat');
+    demo.episodeReward = 0.6;
+  }
+  assert.ok(adopted, 'a witness should adopt the tradition from observed meals');
+  // The copy is faithful: the witness aims near the true grove.
+  const aim = witness.traditionAim[t.id];
+  assert.ok(Math.abs(aim - 700) < 130, `faithful copy, aim ${aim}`);
+});
+
+test('v0.7: hatchlings inherit traditions vertically', () => {
+  const world = v07world(24);
+  const [mom, dad] = world.creatures;
+  for (const c of [mom, dad]) {
+    c.sex = c === mom ? 'female' : 'male';
+    c.biochem.age = c.pheno.lifespanSec * 0.5;
+    c.mateCooldown = 0;
+    c.traditions = [];
+    c.generation = 2;
+    c.pheno.tradition = 1; // perfect fidelity
+  }
+  const t = foundGrove(world.culture, mom, 500, 150, 0, 2, world.rng);
+  mom.x = 690; dad.x = 710; mom.platformIndex = 0; dad.platformIndex = 0;
+  mom.pheno.fertility = 1; dad.pheno.fertility = 1; // maximize the mating roll
+  let mated = false;
+  for (let i = 0; i < 50 && !mated; i++) mated = world.tryMate(mom, dad);
+  assert.ok(mated, 'the pair should mate');
+  assert.ok(world.eggs.length > 0, 'eggs laid');
+  for (const egg of world.eggs) {
+    assert.ok(egg.traditionIds.includes(t.id), 'egg carries the tradition');
+    assert.equal(egg.gen, 3, 'pedigree depth increments');
+  }
+  // Hatch one and check the tradition arrived.
+  world.eggs[0].timer = 0.01;
+  tickWorld(world, 0.1);
+  const baby = world.creatures.find((c) => c.generation === 3);
+  assert.ok(baby, 'a gen-3 baby hatched');
+  assert.ok(baby.traditions.includes(t.id), 'vertical transmission at birth');
+});
+
+test('v0.7: a tradition dies with its last carrier', () => {
+  const world = v07world(25);
+  const c = makeCarrier(world);
+  const t = foundGrove(world.culture, c, 700, 150, 0, 0, world.rng);
+  assert.equal(world.culture.traditions.length, 1);
+  c.alive = false;
+  const gone = pruneExtinct(world.culture, world.creatures);
+  assert.equal(gone.length, 1);
+  assert.equal(gone[0].id, t.id);
+  assert.equal(world.culture.traditions.length, 0);
+  assert.equal(world.culture.extinct, 1);
+  assert.ok(Math.abs(ratchetIndex(world.culture) - 0) < 1e-9, 'nothing retained');
+});
+
+test('v0.7: tradition votes nudge hungry carriers toward seekFood', () => {
+  const world = v07world(26);
+  const c = makeCarrier(world);
+  const t = foundGrove(world.culture, c, 700, 150, 0, 0, world.rng);
+  const SEEK = ACTIONS.indexOf('seekFood');
+  const hungry = { hunger: 0.8 };
+  const votes = traditionVotes(c, world.culture, hungry);
+  assert.ok(votes[SEEK] > 0, 'hungry carrier gets a seekFood vote');
+  const full = traditionVotes(c, world.culture, hungry);
+  const total = full.reduce((a, b) => a + Math.abs(b), 0);
+  assert.ok(total <= 0.3001, `vote budget respected (${total.toFixed(3)})`);
+  const sated = traditionVotes(c, world.culture, { hunger: 0.1 });
+  assert.ok(sated.every((v) => v === 0), 'sated carriers get no votes');
+  assert.equal(groveTarget(c, world.culture, hungry), 700, 'grove target is the tradition site');
+  assert.equal(groveTarget(c, world.culture, { hunger: 0.1 }), null, 'no target when sated');
+  void t;
+});
+
+test('v0.7: meat efficiency follows diet; the dead leave carcasses', () => {
+  const g = randomGenome(createRng(3));
+  g.alleles.diet = [2, 2];
+  assert.equal(phenotype(g).meatEfficiency, 1.0, 'carnivores eat meat fully');
+  g.alleles.diet = [0, 0];
+  assert.equal(phenotype(g).meatEfficiency, 0.25, 'herbivores barely touch meat');
+  g.alleles.diet = [1, 1];
+  assert.equal(phenotype(g).meatEfficiency, 0.7, 'omnivores in between');
+  const world = v07world(27);
+  const before = world.foods.length;
+  world.creatures[0].alive = false;
+  tickWorld(world, 0.1);
+  const meats = world.foods.filter((f) => f.foodKind === 'meat');
+  assert.ok(world.foods.length > before || meats.length > 0, 'a carcass was dropped');
+  assert.ok(meats.length > 0, 'carcass is meat');
+  assert.ok(meats[0].rotsAt > 0, 'carcasses rot');
+});
+
+test('v0.7: the ratchet census records repertoire over time', () => {
+  const world = v07world(28);
+  const c = makeCarrier(world);
+  foundGrove(world.culture, c, 400, 150, 0, 0, world.rng);
+  foundGrove(world.culture, c, 1200, 150, 0, 1, world.rng);
+  assert.ok(Math.abs(ratchetIndex(world.culture) - 1) < 1e-9, 'nothing lost yet');
+  world.time = 300;
+  sampleCulture(world);
+  const s = world.culture.samples[0];
+  assert.equal(s.live, 2);
+  assert.equal(s.founded, 2);
+  assert.equal(s.extinct, 0);
+  assert.equal(s.carriers, 2);
+});
+
+// ---- v0.8: medicinal herbs — self-medication ----
+
+test('v0.8: populate grows herbs alongside fruit plants', () => {
+  const world = bindWorld(createWorld(99));
+  populate(world);
+  const herbs = world.plants.filter((p) => p.kind === 'herb');
+  const fruits = world.plants.filter((p) => p.kind === 'plant');
+  // v0.11 biomes: 3 herbs (two in the arid stretch), 7 fruit plants.
+  assert.equal(herbs.length, 3, 'three medicinal herbs');
+  assert.equal(fruits.length, 7, 'seven fruit plants');
+});
+
+test('v0.8: herbs bear leaves, fruit plants bear fruit', () => {
+  const world = bindWorld(createWorld(7));
+  populate(world);
+  for (const p of world.plants) {
+    p.growth = 1;
+    p.fruitTimer = 0;
+  }
+  const before = world.foods.length;
+  tickWorld(world, 0.1);
+  const fresh = world.foods.slice(before);
+  const leaves = fresh.filter((f) => f.foodKind === 'leaf');
+  const fruits = fresh.filter((f) => f.foodKind === 'fruit');
+  assert.ok(leaves.length > 0, 'herbs dropped leaves');
+  assert.ok(fruits.length > 0, 'fruit plants dropped fruit');
+});
+
+test('v0.8: eating a leaf purges illness but barely feeds', () => {
+  const world = bindWorld(createWorld(11));
+  populate(world);
+  const c = world.creatures[0];
+  c.biochem.illness = 0.8;
+  c.biochem.hunger = 0.5;
+  addFood(world, c.x, c.platformIndex, 'leaf', 1);
+  const leaf = world.foods[world.foods.length - 1];
+  c._senses = { _food: leaf };
+  c.reward = 0;
+  assert.ok(doEat(c, world), 'the creature ate the leaf');
+  assert.ok(c.biochem.illness < 0.45, `illness purged (now ${c.biochem.illness.toFixed(2)})`);
+  assert.ok(c.biochem.hunger > 0.35, 'leaves are poor food — hunger barely moved');
+  assert.ok(c.reward >= 0.6, 'medicine is rewarding when sick');
+});
+
+test('v0.8: leaves are bitter — weak reward when healthy', () => {
+  const world = bindWorld(createWorld(12));
+  populate(world);
+  const c = world.creatures[0];
+  c.biochem.illness = 0;
+  c.biochem.hunger = 0.5;
+  addFood(world, c.x, c.platformIndex, 'leaf', 1);
+  const leaf = world.foods[world.foods.length - 1];
+  c._senses = { _food: leaf };
+  c.reward = 0;
+  assert.ok(doEat(c, world), 'the creature ate the leaf');
+  assert.equal(c.biochem.illness, 0, 'nothing to cure');
+  assert.ok(c.reward < 0.3, `bitter when well — weak reward (${c.reward.toFixed(2)})`);
+});
+
+test('v0.8: illness is the 15th brain input', () => {
+  const v = senseVector({ ...MID_SENSES, illness: 0.7 });
+  assert.equal(v.length, 18, 'eighteen senses (v0.12: +3 social)');
+  assert.equal(v[13], 0.7, 'illness rides at index 13');
+  assert.equal(v[14], 0, 'homeDist defaults to 0');
+  assert.equal(v[15], 0, 'kinNear defaults to 0');
+  assert.equal(v[16], 0, 'bondNear defaults to 0');
+  assert.equal(v[17], 1, 'bias still last');
+});
+
+test('v0.8: the illness instinct points at food-seeking', () => {
+  const g = GENES.find((g) => g.key === 'instIllnessSeek');
+  assert.ok(g, 'instIllnessSeek is a registered gene');
+  assert.equal(g.sense, 13, 'driven by the illness sense');
+  assert.equal(g.action, 0, 'drives seekFood');
+  assert.equal(ACTIONS[0], 'seekFood');
+});
+
+// v0.9 embodiment: the Honest Body — injuries, bristle display + contagion,
+// pushable pebbles, and RNG-stream isolation for worldgen scatter.
+
+function v09world(seed) {
+  const world = bindWorld(createWorld(seed));
+  populate(world);
+  return world;
+}
+
+function addTestCreature(world, x, opts = {}) {
+  const c = createCreature(randomGenome(world.rng), x, 0, world.rng);
+  c.biochem.age = c.pheno.lifespanSec * 0.5; // adult
+  c.pheno.spikes = 0; // no accidental clashes unless the test wants them
+  Object.assign(c, opts);
+  world.creatures.push(c);
+  return c;
+}
+
+test('v0.9: fast flight into a spiky creature causes injury', () => {
+  const world = v09world(31);
+  world.creatures.length = 0;
+  const a = addTestCreature(world, 500);
+  const b = addTestCreature(world, 512);
+  b.pheno.spikes = 0.9;
+  a.action = 'flee'; a.actionTimer = 100; // fast movement, no re-decide
+  a._px = 488; // displaced 12px last tick = moving toward b
+  tickWorld(world, 0.1);
+  assert.ok(a.biochem.injury > 0, `crash with spikes wounds (${a.biochem.injury})`);
+  assert.ok(a.flinchT > 0, 'the flinch flash is set');
+  assert.ok(a.biochem.fear > 0.4, 'the crash startles the victim');
+  const inj = a.biochem.injury;
+  tickWorld(world, 0.1);
+  assert.ok(a.biochem.injury <= inj, 'clash cooldown prevents machine-gun wounding');
+});
+
+test('v0.9: slow movement never crashes, even into spikes', () => {
+  for (const action of ['play', 'seekFood', 'wander', 'mate', 'approach']) {
+    const world = v09world(31);
+    world.creatures.length = 0;
+    const a = addTestCreature(world, 500);
+    const b = addTestCreature(world, 512);
+    b.pheno.spikes = 0.9;
+    a.action = action; a.actionTimer = 100;
+    a._px = 488; // moving toward b — but not at flight speed
+    tickWorld(world, 0.1);
+    assert.strictEqual(a.biochem.injury, 0, `${action} must not crash`);
+  }
+});
+
+test('v0.9: fast non-panic movement never crashes (play, foraging)', () => {
+  for (const action of ['play', 'seekFood', 'wander']) {
+    const world = v09world(31);
+    world.creatures.length = 0;
+    const a = addTestCreature(world, 500);
+    const b = addTestCreature(world, 512);
+    b.pheno.spikes = 0.9;
+    a.action = action; a.actionTimer = 100;
+    a._px = 488; // moving toward b at speed — but not panicking
+    tickWorld(world, 0.1);
+    assert.strictEqual(a.biochem.injury, 0, `${action} at speed must not crash`);
+  }
+});
+
+test('v0.9: careful social contact never wounds, even against spikes', () => {
+  for (const action of ['mate', 'approach', 'play']) {
+    const world = v09world(31);
+    world.creatures.length = 0;
+    const a = addTestCreature(world, 500);
+    const b = addTestCreature(world, 512);
+    b.pheno.spikes = 0.9;
+    a.action = action; a.actionTimer = 100; // careful, no re-decide
+    tickWorld(world, 0.1);
+    assert.strictEqual(a.biochem.injury, 0, `${action} contact with spikes must not wound`);
+  }
+});
+
+test('v0.9: injuries heal with rest, faster asleep', () => {
+  const pheno = testPheno(1);
+  const asleep = createBiochem(); asleep.injury = 0.5;
+  const awake = createBiochem(); awake.injury = 0.5;
+  tickBiochem(asleep, pheno, 10, { sleeping: true });
+  tickBiochem(awake, pheno, 10, { sleeping: false });
+  assert.ok(awake.injury < 0.5, 'wounds heal while awake');
+  assert.ok(asleep.injury < awake.injury, 'sleep heals faster');
+});
+
+test('v0.9: injury slows movement', () => {
+  const world = v09world(32);
+  world.creatures.length = 0;
+  world.pebbles.length = 0; // clean track: measure injury, not pebbles
+  world.plants.length = 0; // v0.11: no biome flora dropping distraction fruit
+  world.foods.length = 0; // v0.11: starter fruit positions shifted with the RNG stream
+  addFood(world, 700, 0, 'fruit', 1); // inside the 420px sense range
+  const mk = (injury) => {
+    const c = addTestCreature(world, 400);
+    c.biochem.injury = injury;
+    c.action = 'seekFood'; c.actionTimer = 100; c.facing = 1;
+    return c;
+  };
+  const healthy = mk(0);
+  const hurt = mk(0.8);
+  for (let i = 0; i < 50; i++) tickWorld(world, 0.1);
+  assert.ok(healthy.x > hurt.x + 10,
+    `healthy outpaces injured (${healthy.x.toFixed(0)} vs ${hurt.x.toFixed(0)})`);
+});
+
+test('v0.9: fear bristles the body; bristling frightens close neighbors', () => {
+  const world = v09world(33);
+  world.creatures.length = 0;
+  const a = addTestCreature(world, 500, { action: 'eat', actionTimer: 100 });
+  const b = addTestCreature(world, 560, { action: 'eat', actionTimer: 100 });
+  a.biochem.fear = 0.9;
+  tickWorld(world, 0.1);
+  assert.ok(a.bristling, 'the afraid creature bristles');
+  const f0 = b.biochem.fear;
+  for (let i = 0; i < 20; i++) {
+    a.biochem.fear = 0.9; // keep the display up
+    tickWorld(world, 0.1);
+  }
+  assert.ok(b.biochem.fear > f0 + 0.02,
+    `bristling is contagious up close (${f0.toFixed(3)} -> ${b.biochem.fear.toFixed(3)})`);
+  for (let i = 0; i < 200; i++) {
+    a.biochem.fear = 0.9; // keep the display up for 20 more seconds
+    tickWorld(world, 0.1);
+  }
+  assert.ok(b.biochem.fear <= 0.46,
+    `alarm alerts but never panics: contagion caps at 0.45 (${b.biochem.fear.toFixed(3)})`);
+  assert.ok(!b.bristling, 'contagion alone never triggers the bristle display');
+});
+
+test('v0.9: creatures shove pebbles; pebbles persist', () => {
+  const world = v09world(34);
+  world.creatures.length = 0;
+  world.pebbles.length = 0;
+  addPebble(world, 500, 0);
+  const pb = world.pebbles[0];
+  const c = addTestCreature(world, 460, { action: 'seekFood', actionTimer: 100, facing: 1 });
+  addFood(world, 800, 0, 'fruit', 1); // inside sense range: steady +x walk
+  const x0 = pb.x;
+  for (let i = 0; i < 40; i++) tickWorld(world, 0.1);
+  assert.ok(pb.x > x0 + 1, `pebble shoved +x (${x0.toFixed(1)} -> ${pb.x.toFixed(1)})`);
+  assert.equal(world.pebbles.length, 1, 'pebbles persist');
+  assert.ok(c.x < 900, 'the world pushes back — the pusher is resisted');
+});
+
+test('v0.9: populate scatters pebbles on their own RNG stream', () => {
+  const w1 = v09world(35);
+  const w2 = v09world(35);
+  assert.equal(w1.pebbles.length, 8, 'eight pebbles scattered');
+  assert.equal(w1.pebbles[0].x, w2.pebbles[0].x, 'pebble scatter is deterministic');
+  // The main stream is untouched: founder genomes identical across runs.
+  const g1 = JSON.stringify(w1.creatures[0].genome.alleles);
+  const g2 = JSON.stringify(w2.creatures[0].genome.alleles);
+  assert.equal(g1, g2, 'founder genomes unaffected by pebble scatter');
+});
+
+test('v0.9: severe injury drains health', () => {
+  const pheno = testPheno(2);
+  const b = createBiochem();
+  b.injury = 0.9; b.hunger = 0.3; b.energy = 0.8; b.fear = 0;
+  const h0 = b.health;
+  tickBiochem(b, pheno, 10, {});
+  assert.ok(b.health < h0, 'severe wounds bleed health until rested');
+});
+
+test('v0.10: lineage registry records every birth with heritable traits', () => {
+  const world = v09world(41);
+  assert.ok(world.lineage.size >= 4, `founders recorded (${world.lineage.size})`);
+  const c = world.creatures[0];
+  const rec = world.lineage.get(c.id);
+  assert.ok(rec, 'founder has a lineage record');
+  assert.strictEqual(rec.parents, null, 'founders have no parents');
+  assert.ok(typeof rec.traits.size === 'number', 'trait snapshot stored');
+  assert.strictEqual(rec.traits.diet, c.pheno.diet, 'diet snapshot matches phenotype');
+  assert.strictEqual(rec.generation, 0, 'founder generation is 0');
+});
+
+test('v0.10: lineage chains resolve through dead ancestors', () => {
+  const world = bindWorld(createWorld(43));
+  // Two fake generations: grandparent -> parent -> child, then kill the elders.
+  const mk = (name, parents, gen, size) => {
+    const c = createCreature(randomGenome(world.rng), 500, 0, world.rng, { parents, generation: gen });
+    c.name = name; c.pheno.size = size;
+    world.creatures.push(c);
+    recordLineage(world, c);
+    return c;
+  };
+  const gp = mk('Gran', null, 0, 0.3);
+  const par = mk('Par', [gp.id, 999999], 1, 0.5); // other parent unknown
+  const kid = mk('Kid', [par.id, 888888], 2, 0.7);
+  world.creatures.length = 0; // everyone dies — registry must still resolve
+  const kidRec = world.lineage.get(kid.id);
+  const parRec = world.lineage.get(kidRec.parents[0]);
+  assert.strictEqual(parRec.name, 'Par', 'parent resolves after death');
+  const gpRec = world.lineage.get(parRec.parents[0]);
+  assert.strictEqual(gpRec.name, 'Gran', 'grandparent resolves after death');
+  assert.ok(kidRec.traits.size > parRec.traits.size, 'trait snapshots capture directional change');
+  assert.ok(LINEAGE_TRAITS.includes('spikes'), 'spikes is a tracked lineage trait');
+});
+
+test('v0.11: zoneAt slices the world into three biomes', () => {
+  assert.strictEqual(zoneAt(0).key, 'verdant');
+  assert.strictEqual(zoneAt(532).key, 'verdant');
+  assert.strictEqual(zoneAt(533).key, 'arid');
+  assert.strictEqual(zoneAt(1065).key, 'arid');
+  assert.strictEqual(zoneAt(1066).key, 'highland');
+  assert.strictEqual(zoneAt(1600).key, 'highland');
+  assert.strictEqual(ZONES.length, 3, 'three zones');
+});
+
+test('v0.11: plants are tagged with their biome zone', () => {
+  const world = v09world(51);
+  for (const p of world.plants) {
+    assert.ok(['verdant', 'arid', 'highland'].includes(p.zone), `plant zone ${p.zone}`);
+  }
+  const zones = new Set(world.plants.map((p) => p.zone));
+  assert.ok(zones.has('verdant') && zones.has('arid') && zones.has('highland'), 'flora spans all three biomes');
+});
+
+test('v0.11: arid fruiting is slower than verdant (scarcity is zonal)', () => {
+  const world = bindWorld(createWorld(52));
+  // Two mature plants, one per zone, forced to fruit now.
+  world.plants.length = 0;
+  const mk = (x) => {
+    const p = { kind: 'plant', id: 1, x, platformIndex: 0, y: 800, growth: 1, fruitTimer: 0, sway: 0, zone: zoneAt(x).key };
+    world.plants.push(p);
+    return p;
+  };
+  const v = mk(100), a = mk(800);
+  // Sample the interval the tick assigns: run one tick and read fruitTimer.
+  tickWorld(world, 0.1);
+  // Both fruited (timer reset to a fresh interval); arid interval must be larger.
+  assert.ok(a.fruitTimer > v.fruitTimer * 1.5, `arid (${a.fruitTimer.toFixed(1)}s) much slower than verdant (${v.fruitTimer.toFixed(1)}s)`);
+});
+
+test('v0.11: crowding slows fruiting (density-dependent scarcity)', () => {
+  const mkWorld = (n) => {
+    const w = bindWorld(createWorld(53));
+    w.plants.length = 0;
+    w.plants.push({ kind: 'plant', id: 1, x: 100, platformIndex: 0, y: 800, growth: 1, fruitTimer: 0, sway: 0, zone: 'verdant' });
+    for (let i = 0; i < n; i++) addTestCreature(w, 100 + i);
+    return w;
+  };
+  const empty = mkWorld(0);
+  const crowded = mkWorld(40);
+  tickWorld(empty, 0.1);
+  tickWorld(crowded, 0.1);
+  assert.ok(crowded.plants[0].fruitTimer > empty.plants[0].fruitTimer,
+    `crowded (${crowded.plants[0].fruitTimer.toFixed(1)}s) slower than empty (${empty.plants[0].fruitTimer.toFixed(1)}s)`);
+});
+
+test('v0.11: lineage records the birth biome', () => {
+  const world = v09world(54);
+  const c = world.creatures[0];
+  const rec = world.lineage.get(c.id);
+  assert.ok(['verdant', 'arid', 'highland'].includes(rec.zone), `birth zone recorded: ${rec.zone}`);
+});
+
+test('v0.11: no eat-livelock — the eat action approaches distant sensed food', () => {
+  const world = v09world(61);
+  world.creatures.length = 0;
+  world.plants.length = 0;
+  world.foods.length = 0;
+  world.pebbles.length = 0;
+  addFood(world, 700, 0, 'fruit', 1);
+  const c = addTestCreature(world, 400);
+  c.biochem.hunger = 0.9;
+  c.action = 'eat'; c.actionTimer = 100; // brain committed to eat, food out of bite range
+  const x0 = c.x;
+  for (let i = 0; i < 100; i++) tickWorld(world, 0.1);
+  // The creature must have moved toward the food (or eaten it), not starved in place.
+  assert.ok(c.x > x0 + 20 || world.foods.length === 0,
+    `eat approaches food (moved ${x0.toFixed(0)} -> ${c.x.toFixed(0)})`);
+});
+
+// v0.12 tribes & bonds: home ranges, pairwise bonds, pedigree kinship,
+// detected (never assigned) tribes.
+
+test('v0.12: creatures imprint on their birthplace as home', () => {
+  const world = v09world(71);
+  world.creatures.length = 0;
+  const c = addTestCreature(world, 420);
+  assert.equal(c.homeX, 420, 'homeX imprinted at creation x');
+  assert.equal(c.homePlatform, 0, 'home platform recorded');
+});
+
+test('v0.12: homeDist sense is 0 at home, 1 far away', () => {
+  const world = v09world(72);
+  world.creatures.length = 0;
+  const c = addTestCreature(world, 400);
+  c.x = 400;
+  let s = { ...MID_SENSES };
+  // gatherSenses is internal; emulate the homeDist computation via a tick.
+  c.biochem.energy = 1; c.biochem.hunger = 0; c.sleeping = false;
+  const { tickWorld: tw } = { tickWorld };
+  tw(world, 0.1);
+  assert.ok(c._senses.homeDist < 0.05, `at home: homeDist ~0 (got ${c._senses.homeDist})`);
+  c.x = 1200; // 800px from home
+  tw(world, 0.1);
+  assert.ok(c._senses.homeDist > 0.95, `800px away: homeDist ~1 (got ${c._senses.homeDist})`);
+});
+
+test('v0.12: seekHome walks the creature back toward home', () => {
+  const world = v09world(73);
+  world.creatures.length = 0;
+  world.plants.length = 0; world.foods.length = 0;
+  const c = addTestCreature(world, 400);
+  c.x = 900; // 500px from home
+  c.biochem.hunger = 0; c.biochem.energy = 1;
+  c.action = 'seekHome'; c.actionTimer = 100; // committed, no re-decide
+  const x0 = c.x;
+  for (let i = 0; i < 50; i++) tickWorld(world, 0.1);
+  assert.ok(c.x < x0 - 50, `seekHome moves homeward (${x0.toFixed(0)} -> ${c.x.toFixed(0)}, home ${c.homeX})`);
+});
+
+test('v0.12: the home instinct points homeDist at seekHome', () => {
+  const g = GENES.find((g) => g.key === 'instHomeSeek');
+  assert.ok(g, 'instHomeSeek is a registered gene');
+  assert.equal(g.sense, 14, 'driven by the homeDist sense');
+  assert.equal(g.action, 8, 'drives seekHome');
+  assert.equal(ACTIONS[8], 'seekHome');
+  assert.ok(g.founder >= 0.4 && g.founder <= 0.6, `moderate founder default (got ${g.founder})`);
+});
+
+test('v0.12: starving overrides homesickness', () => {
+  const world = v09world(74);
+  world.creatures.length = 0;
+  world.plants.length = 0; world.foods.length = 0;
+  // Food far from home (home 400, creature 900, food 1300): a starving
+  // creature must walk AWAY from home toward the food.
+  addFood(world, 1300, 0, 'fruit', 1);
+  const c = addTestCreature(world, 400);
+  c.x = 900; // away from home: homeDist = 0.625, the homeward drive is real
+  c.biochem.hunger = 0.9; // starving
+  c.biochem.energy = 1;
+  // A brain whose only instinct is the homeward one deterministically
+  // chooses seekHome — the override must still convert it to seekFood.
+  for (const g of GENES) if (g.sense !== undefined) c.pheno[g.key] = 0;
+  c.pheno.instHomeSeek = 1;
+  c.pheno.curiosity = 0; c.pheno.boldness = 0; // minimize exploration noise
+  c.brain = createBrain(c.pheno, world.rng);
+  // Zero the random hidden weights: the decision must come from instincts
+  // alone, deterministically.
+  for (const row of c.brain.w1) row.fill(0);
+  for (const row of c.brain.w2) row.fill(0);
+  c.brain.b1.fill(0);
+  c.action = 'wander'; c.actionTimer = 0; // about to re-decide
+  const x0 = c.x;
+  for (let i = 0; i < 100; i++) tickWorld(world, 0.1);
+  assert.ok(c.x > x0 + 30, `starving creature walks to food, not home (${x0.toFixed(0)} -> ${c.x.toFixed(0)}, home ${c.homeX})`);
+});
+
+test('v0.12: bonds form from proximity and clamp to [-1, 1]', () => {
+  const world = v09world(75);
+  assert.equal(getBond(world.bonds, { id: 1 }, { id: 2 }), 0, 'strangers start at 0');
+  nudgeBond(world, { id: 1 }, { id: 2 }, 0.5);
+  assert.equal(getBond(world.bonds, { id: 2 }, { id: 1 }), 0.5, 'bond is symmetric');
+  nudgeBond(world, { id: 1 }, { id: 2 }, 10);
+  assert.equal(getBond(world.bonds, { id: 1 }, { id: 2 }), 1, 'clamped at +1');
+  nudgeBond(world, { id: 1 }, { id: 2 }, -10);
+  assert.equal(getBond(world.bonds, { id: 1 }, { id: 2 }), -1, 'clamped at -1');
+});
+
+test('v0.12: peaceful proximity builds familiarity over time', () => {
+  const world = v09world(76);
+  world.creatures.length = 0;
+  world.plants.length = 0; world.foods.length = 0;
+  const a = addTestCreature(world, 500);
+  const b = addTestCreature(world, 560);
+  for (const c of [a, b]) { c.biochem.hunger = 0; c.biochem.energy = 1; c.action = 'sleep'; c.actionTimer = 100; c.sleeping = true; }
+  // Sleeping keeps them still; tickBonds runs on positions regardless.
+  for (let i = 0; i < 100; i++) tickWorld(world, 0.1);
+  const v = getBond(world.bonds, a, b);
+  assert.ok(v > 0.02, `proximity breeds familiarity (bond ${v.toFixed(3)})`);
+});
+
+test('v0.12: mating forms a pair bond; bonds decay without contact', () => {
+  const world = v09world(77);
+  world.creatures.length = 0;
+  const a = addTestCreature(world, 500, { sex: 'male' });
+  const b = addTestCreature(world, 520, { sex: 'female' });
+  for (const c of [a, b]) { c.biochem.hunger = 0; c.biochem.energy = 1; c.mateCooldown = 0; c.pheno.fertility = 1; }
+  let ok = false;
+  for (let i = 0; i < 30 && !ok; i++) ok = world.tryMate(a, b); // rng-gated; retry
+  assert.ok(ok, 'mating succeeds');
+  assert.ok(getBond(world.bonds, a, b) >= 0.39, `mating bonds the pair (got ${getBond(world.bonds, a, b).toFixed(2)})`);
+  // Move them far apart, pin them every tick (sleepers wake when rested),
+  // and wait: the bond must fade without contact.
+  const v0 = getBond(world.bonds, a, b);
+  for (let i = 0; i < 900; i++) {
+    a.x = 500; b.x = 1400;
+    tickWorld(world, 0.1);
+  }
+  assert.ok(getBond(world.bonds, a, b) < v0 * 0.6, `bonds decay without contact (${v0.toFixed(2)} -> ${getBond(world.bonds, a, b).toFixed(2)})`);
+});
+
+test('v0.12: pedigree kinship — siblings 1, cousins 0.5, strangers 0', () => {
+  const world = v09world(78);
+  world.creatures.length = 0;
+  // Build a fake pedigree directly in the lineage registry.
+  const mk = (id, parents) => {
+    const c = addTestCreature(world, 500 + id);
+    // Reassign ids for a controlled pedigree (test-only).
+    world.creatures.pop();
+    c.id = id;
+    world.creatures.push(c);
+    recordLineage(world, c);
+    world.lineage.get(id).parents = parents;
+    return c;
+  };
+  const gp1 = mk(101, null), gp2 = mk(102, null), gp3 = mk(103, null), gp4 = mk(104, null);
+  const p1 = mk(201, [101, 102]); // parents of the sibling pair
+  const p2 = mk(202, [101, 102]); // p2 is p1's sibling (share grandparents)
+  const s1 = mk(301, [201, 103]);
+  const s2 = mk(302, [201, 103]); // s1/s2 siblings
+  const co = mk(303, [202, 104]); // cousin of s1/s2 (share gp 101/102)
+  const stranger = mk(304, null);
+  assert.equal(pedigreeKin(world, s1, s2), 1, 'siblings: 1');
+  assert.equal(pedigreeKin(world, p1, s1), 1, 'parent/child: 1');
+  assert.equal(pedigreeKin(world, s1, co), 0.5, 'cousins: 0.5');
+  assert.equal(pedigreeKin(world, s1, stranger), 0, 'strangers: 0');
+  assert.equal(pedigreeKin(world, s1, s1), 0, 'self: 0');
+});
+
+test('v0.12: tribes are detected from home clustering, never assigned', () => {
+  const world = v09world(79);
+  world.creatures.length = 0;
+  const a = addTestCreature(world, 200); a.homeX = 200;
+  const b = addTestCreature(world, 250); b.homeX = 250;
+  const c = addTestCreature(world, 1200); c.homeX = 1200;
+  const tribes = detectTribes(world);
+  assert.equal(tribes.length, 2, `two home clusters -> two bands (got ${tribes.length})`);
+  const sizes = tribes.map((t) => t.members.length).sort();
+  assert.deepEqual(sizes, [1, 2], `band sizes [1,2] (got ${sizes})`);
+  for (const t of tribes) {
+    assert.ok(t.name.includes('band'), `band has a name (got "${t.name}")`);
+    assert.ok(t.color, 'band has a color');
+    assert.ok(t.homeX !== undefined, 'band has a home center');
+  }
+});
+
+test('v0.12: socialStats reports bands, fidelity, and bond health', () => {
+  const world = v09world(80);
+  populate(world); // full founder population
+  world.tribes = detectTribes(world);
+  const st = socialStats(world);
+  assert.ok(st.tribes >= 1, `at least one band detected (got ${st.tribes})`);
+  assert.ok(st.homeFidelity >= 0 && st.homeFidelity <= 1, `fidelity in [0,1] (got ${st.homeFidelity})`);
+  assert.ok(st.meanTribeSize >= 1, `mean band size >= 1 (got ${st.meanTribeSize})`);
+});
+
+test('v0.12: kinNear/bondNear senses read the nearest creature', () => {
+  const world = v09world(81);
+  world.creatures.length = 0;
+  world.plants.length = 0; world.foods.length = 0;
+  const a = addTestCreature(world, 500);
+  const b = addTestCreature(world, 560);
+  recordLineage(world, a); recordLineage(world, b);
+  world.lineage.get(a.id).parents = [9001, 9002];
+  world.lineage.get(b.id).parents = [9001, 9002]; // siblings
+  nudgeBond(world, a, b, 0.6);
+  for (const c of [a, b]) { c.biochem.hunger = 0; c.biochem.energy = 1; }
+  tickWorld(world, 0.1);
+  assert.equal(a._senses.kinNear, 1, `nearest is kin (got ${a._senses.kinNear})`);
+  assert.ok(Math.abs(a._senses.bondNear - 0.6) < 0.05, `bond sensed (got ${a._senses.bondNear.toFixed(2)})`);
+  // A lone creature senses no kin and no bond.
+  b.x = 1500; b.homeX = 1500;
+  for (let i = 0; i < 5; i++) tickWorld(world, 0.1);
+  assert.equal(a._senses.kinNear, 0, 'no creature in range: kin 0');
+  assert.equal(a._senses.bondNear, 0, 'no creature in range: bond 0');
+});

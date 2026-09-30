@@ -11,6 +11,8 @@ export function createBiochem() {
     fun: 0.5, // need for play
     fear: 0, // 0 = calm, 1 = terrified
     health: 1.0,
+    illness: 0, // 0 = healthy, 1 = gravely ill
+    injury: 0, // v0.9: 0 = unhurt, 1 = badly wounded — the body records history
     age: 0, // seconds since hatching
   };
 }
@@ -33,7 +35,9 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   // Rates tuned for game feel: a full belly lasts a few minutes,
   // a full night's rest takes ~2 minutes of game time.
   const hungerRate = 0.004 + pheno.hungerRate * 0.014; // per second
-  const drainRate = 0.003 + pheno.energyDrain * 0.009;
+  // v0.6 morphology: fur insulates (slower drain), long legs burn more.
+  const drainRate = (0.003 + pheno.energyDrain * 0.009)
+    * (1 - (pheno.furInsulation || 0)) * (pheno.legDrainMult || 1);
 
   b.hunger = clamp01(b.hunger + hungerRate * dt * (ctx.sleeping ? 0.6 : 1));
   if (ctx.sleeping) {
@@ -56,8 +60,34 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   if (b.hunger > 0.9) dh -= 0.03;
   if (b.energy <= 0.01) dh -= 0.02;
   if (b.fear > 0.7) dh -= 0.01;
+  if (b.injury > 0.6) dh -= (b.injury - 0.6) * 0.05; // v0.9: severe wounds bleed health
   if (dh === 0 && b.hunger < 0.6 && b.energy > 0.3) dh += 0.008;
   b.health = clamp01(b.health + dh * dt);
+
+  // Illness: a tug-of-war. The disease worsens on its own, fastest in the
+  // frail; immunity fights it off — faster when rested and fed. A mild case
+  // (0.35) in a low-immunity creature can therefore turn contagious (> 0.5)
+  // and even lethal, while hardy creatures shake it off.
+  // Serious illness damages health and saps energy.
+  if (b.illness > 0) {
+    const worsen = 0.008 * (1 - pheno.immunity);
+    const recovery =
+      (0.002 + pheno.immunity * 0.012) *
+      (b.energy > 0.5 ? 1.4 : 1) *
+      (b.hunger < 0.5 ? 1.3 : 1);
+    b.illness = clamp01(b.illness + (worsen - recovery) * dt);
+  }
+  if (b.illness > 0.25) {
+    b.health = clamp01(b.health - (b.illness - 0.25) * 0.06 * dt);
+    b.energy = clamp01(b.energy - b.illness * 0.004 * dt);
+  }
+
+  // v0.9 injuries: the body records its history. Wounds heal with rest —
+  // fast asleep, slow awake. Severe injury (> 0.6) drains health until
+  // tended by sleep.
+  if (b.injury > 0) {
+    b.injury = clamp01(b.injury - (ctx.sleeping ? 0.03 : 0.006) * dt);
+  }
 
   b.age += dt;
 }
@@ -69,6 +99,7 @@ export function isDead(b, pheno) {
 // Dominant readable state for UI / behavior priority.
 export function mood(b) {
   if (b.fear > 0.5) return 'afraid';
+  if (b.illness > 0.5) return 'sick';
   if (b.health < 0.4) return 'sick';
   if (b.hunger > 0.75) return 'hungry';
   if (b.energy < 0.25) return 'tired';

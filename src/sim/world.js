@@ -3,8 +3,10 @@
 
 import { createRng } from './rng.js';
 import { randomGenome, inherit } from './genome.js';
-import { createCreature, updateCreature } from './creature.js';
+import { createCreature, updateCreature, creatureRadius } from './creature.js';
 import { ageStage } from './biochem.js';
+import { createCulture, sampleCulture, pruneExtinct, adoptTradition, fidelityOf } from './culture.js';
+import { createBonds, tickBonds, detectTribes, nudgeBond } from './social.js';
 
 export const DAY_LENGTH = 300; // seconds per full day/night cycle
 
@@ -29,7 +31,19 @@ export function createWorld(seed = 1) {
     toys: [],
     eggs: [],
     creatures: [],
+    pebbles: [], // v0.9: pushable stones — the world as material
     events: [], // { type, creature?, t } — consumed by UI
+    culture: createCulture(), // v0.7: the tradition registry — inheritance that isn't DNA
+    lineage: new Map(), // v0.10: every creature ever born — { id: { id, name, parents, generation, bornAt, traits } }. Dead ancestors stay resolvable for the lineage view.
+    bonds: createBonds(), // v0.12: pairwise social bonds — memory, not genetics
+    tribes: [], // v0.12: detected bands (recomputed periodically, never assigned)
+    exam: null, // v0.8: exam mode — { patches:[{x1,x2}], hot, hotInterval, coldInterval } | null
+    onMeal: null, // v0.8: opt-in telemetry hooks for the exam harness (unset in play)
+    onSpawn: null,
+    // v0.9: dedicated RNG stream for material scatter (pebbles). Worldgen
+    // order is load-bearing for determinism — cosmetic additions must never
+    // shift the main stream's sequence (founder genomes, rolls, etc.).
+    decorRng: createRng(seed * 31 + 7),
   };
   return world;
 }
@@ -50,20 +64,52 @@ function oid() {
   return nextObjId++;
 }
 
+// v0.11 biomes: the world is three ecological zones by x-slice. Different
+// fruiting rates create different selection pressures — local adaptation.
+export const ZONES = [
+  { key: 'verdant', name: 'Verdant Valley', x1: 0, x2: 533, fruitMul: 0.6, tint: 'rgba(60,140,70,0.10)' },
+  { key: 'arid', name: 'Arid Stretch', x1: 533, x2: 1066, fruitMul: 2.2, tint: 'rgba(190,150,80,0.12)' },
+  { key: 'highland', name: 'Highland', x1: 1066, x2: 1601, fruitMul: 1.2, tint: 'rgba(120,140,170,0.10)' },
+];
+
+export function zoneAt(x) {
+  for (const z of ZONES) if (x >= z.x1 && x < z.x2) return z;
+  return ZONES[2];
+}
+
 export function addPlant(world, x, platformIndex) {
   const plat = world.platforms[platformIndex];
   world.plants.push({
     kind: 'plant', id: oid(), x, platformIndex, y: plat.y,
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     sway: world.rng.range(0, Math.PI * 2),
+    zone: zoneAt(x).key, // v0.11: biomes
   });
 }
 
-export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1) {
+// v0.8: medicinal herbs. Same growth mechanics as fruit plants, but they bear
+// bitter leaves (foodKind 'leaf') that purge illness instead of feeding hunger.
+export function addHerb(world, x, platformIndex) {
+  const plat = world.platforms[platformIndex];
+  world.plants.push({
+    kind: 'herb', id: oid(), x, platformIndex, y: plat.y,
+    growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
+    sway: world.rng.range(0, Math.PI * 2),
+    zone: zoneAt(x).key, // v0.11: biomes
+  });
+}
+
+export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1, rotAfter = 0) {
   const plat = world.platforms[platformIndex];
   world.foods.push({
     kind: 'food', id: oid(), x, platformIndex, y: plat.y, foodKind: kind, amount,
+    // rotAfter: seconds until this fruit rots (0 = never). Nest-cache fruit
+    // rots so it can't become a population-level food source — births must
+    // increase food DEMAND, not supply, or the ecology explodes.
+    rotsAt: rotAfter > 0 ? world.time + rotAfter : 0,
   });
+  // v0.8 exam telemetry: opt-in spawn hook (intake-efficiency cost column).
+  if (world.onSpawn) world.onSpawn(amount);
 }
 
 export function addCritter(world, x, platformIndex, kind) {
@@ -82,10 +128,23 @@ export function addToy(world, x, platformIndex) {
   });
 }
 
-export function layEgg(world, x, platformIndex, genome, parents = null) {
+// v0.9 embodiment: pushable pebbles. The world is material — bodies act on
+// it and it pushes back. Stones persist; creatures shove them by collision;
+// heavy stones resist the pusher. Not decoration: they block, pile, and
+// must be navigated.
+export function addPebble(world, x, platformIndex) {
+  const plat = world.platforms[platformIndex];
+  world.pebbles.push({
+    kind: 'pebble', id: oid(), x, platformIndex, y: plat.y,
+    vx: 0, r: (world.decorRng || world.rng).range(9, 17),
+  });
+}
+
+export function layEgg(world, x, platformIndex, genome, parents = null, gen = 0, traditionIds = []) {
   const plat = world.platforms[platformIndex];
   world.eggs.push({
     kind: 'egg', id: oid(), x, y: plat.y, platformIndex, genome, parents,
+    gen, traditionIds, // v0.7: pedigree depth + vertical cultural inheritance
     timer: 18 + world.rng.range(0, 10), wobble: 0,
   });
 }
@@ -97,31 +156,100 @@ export function tryMate(a, b) {
   const sb = ageStage(b.biochem, b.pheno);
   if (sa !== 'adult' || sb !== 'adult') return false;
   if (a.sex === b.sex || a.mateCooldown > 0 || b.mateCooldown > 0) return false;
+  // Breeding takes energy: malnourished creatures don't reproduce. This is
+  // the density-dependent brake — when food is scarce, hunger rises and
+  // births stop before the population overshoots into a crash.
+  // (Founders are exempt: a new world needs its first generation established
+  // before regulation kicks in.)
+  const founderPair = !a.parents && !b.parents;
+  if (!founderPair && (a.biochem.hunger > 0.7 || b.biochem.hunger > 0.7)) return false;
+  // Carrying capacity: hard safety net. The hunger gate regulates day-to-day,
+  // but stochastic bursts can still run away — this guarantees boundedness.
+  // (A soft ramp suppressed births too aggressively at low populations and
+  // caused extinctions; the hunger gate already handles gentle regulation.)
+  const pop = world.creatures.reduce((n, c) => n + (c.alive ? 1 : 0), 0);
+  if (pop >= 40) return false;
   if (world.rng.next() > 0.35 + 0.4 * Math.min(a.pheno.fertility, b.pheno.fertility)) return false;
   const mom = a.sex === 'female' ? a : b;
   const dad = a.sex === 'female' ? b : a;
-  const genome = inherit(mom.genome, dad.genome, world.rng);
-  layEgg(world, (a.x + b.x) / 2, a.platformIndex, genome, [mom.id, dad.id]);
-  mom.children.push('egg');
-  dad.children.push('egg');
+  // v0.5: clutches of two. One egg per mating kept the birth rate below the
+  // death rate once drift and infant mortality took their cut; a pair of eggs
+  // per mating gives lineages the demographic buffer to persist.
+  const nEggs = 2;
+  // v0.7: pedigree depth for the ratchet metric, and vertical transmission —
+  // hatchlings inherit their parents' traditions (the "N+1 contains N" half).
+  const childGen = Math.max(a.generation || 0, b.generation || 0) + 1;
+  const parentTraditions = [...new Set([...(mom.traditions || []), ...(dad.traditions || [])])];
+  for (let i = 0; i < nEggs; i++) {
+    const eg = inherit(mom.genome, dad.genome, world.rng);
+    layEgg(world, (a.x + b.x) / 2 + world.rng.range(-30, 30), a.platformIndex, eg, [mom.id, dad.id], childGen, parentTraditions);
+    mom.children.push('egg');
+    dad.children.push('egg');
+  }
   a.mateCooldown = 90;
   b.mateCooldown = 90;
   a.reward += 0.8;
   b.reward += 0.8;
+  // v0.12: mating forms a pair bond — the strongest positive bond event.
+  nudgeBond(world, a, b, 0.4);
   world.events.push({ type: 'mating', a, b, t: world.time });
   return true;
 }
 
-function hatchEgg(world, egg) {
-  const c = createCreature(egg.genome, egg.x, egg.platformIndex, world.rng, {
+// v0.10 lineage: snapshot a newborn's heritable traits so the UI can show
+// ancestry even after the parents die. Traits are the legible, evolvable
+// phenotype values (0..1 floats, plus diet choice).
+export const LINEAGE_TRAITS = ['size', 'legLength', 'spikes', 'fur', 'eyeSize', 'mouthSize', 'immunity', 'learningRate', 'boldness', 'lifespan'];
+
+export function recordLineage(world, c) {
+  const traits = {};
+  for (const k of LINEAGE_TRAITS) traits[k] = c.pheno[k];
+  traits.diet = c.pheno.diet;
+  world.lineage.set(c.id, {
+    id: c.id, name: c.name,
+    parents: c.parents ? [...c.parents] : null,
+    generation: c.generation || 0,
+    bornAt: world.time,
+    zone: zoneAt(c.x).key, // v0.11: birth biome
+    traits,
+  });
+  // Soft cap: forget the oldest records beyond 5000 (ancestor chains for
+  // living creatures are walked at view time, so pruning the deep past is safe).
+  if (world.lineage.size > 5000) {
+    const first = world.lineage.keys().next().value;
+    world.lineage.delete(first);
+  }
+}
+
+function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg.platformIndex, world.rng, {
     parents: egg.parents,
+    generation: egg.gen || 0,
   });
   c.name = uniqueName(world, c.name);
+  // v0.7 vertical transmission: the hatchling inherits its parents'
+  // traditions with fidelity-scaled loyalty — knowledge, not DNA.
+  const fid = fidelityOf(c.pheno);
+  for (const tid of egg.traditionIds || []) {
+    const t = world.culture.traditions.find((x) => x.id === tid);
+    if (t && world.rng.chance(fid * 0.85)) adoptTradition(world.culture, c, t, fid, world.rng);
+  }
   // Newborns start hungry-ish and sleepy, like real babies.
   c.biochem.hunger = 0.45;
   c.biochem.energy = 0.7;
+  // Rooting reflex (v0.5): a newborn's first commitment is to eat. Combined
+  // with the nest cache below, the first meal is near-guaranteed, and its
+  // reward bootstraps the seekFood/eat learning loop.
+  c.action = 'eat';
+  c.actionTimer = 3;
   world.creatures.push(c);
+  recordLineage(world, c);
   world.events.push({ type: 'hatch', creature: c, t: world.time });
+  // v0.5: nest cache. Hatchlings used to starve when the egg landed far from
+  // food; now every nest is stocked with a first bite. That first meal's
+  // reward bootstraps the seekFood/eat learning loop. One bite (not a full
+  // fruit) + rots after 90s: it feeds the baby's first meal, not the
+  // population — a full fruit per birth was a runaway feedback loop.
+  addFood(world, egg.x + world.rng.range(-14, 14), egg.platformIndex, 'fruit', 0.35, 90);
   const i = world.eggs.indexOf(egg);
   if (i >= 0) world.eggs.splice(i, 1);
 }
@@ -138,11 +266,38 @@ export function tickWorld(world, dt) {
     if (p.growth >= 1) {
       p.fruitTimer -= dt;
       if (p.fruitTimer <= 0) {
-        p.fruitTimer = 18 + rng.range(0, 22);
+        // v0.8 exam mode: only the hot patch fruits at the exam rate; cold
+        // patches fruit at the trickle rate (Infinity = barren). Null exam =
+        // the normal ~19s world.
+        let interval = 12 + rng.range(0, 14);
+        const ex = world.exam;
+        if (ex) {
+          const hp = ex.patches[ex.hot];
+          interval = (p.x >= hp.x1 && p.x <= hp.x2) ? ex.hotInterval : ex.coldInterval;
+        } else {
+          // v0.11 biomes + scarcity: zone sets the base rate; crowding slows
+          // everything (density-dependent scarcity — more mouths, less fruit).
+          // Herbs are counter-cyclical: medicine thrives where food is scarce.
+          const zoneMul = p.kind === 'herb'
+            ? (p.zone === 'arid' ? 0.9 : 1.1)
+            : zoneAt(p.x).fruitMul;
+          const densityMul = 1 + (world.creatures.length / 40) * 0.6;
+          interval = interval * zoneMul * densityMul;
+        }
+        p.fruitTimer = interval;
         // Fruit drops to the ground platform below the plant.
-        addFood(world, p.x + rng.range(-30, 30), 0, 'fruit', 1);
+        // v0.8: herbs bear medicinal leaves instead of fruit.
+        const dropKind = p.kind === 'herb' ? 'leaf' : 'fruit';
+        addFood(world, p.x + rng.range(-30, 30), 0, dropKind, 1);
         if (world.foods.length > 40) world.foods.splice(0, world.foods.length - 40);
       }
+    }
+  }
+
+  // Food rots (only nest-cache fruit has a timer; plant fruit lasts).
+  for (let i = world.foods.length - 1; i >= 0; i--) {
+    if (world.foods[i].rotsAt > 0 && world.time >= world.foods[i].rotsAt) {
+      world.foods.splice(i, 1);
     }
   }
 
@@ -166,6 +321,38 @@ export function tickWorld(world, dt) {
     if (t.x > plat.x2 - t.r) { t.x = plat.x2 - t.r; t.vx = -Math.abs(t.vx) * 0.5; }
   }
 
+  // v0.9: pebbles — friction, bounds, and one-way coupling with creatures.
+  // Creatures shove pebbles (impulse + overlap separation, scaled by the
+  // creature's size — babies kick weakly); pebbles NEVER push creatures
+  // back. Two-way collision pinches a pebble between two approaching
+  // creatures into a permanent 55px spacer, sterilizing the world — in a
+  // 1D world there is no "around". Stones are kickable clutter, not walls.
+  for (const p of world.pebbles) {
+    const plat = world.platforms[p.platformIndex];
+    p.x += p.vx * dt;
+    p.vx *= 1 - Math.min(1, 3 * dt);
+    if (Math.abs(p.vx) < 2) p.vx = 0;
+    if (p.x < plat.x1 + p.r) { p.x = plat.x1 + p.r; p.vx = Math.abs(p.vx) * 0.4; }
+    if (p.x > plat.x2 - p.r) { p.x = plat.x2 - p.r; p.vx = -Math.abs(p.vx) * 0.4; }
+  }
+  for (const c of world.creatures) {
+    if (!c.alive) continue;
+    const cr = creatureRadius(c);
+    const kick = 90 * (cr / 16); // bigger bodies kick harder
+    for (const p of world.pebbles) {
+      if (p.platformIndex !== c.platformIndex) continue;
+      const dx = p.x - c.x;
+      const overlap = cr + p.r - Math.abs(dx);
+      if (overlap > 0) {
+        const dir = dx === 0 ? c.facing : Math.sign(dx);
+        // Heavier stones (bigger r) take less velocity.
+        const heaviness = p.r / 17;
+        p.vx += dir * kick * dt / heaviness;
+        p.x += dir * overlap;
+      }
+    }
+  }
+
   // Eggs hatch.
   for (const egg of [...world.eggs]) {
     egg.timer -= dt;
@@ -175,15 +362,57 @@ export function tickWorld(world, dt) {
   }
 
   // Creatures.
+  rebuildSpatialIndex(world);
   for (const c of world.creatures) {
     updateCreature(c, world, dt);
   }
+  // v0.12: bond dynamics run on the fresh positions — familiarity,
+  // play-together, decay, and pruning of the dead.
+  tickBonds(world, dt);
+  // v0.12: tribe detection every 60 sim-seconds — bands are detected,
+  // never assigned.
+  if (Math.floor(world.time / 60) !== Math.floor((world.time - dt) / 60)) {
+    world.tribes = detectTribes(world);
+  }
   // Remove the dead (UI reads events first).
+  // v0.7: the dead leave carcasses — meat for the diet gene's new niche.
+  // Scavenging, not predation: nobody hunts, but carnivores finally eat
+  // at full value. Carcasses rot in 150s; they feed individuals, not the
+  // population (the v0.5 nest-cache lesson, applied).
+  const dead = [];
   for (let i = world.creatures.length - 1; i >= 0; i--) {
-    if (!world.creatures[i].alive) world.creatures.splice(i, 1);
+    if (!world.creatures[i].alive) dead.push(...world.creatures.splice(i, 1));
+  }
+  for (const d of dead) {
+    addFood(world, d.x, d.platformIndex, 'meat', 1.2, 150);
+  }
+  // v0.7: traditions whose last carrier died go extinct here — the library
+  // test, running continuously.
+  const extinct = pruneExtinct(world.culture, world.creatures);
+  for (const t of extinct) {
+    world.events.push({ type: 'traditionLost', name: t.name, t: world.time });
+  }
+  // Ratchet census every 5 sim-minutes.
+  if (Math.floor(world.time / 300) !== Math.floor((world.time - dt) / 300)) {
+    sampleCulture(world);
   }
 
   if (world.events.length > 60) world.events.splice(0, world.events.length - 60);
+}
+
+// Per-tick spatial index: platformIndex -> creatures sorted by x.
+// Turns the O(n^2) all-pairs neighbor sense scan into O(n log n).
+// Positions are at most one tick stale (creatures move after sensing).
+function rebuildSpatialIndex(world) {
+  const idx = new Map();
+  for (const c of world.creatures) {
+    if (!c.alive) continue;
+    let arr = idx.get(c.platformIndex);
+    if (!arr) { arr = []; idx.set(c.platformIndex, arr); }
+    arr.push(c);
+  }
+  for (const arr of idx.values()) arr.sort((a, b) => a.x - b.x);
+  world._spatial = idx;
 }
 
 // Bind tryMate so creature code can call world.tryMate(a, b).
@@ -204,8 +433,13 @@ export function uniqueName(world, name) {
 export function populate(world) {
   const rng = world.rng;
   // Plants on the ground and ledges.
-  addPlant(world, 250, 0); addPlant(world, 700, 0); addPlant(world, 1150, 0);
-  addPlant(world, 1450, 0); addPlant(world, 400, 1); addPlant(world, 1200, 2);
+  // v0.11 biomes: verdant valley is lush, the arid stretch is harsh (one
+  // fruit plant, but extra medicinal herbs), the highland is moderate.
+  addPlant(world, 150, 0); addPlant(world, 350, 0); addPlant(world, 400, 1);
+  addPlant(world, 800, 0);
+  addPlant(world, 1150, 0); addPlant(world, 1450, 0); addPlant(world, 1200, 2);
+  // v0.8: medicinal herbs. v0.11: they thrive where food is scarcest.
+  addHerb(world, 650, 0); addHerb(world, 950, 0); addHerb(world, 1300, 0);
   // Starter food so the first creatures don't starve immediately.
   for (let i = 0; i < 8; i++) {
     addFood(world, rng.range(100, 1500), 0, 'fruit', 1);
@@ -214,16 +448,36 @@ export function populate(world) {
   for (let i = 0; i < 5; i++) addCritter(world, rng.range(100, 1500), 0, 'bug');
   for (let i = 0; i < 3; i++) addCritter(world, rng.range(200, 1400), 0, 'butterfly');
   addToy(world, 800, 0);
-  // Two founder creatures with fresh random genomes.
-  const g1 = randomGenome(rng);
-  const g2 = randomGenome(rng);
-  const c1 = createCreature(g1, 600, 0, rng, { name: 'Pip' });
-  const c2 = createCreature(g2, 1000, 0, rng, { name: 'Moss' });
-  c1.name = uniqueName(world, c1.name);
-  c2.name = uniqueName(world, c2.name);
-  // Start them as juveniles so the player gets to know them.
-  c1.biochem.age = c1.pheno.lifespanSec * 0.15;
-  c2.biochem.age = c2.pheno.lifespanSec * 0.15;
-  world.creatures.push(c1, c2);
+  // v0.9: pebbles scattered on the ground — the world as material.
+  for (let i = 0; i < 8; i++) addPebble(world, rng.range(80, 1520), 0);
+  // Four founder creatures with fresh random genomes. (v0.5: was two. Two founders
+  // made every lineage a coin flip — one same-sex pair or a few unlucky deaths
+  // and the world went extinct. Four founders (two breeding pairs) give the
+  // population the demographic buffer it needs to survive drift.)
+  const founders = [];
+  const names = ['Pip', 'Moss'];
+  const xs = [400, 580, 760, 940]; // v0.11: cluster straddles the verdant/arid
+  // boundary — founders start where the ecology changes. 180px spacing keeps
+  // adjacent founders inside the 240px breeding-backstop range but outside
+  // the 150px contagion range. Tighter clustering caused disease extinctions;
+  // wider spacing caused failure-to-launch extinctions.
+  for (let i = 0; i < 4; i++) {
+    const c = createCreature(randomGenome(rng), xs[i], 0, rng,
+      i < 2 ? { name: names[i] } : {});
+    c.name = uniqueName(world, c.name);
+    // Start them as juveniles so the player gets to know them.
+    c.biochem.age = c.pheno.lifespanSec * 0.15;
+    recordLineage(world, c);
+    founders.push(c);
+  }
+  // Guarantee two males and two females so every new world is breedable.
+  // (Shuffled, so Pip and Moss aren't always the same sexes.)
+  const sexes = ['male', 'male', 'female', 'female'];
+  for (let i = sexes.length - 1; i > 0; i--) {
+    const j = rng.int(0, i);
+    [sexes[i], sexes[j]] = [sexes[j], sexes[i]];
+  }
+  founders.forEach((c, i) => { c.sex = sexes[i]; });
+  world.creatures.push(...founders);
   return world;
 }
