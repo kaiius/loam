@@ -184,12 +184,12 @@ export function addPebble(world, x, platformIndex) {
   });
 }
 
-export function layEgg(world, x, platformIndex, genome, parents = null, gen = 0, traditionIds = []) {
+export function layEgg(world, x, platformIndex, genome, parents = null, gen = 0, traditionIds = [], gestMult = 1) {
   const plat = world.platforms[platformIndex];
   world.eggs.push({
     kind: 'egg', id: oid(), x, y: plat.y, platformIndex, genome, parents,
     gen, traditionIds, // v0.7: pedigree depth + vertical cultural inheritance
-    timer: 18 + world.rng.range(0, 10), wobble: 0,
+    timer: (18 + world.rng.range(0, 10)) * gestMult, wobble: 0, // v2 (L): gestation scales
   });
 }
 
@@ -213,20 +213,32 @@ export function tryMate(a, b) {
   // caused extinctions; the hunger gate already handles gentle regulation.)
   const pop = world.creatures.reduce((n, c) => n + (c.alive ? 1 : 0), 0);
   if (pop >= 40) return false;
-  if (world.rng.next() > 0.35 + 0.4 * Math.min(a.pheno.fertility, b.pheno.fertility)) return false;
+  // v2 (L): fertility peaks at a genetic age-fraction (window ±0.4 of
+  // lifespan). Inside the window fertility is full; outside it declines.
+  // Founder peak 0.5 covers the whole adult stage — neutral by default,
+  // evolvable into early or late bloomers.
+  const fertAt = (p) => {
+    const t = p.biochem.age / (p.pheno.lifespanSec || 1);
+    const d = Math.abs(t - (p.pheno.ferPeak ?? 0.5));
+    return d <= 0.4 ? 1 : Math.max(0.2, 1 - (d - 0.4) * 2);
+  };
+  if (world.rng.next() > 0.35 + 0.4 * Math.min(a.pheno.fertility * fertAt(a), b.pheno.fertility * fertAt(b))) return false;
   const mom = a.sex === 'female' ? a : b;
   const dad = a.sex === 'female' ? b : a;
   // v0.5: clutches of two. One egg per mating kept the birth rate below the
   // death rate once drift and infant mortality took their cut; a pair of eggs
   // per mating gives lineages the demographic buffer to persist.
-  const nEggs = 2;
+  // v2 (L): litter size is genetic (founder → 2, as before); gestation scales
+  // the egg timer (founder → ×1.0, as before).
+  const nEggs = mom.pheno.ferLitter ?? 2;
+  const gestMult = 0.5 + (mom.pheno.ferGest ?? 0.5);
   // v0.7: pedigree depth for the ratchet metric, and vertical transmission —
   // hatchlings inherit their parents' traditions (the "N+1 contains N" half).
   const childGen = Math.max(a.generation || 0, b.generation || 0) + 1;
   const parentTraditions = [...new Set([...(mom.traditions || []), ...(dad.traditions || [])])];
   for (let i = 0; i < nEggs; i++) {
     const eg = inherit(mom.genome, dad.genome, world.rng);
-    layEgg(world, (a.x + b.x) / 2 + world.rng.range(-30, 30), a.platformIndex, eg, [mom.id, dad.id], childGen, parentTraditions);
+    layEgg(world, (a.x + b.x) / 2 + world.rng.range(-30, 30), a.platformIndex, eg, [mom.id, dad.id], childGen, parentTraditions, gestMult);
     mom.children.push('egg');
     dad.children.push('egg');
   }
@@ -536,5 +548,13 @@ export function populate(world) {
   }
   founders.forEach((c, i) => { c.sex = sexes[i]; });
   world.creatures.push(...founders);
+  // Every founder gets a fruit within sight of its start — the starter
+  // fruit above is randomly placed and can land out of a newborn's range,
+  // starving juveniles before they learn to forage.
+  for (const c of founders) {
+    const plat = world.platforms[c.platformIndex];
+    const fx = Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, c.x + rng.range(-60, 60)));
+    addFood(world, fx, c.platformIndex, 'fruit', 1);
+  }
   return world;
 }

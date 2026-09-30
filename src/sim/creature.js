@@ -195,7 +195,56 @@ export function gatherSenses(c, world) {
     }
     if (bd < Infinity) jumpNear = 1 - bd / maxD;
   }
-  return {
+  // v2 (breeding fix): _mate — the nearest VALID mate: adult, opposite sex,
+  // in sight. The old code courted s._other (the nearest body), which was so
+  // often same-sex or juvenile that tryMate never fired and lineages died out.
+  // _mateDist is the normalized distance, like creatureDist. Only adults
+  // look — juveniles don't shop for mates.
+  // v2 (M): mate preference — heritable beauty standards. Each candidate is
+  // scored on proximity AND color match to the chooser's preferred coat
+  // color; choosiness scales how much color counts. Founder choosiness 0 →
+  // nearest wins, exactly as before. Hue distance is circular.
+  // Courtship across branches: mates are sensed in 2D (platform height
+  // counts), not just along the home branch. The same-platform restriction
+  // meant adults scattered across 9 platforms never found each other — zero
+  // matings in long headless runs — and lineages died out. A climbing
+  // species courts in the canopy's full depth.
+  let mate = null, mateDist = 1;
+  if (stage === 'adult' || stage === 'senior') {
+    const prefH = c.pheno.matePrefHue ?? 0.5;
+    const prefS = c.pheno.matePrefSat ?? 0.5;
+    const choosy = c.pheno.matePrefChoosy ?? 0;
+    const py = world.platforms[c.platformIndex].y;
+    let best = -Infinity;
+    for (const o of world.creatures) {
+      if (!o.alive || o.id === c.id) continue;
+      if (o.sex === c.sex) continue;
+      const ost = ageStage(o.biochem, o.pheno);
+      if (ost !== 'adult' && ost !== 'senior') continue;
+      const oy = world.platforms[o.platformIndex].y;
+      const d = Math.hypot(o.x - c.x, oy - py);
+      if (d >= range) continue;
+      const prox = 1 - d / range;
+      let score = prox;
+      if (choosy > 0) {
+        const mh = o.pheno.coatHue01 ?? 0.5;
+        const ms = o.pheno.coatSat01 ?? 0.5;
+        const dh = Math.abs(mh - prefH);
+        const dHue = Math.min(dh, 1 - dh); // hue is circular
+        const dSat = Math.abs(ms - prefS);
+        const colorDist = Math.min(1, Math.sqrt(dHue * dHue + dSat * dSat));
+        score = prox + choosy * (1 - colorDist);
+      }
+      if (score > best) { best = score; mate = o; mateDist = d / range; }
+    }
+  }
+  // v2: groomNear — a groomable neighbor in reach, on the same platform.
+  // The sense slot existed (index 19) but was never fed; now the brain can
+  // learn that grooming needs someone nearby.
+  const groomReach = c.pheno.groomReach || 70;
+  const groomNear = other && other.platformIndex === c.platformIndex
+    ? Math.max(0, 1 - Math.abs(other.x - c.x) / groomReach) : 0;
+  const senses = {
     _range: range, // px base for dist normalization (used by contagion/mating checks)
     hunger: b.hunger,
     tiredness: 1 - b.energy,
@@ -207,7 +256,7 @@ export function gatherSenses(c, world) {
     homeDist: c.homeX !== undefined ? clamp01(Math.abs(c.x - c.homeX) / 800) : 0,
     kinNear: otherObj ? pedigreeKin(world, c, otherObj) : 0,
     bondNear: otherObj && world.bonds ? getBond(world.bonds, c, otherObj) : 0,
-    climbUp, climbDown, jumpNear,
+    climbUp, climbDown, jumpNear, groomNear,
     foodDist: food ? food.dist : 1,
     foodDir: food ? food.dir : 0,
     creatureDist: other ? other.dist : 1,
@@ -218,7 +267,25 @@ export function gatherSenses(c, world) {
     _food: food && food.obj,
     _other: other && other.obj,
     _toy: toy && toy.obj,
+    _mate: mate,
+    _mateDist: mateDist,
   };
+  // v2 (C): receptors — chemical levels modulate senses. Each receptor gene
+  // adds gain × max(0, chem − thr) to its target sense. Founder gains are 0:
+  // silent by default, evolvable. This is how a lineage can learn that
+  // oxytocin means company, or that adrenaline sharpens fear.
+  const pheno = c.pheno;
+  for (let i = 0; i < 6; i++) {
+    const gain = pheno[`rc${i}gain`] ?? 0;
+    if (gain === 0) continue;
+    const chem = pheno[`rc${i}chem`];
+    const chemV = b[chem];
+    if (chemV === undefined) continue;
+    const senseKey = pheno[`rc${i}sense`];
+    if (!(senseKey in senses)) continue;
+    senses[senseKey] += gain * Math.max(0, chemV - (pheno[`rc${i}thr`] ?? 0.5));
+  }
+  return senses;
 }
 
 function moveAlong(c, world, dir, dt, mult = 1, edge = 'turn') {
@@ -293,6 +360,40 @@ export function stepPhysics(c, world, dt) {
   }
 }
 
+// v2 (E): emitters — firing an action releases a pulse of a chemical.
+// Each emitter gene names a trigger action and a chemical; committing to
+// the action adds the amount (founder: small nudges, not floods).
+function fireEmitters(c) {
+  const pheno = c.pheno;
+  const b = c.biochem;
+  for (let i = 0; i < 6; i++) {
+    if (pheno[`em${i}trig`] !== c.action) continue;
+    const amt = pheno[`em${i}amt`] ?? 0;
+    if (amt === 0) continue;
+    const chem = pheno[`em${i}chem`];
+    if (b[chem] === undefined) continue;
+    b[chem] = clamp01(b[chem] + amt);
+  }
+}
+
+// v2 (S): stimulus valence — world events carry evolvable valence. Each
+// stimulus gene names an event and a signed valence × intensity; the sum
+// over the four genes nudges chemistry (good → endorphin, bad → adrenaline)
+// and adds a learnable reward. Founder valences are 0: silent by default.
+function applyStimulus(c, eventName) {
+  const pheno = c.pheno;
+  let v = 0;
+  for (let i = 0; i < 4; i++) {
+    if (pheno[`st${i}event`] !== eventName) continue;
+    v += (pheno[`st${i}val`] ?? 0) * (pheno[`st${i}int`] ?? 0.5);
+  }
+  if (v === 0) return;
+  const b = c.biochem;
+  if (v > 0) b.endorphin = clamp01(b.endorphin + v * 0.5);
+  else b.adrenaline = clamp01(b.adrenaline - v * 0.5);
+  c.reward += v * 0.3;
+}
+
 // Touchdown: hard landings cost injury, startle, and a flinch the painter
 // shows. Soft landings are just Tuesday.
 function land(c, world, impact) {
@@ -303,6 +404,7 @@ function land(c, world, impact) {
   b.adrenaline = clamp01(b.adrenaline + 0.35); // the landing startles
   c.flinchT = 0.45;
   c.reward -= 0.25;
+  applyStimulus(c, 'hardLanding'); // v2 (S): the fall's evolvable valence
   world.events.push({ type: 'hardLanding', creature: c, impact: Math.round(impact), t: world.time });
 }
 
@@ -311,6 +413,34 @@ function moveToward(c, world, targetX, dt, mult = 1) {
   if (Math.abs(dx) < 4) return true; // arrived
   moveAlong(c, world, Math.sign(dx), dt, mult, 'fall'); // directed feet can walk off
   return false;
+}
+
+// Courtship navigation: step toward a target platform via climb links.
+// Picks the link whose destination is nearest the target's height, walks to
+// the overlap, and climbs through. Returns true when on (or just arrived
+// on) the target platform. Lets courtship cross branches — without it, mates
+// sensed on other platforms could never be reached.
+function stepTowardPlatform(c, world, targetPi, dt) {
+  if (c.platformIndex === targetPi) return true;
+  const links = climbLinksFrom(world, c.platformIndex);
+  if (links.length === 0) return false;
+  const targetY = world.platforms[targetPi].y;
+  let best = links[0], bd = Infinity;
+  for (const l of links) {
+    const dy = Math.abs(world.platforms[l.to].y - targetY);
+    if (dy < bd) { bd = dy; best = l; }
+  }
+  const cx = Math.max(best.link.x1, Math.min(best.link.x2, c.x));
+  if (Math.abs(cx - c.x) > 12) {
+    const step = Math.sign(cx - c.x) * (c.pheno.climbSpeed || 0.5) * 60 * dt;
+    c.x += Math.abs(step) > Math.abs(cx - c.x) ? cx - c.x : step;
+    return false;
+  }
+  // Through the gap — arrive on the new branch.
+  c.platformIndex = best.to;
+  c.y = world.platforms[best.to].y;
+  c.vy = 0; c.vx = 0; c.grounded = true;
+  return c.platformIndex === targetPi;
 }
 
 export function doEat(c, world) {
@@ -467,16 +597,34 @@ function executeAction(c, world, dt, s) {
     case 'mate': {
       c.actionLabel = 'courting';
       const stage = ageStage(c.biochem, c.pheno);
-      const other = s._other;
+      // v2 (breeding fix): court the nearest VALID mate (s._mate), not the
+      // nearest body. The old code courted s._other — so often same-sex or
+      // juvenile that tryMate never fired and lineages died out. No valid
+      // mate in sight → drift socially, never lock onto the wrong target.
+      const other = s._mate;
       const otherStage = other ? ageStage(other.biochem, other.pheno) : null;
       const ok = other && (stage === 'adult') && (otherStage === 'adult') &&
         other.sex !== c.sex && c.mateCooldown <= 0 && other.mateCooldown <= 0;
       if (ok) {
-        if (moveToward(c, world, other.x, dt, 0.9) && Math.abs(other.x - c.x) < 50) {
-          world.tryMate(c, other);
+        if (other.platformIndex === c.platformIndex) {
+          if (moveToward(c, world, other.x, dt, 0.9) && Math.abs(other.x - c.x) < 50) {
+            world.tryMate(c, other);
+          }
+        } else {
+          // Courtship across branches: climb to the mate's platform, then
+          // close the distance. A tanglekin that can't reach a mate can't breed.
+          c.actionLabel = 'climbing to a mate';
+          if (stepTowardPlatform(c, world, other.platformIndex, dt)) {
+            if (moveToward(c, world, other.x, dt, 0.9) && Math.abs(other.x - c.x) < 50) {
+              world.tryMate(c, other);
+            }
+          }
+          c._active = 1; // courtship is work — the chemistry bills it
         }
       } else if (other) {
         moveToward(c, world, other.x, dt, 0.8);
+      } else if (s._other) {
+        moveToward(c, world, s._other.x, dt, 0.8);
       } else {
         c.action = 'wander';
         c.actionTimer = 0;
@@ -713,6 +861,7 @@ export function updateCreature(c, world, dt) {
   const wasGrooming = c.grooming;
   const wasGroomed = c._groomed;
   c._groomed = false;
+  if (wasGroomed) applyStimulus(c, 'groomed'); // v2 (S): being groomed carries valence
   // Meals: doEat accumulated c._ate during last tick's action — the chemistry
   // converts it to blood sugar now.
   const ate = c._ate || 0;
@@ -821,6 +970,8 @@ export function updateCreature(c, world, dt) {
     }
 
     const stage = ageStage(b, pheno);
+    // v2 (L): maturation — juveniles learn faster. Founder: no boost.
+    c._learnBoost = (stage === 'baby' || stage === 'child') ? 1 + (pheno.matBoost ?? 0) : 1;
     // Commit to an action for a stretch; only urgent needs interrupt.
     // (Re-deciding every tick causes jitter — the creature can never
     // actually walk to the food it wants.)
@@ -837,24 +988,45 @@ export function updateCreature(c, world, dt) {
       const { action } = decide(c.brain, input, exploration, rng, votes);
       // Exhaustion overrides: a depleted creature should sleep.
       c.action = b.energy < 0.1 && action !== 'flee' ? 'sleep' : action;
-      // Starving overrides: desperate hunger beats curiosity — and
-      // homesickness (v0.12: seekHome joins the override list).
-      if (b.hunger > 0.8 && (action === 'wander' || action === 'play' || action === 'approach' || action === 'seekHome')) {
+      // Starving overrides (v2, inverted): desperate hunger beats everything
+      // except eating, seeking food, and fleeing. The old version listed the
+      // actions hunger could interrupt (wander/play/approach/seekHome) and
+      // missed sleep/mate/climb/groom — creatures starved while courting or
+      // napping. Now hunger wins over the sleep override above.
+      if (b.hunger > 0.8 && c.action !== 'eat' && c.action !== 'seekFood' && c.action !== 'flee') {
         c.action = 'seekFood';
       }
-      // Breeding opportunity (v0.5): a lonely adult that senses a nearby adult
-      // of the opposite sex courts instead of dithering. Without this backstop
-      // the mate drive lost to play/wander often enough that lineages went
-      // extinct. Survival drives above still take precedence.
-      const partner = s._other;
-      const partnerAdult = partner && ageStage(partner.biochem, partner.pheno) === 'adult';
+      // Breeding opportunity (v0.5, retargeted v2): a lonely adult that senses
+      // a nearby VALID mate courts instead of dithering. v2 reads s._mate
+      // (nearest adult of the opposite sex) instead of s._other (nearest
+      // body) — the old backstop so often found same-sex or juvenile
+      // company that tryMate never fired and lineages died out. Without this
+      // backstop the mate drive lost to play/wander often enough that
+      // lineages went extinct. Survival drives above still take precedence.
+      const partner = s._mate;
+      // _mate is only sensed within sight range, so courtship starts whenever
+      // a valid mate is visible. (The old 240px gate was tuned for
+      // same-platform courtship; with cross-branch sensing it strangled the
+      // backstop — mates were seen 60%+ of adult time but never courted.)
+      // Courtship can interrupt foraging when hunger is moderate — a
+      // mildly-hungry tanglekin can afford to court; a starving one can't.
+      // The 0.7 threshold matches tryMate's own hunger gate, so courtship
+      // that starts here can actually conclude. Without this, the hunger
+      // drive (90% of adult decisions) starved courtship of every slot.
+      const peckish = b.hunger < 0.7;
       if (
-        stage === 'adult' && partnerAdult && partner.sex !== c.sex &&
-        s.creatureDist * s._range < 240 &&
-        c.mateCooldown <= 0 && partner.mateCooldown <= 0 &&
-        (c.action === 'wander' || c.action === 'play' || c.action === 'approach' || c.action === 'seekHome')
+        stage === 'adult' && partner &&
+        c.mateCooldown <= 0 && partner.mateCooldown <= 0 && peckish &&
+        (c.action === 'wander' || c.action === 'play' || c.action === 'approach' || c.action === 'seekHome' || c.action === 'seekFood')
       ) {
         c.action = 'mate';
+      }
+      // v2 (E): emitters — committing to an action releases a chemical pulse
+      // (once per commitment, not per tick). Founder amounts are small
+      // nudges; evolution can turn them into floods.
+      if (c.action !== c._lastEmittedAction) {
+        fireEmitters(c);
+        c._lastEmittedAction = c.action;
       }
       c.episodeInput = input;
       c.episodeAction = ACTIONS.indexOf(c.action);
@@ -879,7 +1051,9 @@ export function updateCreature(c, world, dt) {
   c.reward -= b.illness * 0.08 * dt; // v0.8: sickness feels bad — getting better feels good
   if (b.hunger > 0.9 || b.energy < 0.05) c.reward -= 0.1 * dt;
 
-  learn(c.brain, pheno, Math.max(-1, Math.min(1, c.reward)));
+  // v2 (B): learn takes the chemistry for neuromodulation, and the
+  // juvenile boost from maturation (founder: both neutral).
+  learn(c.brain, pheno, Math.max(-1, Math.min(1, c.reward)) * (c._learnBoost ?? 1), b);
   c.episodeReward += c.reward; // the commitment's running outcome
   // Epigenetic life events: sustained conditions mark the genome, and the
   // marks refresh the phenotype — experience becomes heritable tuning that
@@ -932,7 +1106,8 @@ export function petCreature(c) {
   if (!c.alive) return;
   c.pettedFlag = true;
   c.reward += 0.5;
-  learn(c.brain, c.pheno, 0.5);
+  applyStimulus(c, 'petted'); // v2 (S): being petted carries evolvable valence
+  learn(c.brain, c.pheno, 0.5, c.biochem);
   // Being petted is a salient social event — remember it.
   if (c.brain.lastInput) {
     writeEpisode(c.memory, {
@@ -946,7 +1121,8 @@ export function scoldCreature(c) {
   if (!c.alive) return;
   c.scoldedFlag = true;
   c.reward -= 0.7;
-  learn(c.brain, c.pheno, -0.7);
+  applyStimulus(c, 'scolded'); // v2 (S): being scolded carries evolvable valence
+  learn(c.brain, c.pheno, -0.7, c.biochem);
   // Being scolded is a salient social event — remember it.
   if (c.brain.lastInput) {
     writeEpisode(c.memory, {

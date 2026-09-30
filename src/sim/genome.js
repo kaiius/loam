@@ -1,12 +1,29 @@
 // Digital DNA for Canopy tanglekins: diploid genome, inheritance with
 // CHROMOSOMAL meiosis + epigenetics, and phenotype expression.
 //
-// The 43 loci are Wildcode v0.12's (borrowed from paulthecat — 37 genes,
-// incl. the sense→action instinct genes, morphology, tradition fidelity)
-// plus 6 canopy genes (instClimbUp, instClimbDown, instLonelyGroom,
-// instJump, legPower, brainSize).
+// v0.12: 43 loci (Wildcode v0.12's 37 — incl. the sense→action instinct
+// genes, morphology, tradition fidelity — plus 6 canopy genes:
+// instClimbUp, instClimbDown, instLonelyGroom, instJump, legPower,
+// brainSize).
 //
-// The machinery is Emberhollow's: 8 chromosomes, meiosis with 1–3 crossovers
+// GENOME v2 (2026-09-29): 45 multi-parameter genes across 9 functional
+// families, appended AFTER locus 43 — the original 43 keep their indices,
+// append-only. 132 new loci → 175 total. Every new locus is wired into the
+// tick or the render (no decorative genes):
+//   R — reactions ×8: evolvable chemistry (substrate→product, mass-conserving)
+//   C — receptors ×6: chemical levels modulate senses
+//   E — emitters ×6: firing an action releases a chemical pulse
+//   B — brain architecture ×4: layers, sparsity, Hebbian rate, inhibition,
+//       attention gates, eligibility traces, neuromodulation of learning
+//   L — life history ×4: longevity, maturation, fertility, senescence
+//   M — morphology ×8: bulk, tail, regional pigmentation, ears, arms
+//   S — stimulus valence ×4: evolvable valence for world events
+//   D — drive tuning ×5: gain + baseline on the chemical→drive readout
+// (the 9th family is the original 43: instincts, senses, metabolism, form.)
+//
+// New allele kind 'sym': signed [-1,1] for gains and valences.
+//
+// The machinery is Emberhollow's: chromosomes, meiosis with 1–3 crossovers
 // per chromosome (linked genes travel together; distant genes assort),
 // mutation at 0.008 per allele (5% large-effect re-roll, else small Gaussian
 // step), and epigenetic marks that scale expression 0.5×–1.5× and fade
@@ -80,33 +97,187 @@ export const GENES = [
   { key: 'tradition', kind: 'float', founder: 0.5 },
 ];
 
+// === GENOME v2 (2026-09-29): 45 multi-parameter genes, 132 loci =========
+// Append-only: everything below is new. The original 43 loci keep their
+// indices. Choice vocabularies shared by the families:
+export const CHEM5 = ['bloodSugar', 'fatigue', 'oxytocin', 'endorphin', 'adrenaline'];
+// The 21 real senses (bias excluded) — mirrors brain.js senseVector order.
+export const SENSE21 = [
+  'hunger', 'tiredness', 'boredom', 'loneliness', 'fear', 'light',
+  'foodDist', 'foodDir', 'creatureDist', 'creatureDir', 'toyDist', 'toyDir',
+  'isAdult', 'illness', 'homeDist', 'kinNear', 'bondNear',
+  'climbUp', 'climbDown', 'groomNear', 'jumpNear',
+];
+export const ACT12 = [
+  'seekFood', 'eat', 'sleep', 'play', 'approach', 'flee',
+  'mate', 'wander', 'seekHome', 'climb', 'groom', 'jump',
+];
+// Stimulus events that actually occur in the tick (rain/thunder were cut —
+// Canopy has no weather; fed-by-other was cut — no food-sharing mechanic).
+export const STIM4 = ['groomed', 'petted', 'scolded', 'hardLanding'];
+export const PIGPAT = ['none', 'spots', 'stripes'];
+
+const _f = (key, founder) => ({ key, kind: 'float', founder });
+const _s = (key, founder) => ({ key, kind: 'sym', founder });
+const _c = (key, choices, founder) => ({ key, kind: 'choice', choices, founder });
+
+// --- Family R: chemical reactions ×8 (chr 6) ------------------------------
+// Each gene converts substrate→product above a threshold at a rate.
+// Founder rates are near-zero: quiet chemistry evolution can turn up.
+// Mass-conserving by construction (see tickBiochem).
+{
+  const sub = [0, 1, 2, 3, 4, 0, 1, 2];
+  const prod = [1, 2, 3, 4, 0, 2, 3, 4];
+  for (let i = 0; i < 8; i++) {
+    GENES.push(_c(`rx${i}sub`, CHEM5, sub[i]), _c(`rx${i}prod`, CHEM5, prod[i]),
+      _f(`rx${i}rate`, 0.03), _f(`rx${i}thr`, 0.5));
+  }
+}
+// --- Family C: receptors ×6 (chr 5) --------------------------------------
+// Chemical levels modulate senses: sense += gain × max(0, chem − thr).
+// Founder gains are 0: silent by default, evolvable.
+{
+  const senses = [0, 3, 1, 4, 13, 2]; // hunger, loneliness, tiredness, fear, illness, boredom
+  for (let i = 0; i < 6; i++) {
+    GENES.push(_c(`rc${i}chem`, CHEM5, i % 5), _c(`rc${i}sense`, SENSE21, senses[i]),
+      _s(`rc${i}gain`, 0), _f(`rc${i}thr`, 0.5));
+  }
+}
+// --- Family E: emitters ×6 (chr 6) ---------------------------------------
+// Firing the trigger action releases a pulse of the chemical.
+// Founder amounts are small nudges, not floods.
+{
+  const trig = [1, 2, 3, 10, 5, 6]; // eat, sleep, play, groom, flee, mate
+  for (let i = 0; i < 6; i++) {
+    GENES.push(_c(`em${i}trig`, ACT12, trig[i]), _c(`em${i}chem`, CHEM5, (i * 2) % 5),
+      _f(`em${i}amt`, 0.05));
+  }
+}
+// --- Family B: brain architecture ×4 (chr 3) ------------------------------
+GENES.push(
+  // brainPlan: how the brainSize neuron budget is organized.
+  _c('bpLayers', [1, 2, 3], 0), // hidden layers splitting the budget (founder: 1 = classic)
+  _f('bpSparsity', 0.65), // 1 − density of sensory→assoc wiring (founder → 0.35, as before)
+  _f('bpHebb', 0.5), // Hebbian rate multiplier (founder → ×1.0)
+  _f('bpLatInhib', 0.85), // lateral inhibition: loser scale = 1 − value (founder → 0.15, as before)
+  // attenGate: evolvable attention gates on the salience EMA.
+  _f('agCount', 0), // how many senses get gated (×5, founder → 0 = off)
+  _f('agGain', 0), // gain boost on gated senses (founder → none)
+  _f('agThresh', 0.5), // minimum salience to earn a gate
+  // memoryTrace: eligibility traces for delayed credit assignment.
+  _f('mtDecay', 0.9), // trace decay per learn
+  _f('mtGain', 0), // trace contribution to weight updates (founder → off)
+  // neuroMod: a chemical level modulates the learning rate.
+  _c('nmChem', CHEM5, 4), // founder: adrenaline — stress tunes learning
+  _f('nmGain', 0), // founder → no modulation
+  _f('nmThresh', 0.5),
+);
+// --- Family L: life history ×4 (chr 7) ------------------------------------
+// The viability family: founder defaults reproduce the old constants.
+GENES.push(
+  // longevity: scales the lifespan locus + lifelong frailty.
+  _f('longScale', 0.5), // lifespanSec × (0.5 + value) (founder → ×1.0)
+  _f('longAging', 0), // lifelong health decline (founder → none)
+  // maturation: juvenile timing + the learning boost of youth.
+  _f('matTime', 0.5), // stage thresholds × (0.5 + value) (founder → ×1.0)
+  _f('matBoost', 0), // juvenile learning-rate boost (founder → none)
+  // fertility: the reproductive window + litter + gestation.
+  _f('ferPeak', 0.5), // age-fraction of peak fertility (window ±0.4)
+  _c('ferLitter', [1, 2, 3], 1), // eggs per mating (founder → 2, as before)
+  _f('ferGest', 0.5), // egg timer × (0.5 + value) (founder → ×1.0)
+  // senescence: programmed late-life decline.
+  _f('senOnset', 0.8), // age-fraction when decline starts
+  _f('senRate', 0), // decline rate (founder → off)
+);
+// --- Family M: morphology ×8 (chr 1) --------------------------------------
+// Bulk, tail, regional pigmentation, ears, arms. Mostly render; tailGrip
+// and armLength touch the sim (climb speed, reach).
+GENES.push(
+  _f('bulk', 0.5), // body girth (render)
+  _f('tailCurl', 0.5), // curl of the classic tail pose (render; founder → as before)
+  _f('tailGrip', 0), // prehensile strength: climb-speed bonus (sim)
+  _f('pigHeadHue', 0.5), _f('pigHeadSat', 0.5), _c('pigHeadPat', PIGPAT, 0),
+  _f('pigTorsoHue', 0.5), _f('pigTorsoSat', 0.5), _c('pigTorsoPat', PIGPAT, 0),
+  _f('pigLimbsHue', 0.5), _f('pigLimbsSat', 0.5), _c('pigLimbsPat', PIGPAT, 0),
+  _f('earSize', 0.5), // (founder → 1.0 scale, as drawn before)
+  _f('earTilt', 0.5), // (founder → upright, as drawn before)
+  _f('armLength', 0.5), // replaces legLength in the arm formula (founder → same)
+  // matePref: heritable beauty standards — the chooser's preferred coat color
+  // (hue/sat) and choosiness. Wired into _mate selection in creature.js:
+  // candidates are scored on proximity + color-match × choosiness. Founder
+  // choosiness 0 → nearest wins, exactly as before; as the preference genes
+  // evolve, beauty standards drift and sexual selection starts to bite.
+  _f('matePrefHue', 0.5),
+  _f('matePrefSat', 0.5),
+  _f('matePrefChoosy', 0),
+);
+// --- Family S: stimulus valence ×4 (chr 4) --------------------------------
+// World events carry evolvable valence → chemistry nudge + learnable reward.
+for (let i = 0; i < 4; i++) {
+  GENES.push(_c(`st${i}event`, STIM4, i % 4), _s(`st${i}val`, 0), _f(`st${i}int`, 0.5));
+}
+// --- Family D: drive tuning ×5 (chr 5) ------------------------------------
+// Gain + baseline on the chemical→drive readout. The chemistry invariant
+// stands: drives are still readouts of the five chemicals; only the tuning
+// is genetic. Founder defaults are the identity (gain 1.0, baseline 0).
+for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) {
+  GENES.push(_f(`drv${d}Gain`, 0.5), _f(`drv${d}Base`, 0.5));
+}
+// === end GENOME v2 ========================================================
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
 // 8 chromosomes, thematic like Emberhollow's. Genes on the same chromosome
 // cross over in segments; genes on different chromosomes assort freely.
 // A chromosome is a story, not a bag of alleles.
+// v2: the reserved chromosomes 5–7 are now populated (drives, chemistry,
+// life history); morphology/neuroarchitecture/instincts absorb their families.
+const _chrR = []; // reactions ×8
+const _chrC = []; // receptors ×6
+const _chrE = []; // emitters ×6
+const _chrS = []; // stimulus valence ×4
+for (let i = 0; i < 8; i++) _chrR.push(`rx${i}sub`, `rx${i}prod`, `rx${i}rate`, `rx${i}thr`);
+for (let i = 0; i < 6; i++) {
+  _chrC.push(`rc${i}chem`, `rc${i}sense`, `rc${i}gain`, `rc${i}thr`);
+  _chrE.push(`em${i}trig`, `em${i}chem`, `em${i}amt`);
+}
+for (let i = 0; i < 4; i++) _chrS.push(`st${i}event`, `st${i}val`, `st${i}int`);
+const _chrD = [];
+for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) _chrD.push(`drv${d}Gain`, `drv${d}Base`);
 export const CHROMOSOMES = [
-  // 1 — Morphology
+  // 1 — Morphology (+ v2 family M: bulk, tail, regional pigment, ears, arms)
   ['bodyHue', 'patternDensity', 'size', 'tailLength', 'eyeSize', 'pattern', 'earShape',
-   'diet', 'mouthSize', 'legLength', 'legPower', 'spikes', 'fur'],
+   'diet', 'mouthSize', 'legLength', 'legPower', 'spikes', 'fur',
+   'bulk', 'tailCurl', 'tailGrip',
+   'pigHeadHue', 'pigHeadSat', 'pigHeadPat',
+   'pigTorsoHue', 'pigTorsoSat', 'pigTorsoPat',
+   'pigLimbsHue', 'pigLimbsSat', 'pigLimbsPat',
+   'earSize', 'earTilt', 'armLength',
+   'matePrefHue', 'matePrefSat', 'matePrefChoosy'],
   // 2 — Metabolism
   ['hungerRate', 'energyDrain', 'lifespan', 'growthRate', 'fertility', 'immunity'],
-  // 3 — Neuroarchitecture
-  ['learningRate', 'memory', 'brainSize'],
-  // 4 — Instincts
+  // 3 — Neuroarchitecture (+ v2 family B: brain plan, attention gates,
+  // memory traces, neuromodulation)
+  ['learningRate', 'memory', 'brainSize',
+   'bpLayers', 'bpSparsity', 'bpHebb', 'bpLatInhib',
+   'agCount', 'agGain', 'agThresh', 'mtDecay', 'mtGain',
+   'nmChem', 'nmGain', 'nmThresh'],
+  // 4 — Instincts (+ v2 family S: stimulus valence)
   ['curiosity', 'sociability', 'boldness',
    'instHungerSeek', 'instHungerEat', 'instTiredSleep', 'instBoredPlay',
    'instLonelyApproach', 'instFearFlee', 'instLightSleep', 'instFoodDistSeek',
    'instCreatureDistApproach', 'instToyDistPlay', 'instLonelyMate',
    'instIllnessSeek', 'instHomeSeek', 'instClimbUp', 'instClimbDown', 'instLonelyGroom',
-   'instJump'],
-  // 5 — Drives (reserved: sensitivity loci for future chemistry work)
-  [],
-  // 6 — Immune (reserved)
-  [],
-  // 7 — Life history (reserved)
-  [],
+   'instJump',
+   ..._chrS],
+  // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
+  [..._chrD, ..._chrC],
+  // 6 — Chemistry (v2: reactions + emitters — the evolvable reaction network)
+  [..._chrR, ..._chrE],
+  // 7 — Life history (v2: longevity, maturation, fertility, senescence)
+  ['longScale', 'longAging', 'matTime', 'matBoost', 'ferPeak', 'ferLitter',
+   'ferGest', 'senOnset', 'senRate'],
   // 8 — Culture
   ['tradition'],
 ];
@@ -121,6 +292,13 @@ export function randomAllele(gene, rng) {
   if (gene.kind === 'choice') {
     if (gene.founder !== undefined) return gene.founder;
     return rng.int(0, gene.choices.length - 1);
+  }
+  if (gene.kind === 'sym') {
+    // Signed locus: founder ± 0.25, clamped to [-1, 1].
+    if (gene.founder !== undefined) {
+      return Math.max(-1, Math.min(1, gene.founder + (rng.next() - 0.5) * 0.5));
+    }
+    return rng.next() * 2 - 1;
   }
   if (gene.founder !== undefined) {
     if (gene.kind === 'exp') {
@@ -158,6 +336,12 @@ function mutateAllele(gene, value, rng, rate = MUTATION_RATE) {
     if (rng.chance(0.05)) return gene.founder * (0.5 + rng.next() * 1.5);
     const step = rng.gauss ? rng.gauss(0, 0.06) : (rng.next() - 0.5) * 0.12;
     return Math.max(0.05, value * (1 + step));
+  }
+  if (gene.kind === 'sym') {
+    // Signed locus: 5% full re-roll, else a small Gaussian step, clamped.
+    if (rng.chance(0.05)) return rng.next() * 2 - 1;
+    const step = rng.gauss ? rng.gauss(0, 0.06) : (rng.next() + rng.next() + rng.next() - 1.5) * 0.08;
+    return Math.max(-1, Math.min(1, value + step));
   }
   // 5% large-effect re-roll, else a small Gaussian step.
   if (rng.chance(0.05)) return rng.next();
@@ -228,6 +412,8 @@ export function phenotype(genome) {
       p[gene.key] = gene.choices[a];
     } else if (gene.kind === 'exp') {
       p[gene.key] = Math.max(0.05, ((a + b) / 2) * mark); // never capped above
+    } else if (gene.kind === 'sym') {
+      p[gene.key] = Math.max(-1, Math.min(1, ((a + b) / 2) * mark));
     } else {
       p[gene.key] = clamp01(((a + b) / 2) * mark);
     }
@@ -235,7 +421,8 @@ export function phenotype(genome) {
   // Derived, game-ready values (kept from v0.12):
   p.hueDeg = p.bodyHue * 360;
   p.bodyRadius = 14 + p.size * 18; // px at adult size
-  p.lifespanSec = 300 + p.lifespan * 1500; // 5–30 minutes
+  // v2 (L): longevity scales the lifespan locus (founder ×1.0).
+  p.lifespanSec = (300 + p.lifespan * 1500) * (0.5 + p.longScale); // 5–30 minutes
   p.walkSpeed = 28 + p.size * 26; // px/sec, bigger = slightly faster
   p.fruitEfficiency = { herbivore: 1.0, omnivore: 0.8, carnivore: 0.5 }[p.diet];
   p.meatEfficiency = { herbivore: 0.25, omnivore: 0.7, carnivore: 1.0 }[p.diet];
@@ -248,8 +435,28 @@ export function phenotype(genome) {
   p.furInsulation = p.fur * 0.3;
   p.furWeight = p.fur * 0.15;
   // canopy (new): climbing speed and grooming reach from morphology.
-  p.climbSpeed = 40 + p.legLength * 40 + p.tailLength * 20; // px/sec vertical
+  // v2 (M): tailGrip adds a prehensile-strength bonus to climb speed.
+  p.climbSpeed = 40 + p.legLength * 40 + p.tailLength * 20 + p.tailGrip * 30; // px/sec vertical
   p.groomReach = 40 + p.size * 30;
+  // v2 (D): drive tuning — gain + baseline on the chemical→drive readout.
+  // Founder defaults are the identity: gain 1.0, baseline 0.
+  for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) {
+    p['driveGain' + d] = 2 * p['drv' + d + 'Gain'];
+    p['driveBase' + d] = (p['drv' + d + 'Base'] - 0.5) * 0.4;
+  }
+  // v2 (M): regional pigmentation — hue/sat offsets around the body base.
+  for (const region of ['Head', 'Torso', 'Limbs']) {
+    p['pig' + region + 'HueDeg'] = (p['pig' + region + 'Hue'] - 0.5) * 120;
+    p['pig' + region + 'SatShift'] = (p['pig' + region + 'Sat'] - 0.5) * 40;
+  }
+  // v2 (M): the expressed coat color — the canonical readable coloration.
+  // Torso is the largest region; mate preference matches against this, and
+  // the later biomes phase can read it for camouflage selection. Per-region
+  // values (pigHead/Torso/LimbsHueDeg/SatShift) are on the phenotype too.
+  p.coatHue01 = ((((p.hueDeg + (p.pigTorsoHueDeg ?? 0)) % 360) + 360) % 360) / 360;
+  p.coatSat01 = clamp01((58 + (p.pigTorsoSatShift ?? 0)) / 100);
+  p.earScale = 0.7 + p.earSize * 0.6; // founder 0.5 → 1.0
+  p.earTiltRad = (p.earTilt - 0.5) * 0.8; // founder 0.5 → upright
   return p;
 }
 
@@ -262,6 +469,9 @@ export function relatedness(g1, g2) {
     const [a2, b2] = g2.alleles[gene.key];
     if (gene.kind === 'choice') {
       same += (a1 === a2 ? 0.5 : 0) + (b1 === b2 ? 0.5 : 0);
+    } else if (gene.kind === 'sym') {
+      // Signed alleles span [-1, 1]: normalize the distance by the range.
+      same += (1 - Math.abs(a1 - a2) / 2) * 0.5 + (1 - Math.abs(b1 - b2) / 2) * 0.5;
     } else if (gene.kind === 'exp') {
       // Unbounded loci compare relatively — absolute distance is meaningless.
       const rel = (x, y) => 1 - Math.min(1, Math.abs(x - y) / Math.max(x, y, 1e-6));

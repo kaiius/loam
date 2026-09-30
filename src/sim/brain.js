@@ -1,18 +1,23 @@
-// A tanglekin brain: sparse 3-layer associative network, shaped by reward.
-// Senses in → associative layer → action-drives out. Instincts are
+// A tanglekin brain: sparse associative network, shaped by reward.
+// Senses in → hidden layer(s) → action-drives out. Instincts are
 // evolvable sense→action reflexes wired straight from instinct genes
 // (nature); the sparse middle learns from experience (nurture).
 //
 // Machinery (from Emberhollow): sparse connectivity (adjacency lists),
-// winner-take-all inhibition in the middle layer, reward-modulated Hebbian
+// winner-take-all inhibition in the hidden layers, reward-modulated Hebbian
 // plasticity (winner learns at full rate, sensory→associative at 1/3),
 // attention gating (EMA of salience sharpens what the brain listens to),
-// neurogenesis in juveniles + pruning in adults (the middle layer grows
-// then trims, never below 16 neurons).
+// neurogenesis in juveniles + pruning in adults.
+//
+// GENOME v2 (B family): the brainPlan gene splits the brainSize neuron
+// budget across 1–3 hidden layers; sparsity, Hebbian rate, lateral
+// inhibition, attention gates, eligibility traces, and chemical
+// neuromodulation of learning are all evolvable. Founder defaults reproduce
+// the classic single-layer brain exactly.
 //
 // Contracts kept from Wildcode v0.12 (borrowed from paulthecat):
 // ACTIONS, senseVector, decide(brain, input, exploration, rng, votes),
-// learn(brain, pheno, reward), forward. The instinct genes wire
+// learn(brain, pheno, reward, chems?), forward. The instinct genes wire
 // sense→action directly, exactly as before.
 
 import { GENES } from './genome.js';
@@ -78,11 +83,33 @@ function randSparse(rng, rows, cols, density, scale) {
 
 export function createBrain(pheno, rng) {
   const nAssoc = assocSize(pheno);
-  // Sensory → associative: sparse (density ~0.35).
-  const s2a = randSparse(rng, nAssoc, N_IN - 1, 0.35, 0.9); // bias handled separately
-  const biasA = Array.from({ length: nAssoc }, () => rng.range(-0.2, 0.2));
+  // v2 (B): brainPlan splits the brainSize neuron budget across 1–3 hidden
+  // layers (founder 1 = the classic single-layer brain). Layers get an
+  // even split; every layer keeps ≥ 4 neurons.
+  const nLayers = Math.min(3, Math.max(1, Math.round(pheno.bpLayers ?? 1)));
+  const sizes = [];
+  {
+    const base = Math.floor(nAssoc / nLayers);
+    let rem = nAssoc - base * nLayers;
+    for (let l = 0; l < nLayers; l++) sizes.push(base + (rem-- > 0 ? 1 : 0));
+  }
+  // v2 (B): evolvable sparsity — density = 1 − sparsity. Founder → 0.35,
+  // exactly the classic sensory→assoc wiring density.
+  const s2aDensity = 1 - (pheno.bpSparsity ?? 0.65);
+  const layers = [];
+  let fanIn = N_IN - 1;
+  for (let l = 0; l < nLayers; l++) {
+    const m = randSparse(rng, sizes[l], fanIn, l === 0 ? s2aDensity : 0.5, 0.9);
+    layers.push({
+      n: sizes[l],
+      idx: m.idx,
+      w: m.w,
+      bias: Array.from({ length: sizes[l] }, () => rng.range(-0.2, 0.2)),
+    });
+    fanIn = sizes[l];
+  }
   // Associative → motor: sparse (density ~0.5), motor units map 1:1 to actions.
-  const a2m = randSparse(rng, N_OUT, nAssoc, 0.5, 0.9);
+  const a2m = randSparse(rng, N_OUT, sizes[nLayers - 1], 0.5, 0.9);
   const biasM = new Array(N_OUT).fill(0);
 
   // Instincts: evolvable sense→action reflexes, wired straight from the genome.
@@ -108,12 +135,32 @@ export function createBrain(pheno, rng) {
   biasM[10] = pheno.sociability * 0.4; // groom — the social instinct
 
   return {
-    nAssoc, s2a, biasA, a2m, biasM, instW,
+    nAssoc,
+    nLayers,
+    layerSizes: sizes,
+    layers,
+    // Compat: the classic single-layer fields address layer 0. Tests and
+    // old saves read brain.s2a / brain.biasA; they still work.
+    s2a: layers[0],
+    biasA: layers[0].bias,
+    a2m, biasM, instW,
+    // v2 (B): architecture readouts, fixed at construction — genes set the
+    // plan, the brain builds it once.
+    latInhibScale: Math.max(0.02, 1 - (pheno.bpLatInhib ?? 0.85)), // founder → 0.15
+    s2aDensity,
+    gate: {
+      count: Math.round((pheno.agCount ?? 0) * 5),
+      gain: pheno.agGain ?? 0,
+      thresh: pheno.agThresh ?? 0.5,
+    },
+    // v2 (B): eligibility traces — one per motor synapse, for delayed credit.
+    traces: { e: a2m.w.map((row) => new Array(row.length).fill(0)) },
     attention: new Array(N_IN - 1).fill(1 / (N_IN - 1)), // EMA of salience
     age: 0, // brain age in ticks (drives neurogenesis → pruning)
     neurogenesis: 0.3 + (pheno.neurogenesis ?? 0.5) * 0.7,
     rng, // seeded RNG — neurogenesis/pruning stay deterministic
-    lastAssoc: null, lastOut: null, lastInput: null, lastWinner: -1,
+    lastAssoc: null, lastActs: null, lastWinners: null,
+    lastOut: null, lastInput: null, lastWinner: -1,
   };
 }
 
@@ -139,32 +186,65 @@ function applyAttention(brain, input) {
   for (let k = 0; k < N_IN - 1; k++) {
     gated[k] = input[k] * (sharp[k] / sum) * (N_IN - 1);
   }
+  // v2 (B): attention gates — the most-salient senses (above thresh, up to
+  // count of them) get a gain boost. Founder count 0 → off: the classic
+  // attention behavior above, exactly as before.
+  const gate = brain.gate;
+  if (gate && gate.count > 0 && gate.gain !== 0) {
+    const top = [];
+    for (let k = 0; k < N_IN - 1; k++) {
+      if (att[k] < gate.thresh) continue;
+      if (top.length < gate.count) {
+        top.push(k);
+      } else {
+        let minI = 0;
+        for (let i = 1; i < top.length; i++) if (att[top[i]] < att[top[minI]]) minI = i;
+        if (att[k] > att[top[minI]]) top[minI] = k;
+      }
+    }
+    for (const k of top) gated[k] *= (1 + gate.gain);
+  }
   return gated;
 }
 
 export function forward(brain, input) {
   const gated = applyAttention(brain, input);
-  const { idx: sIdx, w: sW } = brain.s2a;
-  const nA = brain.nAssoc;
-  const assoc = new Array(nA);
-  for (let i = 0; i < nA; i++) {
-    let pre = brain.biasA[i];
-    const cols = sIdx[i];
-    const ws = sW[i];
-    for (let n = 0; n < cols.length; n++) pre += ws[n] * gated[cols[n]];
-    pre += input[N_IN - 1]; // bias sense
-    assoc[i] = tanh(pre);
+  // v2 (B): the neuron budget may be split across hidden layers. Layer 0
+  // reads the gated senses (+ bias sense); each deeper layer reads the
+  // layer before; the motor readout reads the last layer. At founder
+  // defaults (1 layer) this is the classic forward pass exactly.
+  const nL = brain.nLayers ?? 1;
+  const acts = new Array(nL);
+  const winners = new Array(nL);
+  let src = gated;
+  for (let l = 0; l < nL; l++) {
+    const L = brain.layers[l];
+    const a = new Array(L.n);
+    for (let i = 0; i < L.n; i++) {
+      let pre = L.bias[i];
+      const cols = L.idx[i];
+      const ws = L.w[i];
+      for (let n = 0; n < cols.length; n++) pre += ws[n] * src[cols[n]];
+      if (l === 0) pre += input[N_IN - 1]; // the bias sense
+      a[i] = tanh(pre);
+    }
+    // Winner-take-all: the strongest neuron inhibits the rest. One thought
+    // at a time — every layer commits. Inhibition is evolvable (founder:
+    // losers scaled to 0.15, exactly as before).
+    let winner = 0;
+    let best = -Infinity;
+    for (let i = 0; i < L.n; i++) {
+      if (a[i] > best) { best = a[i]; winner = i; }
+    }
+    const loserScale = brain.latInhibScale ?? 0.15;
+    for (let i = 0; i < L.n; i++) {
+      if (i !== winner) a[i] *= loserScale;
+    }
+    acts[l] = a;
+    winners[l] = winner;
+    src = a;
   }
-  // Winner-take-all: the strongest associative neuron inhibits the rest.
-  // One thought at a time — the middle layer commits.
-  let winner = 0;
-  let best = -Infinity;
-  for (let i = 0; i < nA; i++) {
-    if (assoc[i] > best) { best = assoc[i]; winner = i; }
-  }
-  for (let i = 0; i < nA; i++) {
-    if (i !== winner) assoc[i] *= 0.15;
-  }
+  const assoc = acts[nL - 1];
   // Motor: sparse readout, 1:1 with actions. The learned sum is normalized
   // by fan-in so its magnitude stays size-invariant: without this, a large
   // brain's random readout noise drowns the instinct pathway. REF_FANIN is
@@ -183,9 +263,11 @@ export function forward(brain, input) {
     o[j] = tanh(pre);
   }
   brain.lastAssoc = assoc;
+  brain.lastActs = acts;
+  brain.lastWinners = winners;
   brain.lastOut = o;
   brain.lastInput = input;
-  brain.lastWinner = winner;
+  brain.lastWinner = winners[0];
   // Attention EMA: salience = |sense value|.
   for (let k = 0; k < N_IN - 1; k++) {
     brain.attention[k] = (1 - ATTENTION_ALPHA) * brain.attention[k] +
@@ -217,106 +299,160 @@ function clampW(w) {
 // Reward-modulated Hebbian learning. reward in [-1, 1]. The winning
 // associative neuron learns at full rate; sensory→associative synapses at
 // 1/3 (the world model changes slower than the action model).
-export function learn(brain, pheno, reward) {
-  if (!brain.lastAssoc || !brain.lastOut || !brain.lastInput || reward === 0) return;
-  const lr = 0.02 + (pheno.learningRate ?? 0.5) * 0.18;
+// v2 (B): eligibility traces for delayed credit assignment. Each motor
+// synapse carries a trace of recent pre×post co-activity; when reward
+// arrives late, the trace says who was responsible. Decay and gain are
+// genetic (founder gain 0 → off).
+function updateTraces(brain, pheno) {
+  const decay = pheno.mtDecay ?? 0.9;
+  const gain = pheno.mtGain ?? 0;
+  if (gain === 0) return;
   const assoc = brain.lastAssoc;
   const o = brain.lastOut;
-  const x = brain.lastInput;
-  const winner = brain.lastWinner;
-  // Motor layer: Hebbian on the associative pattern.
   for (let j = 0; j < N_OUT; j++) {
-    const err = lr * reward * o[j];
+    const cols = brain.a2m.idx[j];
+    const es = brain.traces.e[j];
+    for (let n = 0; n < cols.length; n++) {
+      es[n] = decay * es[n] + gain * assoc[cols[n]] * o[j];
+    }
+  }
+}
+
+export function learn(brain, pheno, reward, chems = null) {
+  if (!brain.lastAssoc || !brain.lastOut || !brain.lastInput || reward === 0) return;
+  updateTraces(brain, pheno);
+  // v2 (B): the Hebbian rate is evolvable — founder → ×1.0, the classic rate.
+  let lr = (0.02 + (pheno.learningRate ?? 0.5) * 0.18) * (2 * (pheno.bpHebb ?? 0.5));
+  // v2 (B): neuromodulation — a chemical level scales the learning rate.
+  // Founder gain 0 → no modulation, exactly as before. When evolved, the
+  // modulator gene picks the chemical (founder: adrenaline — stress tunes
+  // learning) and the threshold above which it bites.
+  const nmGain = pheno.nmGain ?? 0;
+  if (chems && nmGain !== 0) {
+    const chemVal = chems[pheno.nmChem ?? 'adrenaline'] ?? 0;
+    lr *= 1 + nmGain * Math.max(0, chemVal - (pheno.nmThresh ?? 0.5));
+  }
+  const r = Math.max(-1, Math.min(1, reward));
+  const traceGain = pheno.mtGain ?? 0;
+  const assoc = brain.lastAssoc;
+  const o = brain.lastOut;
+  // Motor layer: Hebbian on the last hidden layer's pattern, plus
+  // eligibility traces for delayed credit.
+  for (let j = 0; j < N_OUT; j++) {
+    const err = lr * r * o[j];
     const cols = brain.a2m.idx[j];
     const ws = brain.a2m.w[j];
+    const es = brain.traces.e[j];
     for (let n = 0; n < cols.length; n++) {
-      ws[n] = clampW(ws[n] + err * assoc[cols[n]]);
+      ws[n] = clampW(ws[n] + err * (assoc[cols[n]] + traceGain * es[n]));
     }
     brain.biasM[j] = clampW(brain.biasM[j] + err * 0.3);
   }
-  // Sensory→associative: winner at full rate, others at 1/3.
-  const cols = brain.s2a.idx[winner];
-  const ws = brain.s2a.w[winner];
-  for (let n = 0; n < cols.length; n++) {
-    ws[n] = clampW(ws[n] + lr * reward * x[cols[n]] * assoc[winner]);
-  }
-  for (let i = 0; i < brain.nAssoc; i++) {
-    if (i === winner) continue;
-    const c2 = brain.s2a.idx[i];
-    const w2 = brain.s2a.w[i];
-    for (let n = 0; n < c2.length; n++) {
-      w2[n] = clampW(w2[n] + (lr / 3) * reward * x[c2[n]] * assoc[i]);
+  // Hidden layers: winner at full rate, others at 1/3. The same rule runs
+  // on every layer — layer 0 sees the senses, deeper layers see the layer
+  // before. (Classic behavior at founder defaults: one layer, ×1.0.)
+  const acts = brain.lastActs ?? [assoc];
+  const winners = brain.lastWinners ?? [brain.lastWinner];
+  const x = brain.lastInput;
+  for (let l = 0; l < (brain.nLayers ?? 1); l++) {
+    const L = brain.layers[l];
+    const src = l === 0 ? x : acts[l - 1];
+    const winner = winners[l];
+    const a = acts[l];
+    for (let i = 0; i < L.n; i++) {
+      const rate = (i === winner ? lr : lr / 3) * r;
+      if (rate === 0) continue;
+      const cols = L.idx[i];
+      const ws = L.w[i];
+      for (let n = 0; n < cols.length; n++) {
+        ws[n] = clampW(ws[n] + rate * src[cols[n]] * a[i]);
+      }
     }
   }
   brain.age++;
   maybeGrow(brain, pheno);
 }
 
-// Neurogenesis in juveniles, pruning in adults. The brain grows while the
-// body is young (plasticity ×2 effect via higher addition rate), then trims
-// the least-used neurons — but never below 16.
+// Neurogenesis in juveniles, pruning in adults. Growth happens on the LAST
+// hidden layer (the motor-adjacent one) \u2014 for the classic single-layer
+// brain this is the associative layer, exactly as before. The brain grows
+// while the body is young, then trims the least-used neurons \u2014 but the
+// classic brain never drops below 16, and a deeper brain never drops a
+// layer below 8.
 function maybeGrow(brain, pheno) {
   const rng = brain.rng;
   const p = brain.neurogenesis * 0.01;
   const juvenile = brain.age < 3000; // ~first minutes of life at 10Hz
   // No cap on growth: the juvenile window (~+40 neurons typical) bounds it.
   // Adult brains trim dead weight but the genetic scale survives aging.
+  const last = brain.layers[brain.nLayers - 1];
+  const floor = brain.nLayers === 1 ? MIN_ASSOC : 8;
   if (juvenile && rng.chance(p * 2)) {
     addAssocNeuron(brain);
-  } else if (!juvenile && rng.chance(p * 0.5) && brain.nAssoc > MIN_ASSOC) {
+  } else if (!juvenile && rng.chance(p * 0.5) && last.n > floor && brain.nAssoc > MIN_ASSOC) {
     pruneAssocNeuron(brain);
   }
 }
 
 function addAssocNeuron(brain) {
   const rng = brain.rng;
-  const nA = brain.nAssoc;
-  // New neuron: sparse sensory inputs, sparse motor outputs.
-  const nIn = Math.max(1, Math.round((N_IN - 1) * 0.35 * (0.5 + rng.next())));
+  const li = brain.nLayers - 1;
+  const L = brain.layers[li];
+  // New neuron: sparse inputs from the previous layer (senses for layer 0),
+  // sparse outputs into the motor readout.
+  const prevN = li === 0 ? N_IN - 1 : brain.layers[li - 1].n;
+  const density = li === 0 ? (brain.s2aDensity ?? 0.35) : 0.5;
+  const nIn = Math.max(1, Math.round(prevN * density * (0.5 + rng.next())));
   const cols = new Set();
-  while (cols.size < nIn) cols.add(rng.int(0, N_IN - 2));
-  brain.s2a.idx.push([...cols]);
-  brain.s2a.w.push([...cols].map(() => rng.range(-0.9, 0.9)));
-  brain.biasA.push(rng.range(-0.2, 0.2));
+  while (cols.size < nIn) cols.add(rng.int(0, prevN - 1));
+  L.idx.push([...cols]);
+  L.w.push([...cols].map(() => rng.range(-0.9, 0.9)));
+  L.bias.push(rng.range(-0.2, 0.2));
+  const newIdx = L.n;
+  L.n++;
   // Wire into motor readout sparsely.
   for (let j = 0; j < N_OUT; j++) {
     if (rng.chance(0.5)) {
-      brain.a2m.idx[j].push(nA);
+      brain.a2m.idx[j].push(newIdx);
       brain.a2m.w[j].push(rng.range(-0.9, 0.9));
+      brain.traces.e[j].push(0);
     }
   }
-  brain.nAssoc = nA + 1;
+  brain.nAssoc++;
 }
 
 function pruneAssocNeuron(brain) {
   // Prune the neuron with the weakest total motor weight (least useful).
+  const li = brain.nLayers - 1;
+  const L = brain.layers[li];
   let weakest = 0;
   let weakScore = Infinity;
-  for (let i = 0; i < brain.nAssoc; i++) {
+  for (let i = 0; i < L.n; i++) {
     let s = 0;
     for (let j = 0; j < N_OUT; j++) {
       const idx = brain.a2m.idx[j].indexOf(i);
       if (idx >= 0) s += Math.abs(brain.a2m.w[j][idx]);
     }
-    s += Math.abs(brain.biasA[i]);
+    s += Math.abs(L.bias[i]);
     if (s < weakScore) { weakScore = s; weakest = i; }
   }
-  const nA = brain.nAssoc - 1;
-  brain.s2a.idx.splice(weakest, 1);
-  brain.s2a.w.splice(weakest, 1);
-  brain.biasA.splice(weakest, 1);
+  L.idx.splice(weakest, 1);
+  L.w.splice(weakest, 1);
+  L.bias.splice(weakest, 1);
+  L.n--;
   for (let j = 0; j < N_OUT; j++) {
     const idx = brain.a2m.idx[j].indexOf(weakest);
     if (idx >= 0) {
       brain.a2m.idx[j].splice(idx, 1);
       brain.a2m.w[j].splice(idx, 1);
+      brain.traces.e[j].splice(idx, 1);
     }
     // Shift indices above the removed neuron down.
     for (let n = 0; n < brain.a2m.idx[j].length; n++) {
       if (brain.a2m.idx[j][n] > weakest) brain.a2m.idx[j][n]--;
     }
   }
-  brain.nAssoc = nA;
+  brain.nAssoc--;
 }
 
 // A newborn's brain inherits structure from its parents: sparse topology is

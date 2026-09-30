@@ -371,7 +371,7 @@ test('v0.5: mate finally has an instinct pathway', () => {
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 43); // v0.12's 37 + canopy's 6 (3 movement instincts + instJump + legPower + brainSize)
+  assert.equal(GENES.length, 178); // 43 + v2's 135 (132 across 9 families + matePref's 3)
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -405,6 +405,54 @@ test('v0.5: a lonely brain with the mating instinct chooses to court', () => {
   assert.equal(action, 'mate', 'loneliness + instinct → courtship');
   const calm = decide(brain, senseVector({ ...senses, loneliness: 0 }), 0, rng);
   assert.notEqual(calm.action, 'mate', 'no loneliness → no courtship');
+});
+
+test('v2: mate preference — choosy creatures prefer the preferred color', () => {
+  const mkWorld = (choosy) => {
+    const world = v09world(77);
+    world.creatures.length = 0;
+    const chooser = addTestCreature(world, 500);
+    chooser.sex = 'male';
+    chooser.pheno.matePrefHue = 0.2;
+    chooser.pheno.matePrefSat = 0.8;
+    chooser.pheno.matePrefChoosy = choosy;
+    // Near candidate: WRONG color. Far candidate: the preferred color.
+    const near = addTestCreature(world, 540);
+    near.sex = 'female';
+    near.pheno.coatHue01 = 0.9; near.pheno.coatSat01 = 0.1;
+    const far = addTestCreature(world, 700);
+    far.sex = 'female';
+    far.pheno.coatHue01 = 0.2; far.pheno.coatSat01 = 0.8;
+    return { world, chooser, near, far };
+  };
+  // Choosy: the far, right-colored mate beats the near, wrong-colored one.
+  {
+    const { world, chooser, far } = mkWorld(1);
+    const s = gatherSenses(chooser, world);
+    assert.equal(s._mate, far, 'choosiness 1: color beats proximity');
+  }
+  // Not choosy: nearest wins, exactly as before (founder-neutral).
+  {
+    const { world, chooser, near } = mkWorld(0);
+    const s = gatherSenses(chooser, world);
+    assert.equal(s._mate, near, 'choosiness 0: nearest wins');
+  }
+});
+
+test('v2: coat color is readable off the phenotype (for the biomes phase)', () => {
+  const p = testPheno(7);
+  assert.ok(p.coatHue01 >= 0 && p.coatHue01 <= 1, 'coatHue01 is 0..1');
+  assert.ok(p.coatSat01 >= 0 && p.coatSat01 <= 1, 'coatSat01 is 0..1');
+  // Regional values are readable too.
+  for (const r of ['Head', 'Torso', 'Limbs']) {
+    assert.ok(typeof p['pig' + r + 'HueDeg'] === 'number', `pig${r}HueDeg readable`);
+    assert.ok(typeof p['pig' + r + 'SatShift'] === 'number', `pig${r}SatShift readable`);
+  }
+  // The mate-preference loci are heritable: they ride a chromosome and
+  // mutate through the normal pathway.
+  const g = randomGenome(createRng(7));
+  assert.ok(g.alleles.matePrefChoosy, 'matePrefChoosy has alleles');
+  assert.ok(GENES.find((x) => x.key === 'matePrefChoosy'), 'matePrefChoosy is a registered gene');
 });
 
 test('v0.5: founders are always two breeding pairs', () => {
@@ -455,6 +503,12 @@ test('v0.5: a lonely adult pair courts and mates end to end', () => {
     // Isolate the loop under test: silence every reflex except mate.
     for (let j = 0; j < ACTIONS.length; j++) c.brain.instW[j].fill(0);
     c.brain.instW[6][3] = 1.2; // loneliness → mate, strong
+    // v2: the big brain's random initial readout weights are noise, not
+    // signal — zero the learned pathway and freeze Hebbian learning so the
+    // only vote left is the mate instinct above.
+    for (const L of c.brain.layers) for (const w of L.w) w.fill(0);
+    for (const w of c.brain.a2m.w) w.fill(0);
+    c._learnBoost = 0;
   }
   let mated = false;
   for (let t = 0; t < 6000 && !mated; t++) {
@@ -1419,6 +1473,15 @@ test('canopy: drives are chemistry readouts', () => {
   const world = bindWorld(createWorld(10));
   populate(world);
   const c = addTestCreature(world, 500);
+  // Pin the v2 chemistry-mutating pathways to neutral: this test is about the
+  // chemistry→drive readout relationship, not the drive-tuning genes (whose
+  // jitter would otherwise decide the outcome by RNG luck) or the emitter
+  // pulses (a jittered adrenaline emitter fires here on some RNG draws).
+  for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) {
+    c.pheno['driveGain' + d] = 1;
+    c.pheno['driveBase' + d] = 0;
+  }
+  for (let i = 0; i < 6; i++) c.pheno[`em${i}amt`] = 0;
   c.biochem.bloodSugar = 0.2; // → hunger 0.8
   c.biochem.fatigue = 0.9;    // → energy 0.1
   c.biochem.oxytocin = 0.9;   // → social 0.1
