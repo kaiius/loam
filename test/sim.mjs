@@ -17,10 +17,10 @@ import {
   createCulture, foundGrove, adoptTradition, traditionVotes, groveTarget,
   pruneExtinct, sampleCulture, ratchetIndex, fidelityOf,
 } from '../src/sim/culture.js';
-import { finalizeEpisode, maybeFoundGrove, doEat, createCreature, creatureRadius } from '../src/sim/creature.js';
+import { finalizeEpisode, maybeFoundGrove, doEat, createCreature, creatureRadius, stepPhysics, gatherSenses, GRAVITY, FALL_HURT_V, JUMP_V_BASE, JUMP_V_GAIN } from '../src/sim/creature.js';
 import { createBonds, getBond, nudgeBond, tickBonds, pedigreeKin, detectTribes, socialStats } from '../src/sim/social.js';
 
-const N_SENSES = 20; // canopy: v0.12's 18 + climbUp, climbDown, groomNear
+const N_SENSES = 21; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear
 
 function testPheno(seed, overrides = {}) {
   const p = phenotype(randomGenome(createRng(seed)));
@@ -49,7 +49,7 @@ const MID_SENSES = {
 
 test('instinct genes map to valid sense/action indices', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 16); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom
+  assert.equal(inst.length, 17); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump
   for (const g of inst) {
     assert.ok(g.sense >= 0 && g.sense < N_SENSES, g.key);
     assert.ok(g.action >= 0 && g.action < ACTIONS.length, g.key);
@@ -365,13 +365,13 @@ test('memory capacity is set by an evolvable gene', () => {
 
 test('v0.5: mate finally has an instinct pathway', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 16); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom
+  assert.equal(inst.length, 17); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump
   const g = GENES.find((g) => g.key === 'instLonelyMate');
   assert.ok(g, 'instLonelyMate is a registered gene');
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 40); // v0.12's 37 + canopy's 3 movement instincts
+  assert.equal(GENES.length, 42); // v0.12's 37 + canopy's 5 (3 movement instincts + instJump + legPower)
 });
 
 test('v0.5: a lonely brain with the mating instinct chooses to court', () => {
@@ -840,7 +840,7 @@ test('v0.8: leaves are bitter — weak reward when healthy', () => {
 
 test('v0.8: illness is the 15th brain input', () => {
   const v = senseVector({ ...MID_SENSES, illness: 0.7 });
-  assert.equal(v.length, 21, 'twenty-one entries: 20 senses + bias');
+  assert.equal(v.length, 22, 'twenty-two entries: 21 senses + bias');
   assert.equal(v[13], 0.7, 'illness rides at index 13');
   assert.equal(v[14], 0, 'homeDist defaults to 0');
   assert.equal(v[15], 0, 'kinNear defaults to 0');
@@ -848,7 +848,8 @@ test('v0.8: illness is the 15th brain input', () => {
   assert.equal(v[17], 0, 'climbUp defaults to 0');
   assert.equal(v[18], 0, 'climbDown defaults to 0');
   assert.equal(v[19], 0, 'groomNear defaults to 0');
-  assert.equal(v[20], 1, 'bias still last');
+  assert.equal(v[20], 0, 'jumpNear defaults to 0');
+  assert.equal(v[21], 1, 'bias still last');
 });
 
 test('v0.8: the illness instinct points at food-seeking', () => {
@@ -952,10 +953,14 @@ test('v0.9: injury slows movement', () => {
   world.plants.length = 0; // v0.11: no biome flora dropping distraction fruit
   world.foods.length = 0; // v0.11: starter fruit positions shifted with the RNG stream
   addFood(world, 700, 0, 'fruit', 1); // inside the 420px sense range
+  const genome = randomGenome(world.rng); // one genome for both — injury is the only variable
   const mk = (injury) => {
-    const c = addTestCreature(world, 400);
+    const c = createCreature(genome, 400, 0, world.rng);
+    c.biochem.age = c.pheno.lifespanSec * 0.5; // adult
+    c.pheno.spikes = 0;
     c.biochem.injury = injury;
     c.action = 'seekFood'; c.actionTimer = 100; c.facing = 1;
+    world.creatures.push(c);
     return c;
   };
   const healthy = mk(0);
@@ -1505,4 +1510,141 @@ test('canopy: marks are inherited through the egg', () => {
   assert.ok(world.eggs.length > 0, 'eggs laid');
   const egg = world.eggs[0];
   assert.ok(egg.genome.marks.hungerRate < 1, 'the mark crosses the egg (attenuated by meiosis)');
+});
+
+// --- physics: the canopy has gravity now ------------------------------------
+// A tanglekin on a branch, a directed walk off the edge, a leap, a landing.
+// The world's own natural law — cause and effect, never dice.
+
+function physCreature(world, x, platformIndex, opts = {}) {
+  const c = createCreature(randomGenome(world.rng), x, platformIndex, world.rng);
+  c.biochem.age = c.pheno.lifespanSec * 0.5; // adult
+  c.pheno.spikes = 0; // no accidental clashes unless the test wants them
+  Object.assign(c, opts);
+  world.creatures.push(c);
+  return c;
+}
+
+test('physics: the airborne accelerate downward at GRAVITY', () => {
+  const world = v09world(50);
+  const c = physCreature(world, 300, 4); // mid branch, y=470
+  c.y = 400; c.vy = 0; c.grounded = false;
+  stepPhysics(c, world, 0.1);
+  assert.equal(c.vy, GRAVITY * 0.1, 'velocity integrates: v = g·dt');
+  assert.equal(c.y, 400 + GRAVITY * 0.1 * 0.1, 'position integrates too');
+  assert.ok(!c.grounded, 'still falling');
+});
+
+test('physics: directed feet walk off the edge; wanderers turn around', () => {
+  const world = v09world(51);
+  world.creatures.length = 0;
+  world.foods.length = 0;
+  // The walker: food past the branch tip pulls it off the edge.
+  addFood(world, 900, 4, 'fruit', 1);
+  const walker = physCreature(world, 690, 4, { action: 'seekFood', actionTimer: 100, facing: 1 });
+  for (let i = 0; i < 4; i++) tickWorld(world, 0.1);
+  assert.ok(!walker.grounded, 'walked off the mid branch — the fall begins');
+  assert.equal(walker.platformIndex, 4, 'still registered to the branch mid-fall');
+  // The wanderer: pinned hunger/energy so it only ever wanders, near the edge.
+  const drifter = physCreature(world, 650, 4, { action: 'wander', actionTimer: 100000 });
+  for (let i = 0; i < 200; i++) {
+    tickWorld(world, 0.1);
+    drifter.biochem.hunger = 0; drifter.biochem.energy = 1;
+  }
+  assert.ok(drifter.grounded, 'the wanderer never left the branch');
+  assert.equal(drifter.platformIndex, 4, 'still on the mid branch after 20s of wandering');
+});
+
+test('physics: falling onto a lower platform lands you standing on it', () => {
+  const world = v09world(52);
+  const c = physCreature(world, 800, 4);
+  // Below the lower branch (y=640) at x=800 — only the floor underneath.
+  c.y = 660; c.vy = 0; c.vx = 0; c.grounded = false;
+  for (let i = 0; i < 30 && !c.grounded; i++) tickWorld(world, 0.1);
+  assert.ok(c.grounded, 'touched down');
+  assert.equal(c.platformIndex, 0, 'landed on the forest floor');
+  assert.equal(c.y, 800, 'standing on it, not through it');
+});
+
+test('physics: jump launches with legPower-scaled impulse, grounded only', () => {
+  const world = v09world(53);
+  world.creatures.length = 0;
+  const weak = physCreature(world, 500, 0, { action: 'jump', actionTimer: 2 });
+  const strong = physCreature(world, 600, 0, { action: 'jump', actionTimer: 2 });
+  weak.pheno.legPower = 0; strong.pheno.legPower = 1;
+  tickWorld(world, 0.1);
+  assert.ok(weak.vy < 0 && strong.vy < 0, 'both left the ground upward');
+  assert.ok(!weak.grounded && !strong.grounded, 'both airborne');
+  assert.ok(Math.abs(strong.vy) > Math.abs(weak.vy),
+    `strong legs launch harder (${Math.abs(strong.vy).toFixed(0)} vs ${Math.abs(weak.vy).toFixed(0)} px/s)`);
+  assert.ok(Math.abs(weak.vy) <= JUMP_V_BASE + GRAVITY * 0.1 + 1, 'weak jump near the base impulse');
+  // No mid-air jumps: an airborne creature that "jumps" just keeps falling.
+  const flyer = physCreature(world, 700, 0);
+  flyer.y = 400; flyer.vy = 100; flyer.grounded = false;
+  flyer.action = 'jump'; flyer.actionTimer = 2;
+  tickWorld(world, 0.1);
+  assert.ok(flyer.vy > 0, 'mid-air jump does not relaunch — still falling');
+});
+
+test('physics: jumpNear sees a leapable ledge, and only that', () => {
+  const world = v09world(54);
+  const c = physCreature(world, 300, 0); // forest floor, y=800
+  // Lower branch 1: x 60–520, y=650 — 150px above, right overhead.
+  let s = gatherSenses(c, world);
+  assert.ok(s.jumpNear > 0, `ledge overhead registers (jumpNear=${s.jumpNear.toFixed(2)})`);
+  // Far from any higher platform: nothing to leap at. A stub world with one
+  // ledge 300px up (past JUMP_RANGE_DY=280) proves the range gate.
+  const stub = {
+    platforms: [{ x1: 0, x2: 1600, y: 800 }, { x1: 200, x2: 400, y: 500 }],
+    climbLinks: [], foods: [], creatures: [], critters: [], toys: [],
+    light: 1, bonds: null,
+  };
+  const cs = { ...c, x: 300, platformIndex: 0 };
+  s = gatherSenses(cs, stub);
+  assert.equal(s.jumpNear, 0, 'a ledge 300px up is not jumpable — no signal');
+  // On the top branch (y=290): nothing above at all.
+  const top = physCreature(world, 500, 7);
+  s = gatherSenses(top, world);
+  assert.equal(s.jumpNear, 0, 'the sky is not a ledge');
+});
+
+test('physics: the jump instinct wires jumpNear to the jump action', () => {
+  const g = GENES.find((g) => g.key === 'instJump');
+  assert.ok(g, 'instJump is a registered gene');
+  assert.equal(g.sense, 20, 'driven by the jumpNear sense');
+  assert.equal(g.action, 11, 'drives the jump action');
+  assert.equal(ACTIONS[11], 'jump');
+  const lg = GENES.find((g) => g.key === 'legPower');
+  assert.ok(lg && lg.kind === 'float', 'legPower is a morphology gene');
+  // The brain test: a ledge nearby + the instinct = leap.
+  const rng = createRng(42);
+  const overrides = { curiosity: 0, sociability: 0, boldness: 0 };
+  for (const gg of GENES) if (gg.sense !== undefined) overrides[gg.key] = 0;
+  overrides.instJump = 1;
+  const brain = createBrain(testPheno(42, overrides), rng);
+  silenceBrain(brain);
+  const senses = { ...MID_SENSES, jumpNear: 1, hunger: 0, tiredness: 0, loneliness: 0, boredom: 0 };
+  const { action } = decide(brain, senseVector(senses), 0, rng);
+  assert.equal(action, 'jump', 'the instinct fires at a nearby ledge');
+});
+
+test('physics: hard landings injure, startle, and scale with impact', () => {
+  const world = v09world(55);
+  const soft = physCreature(world, 400, 0);
+  soft.y = 790; soft.vy = 100; soft.grounded = false; // impact ~190 — a hop
+  const hard = physCreature(world, 500, 0);
+  hard.y = 700; hard.vy = 500; hard.grounded = false; // impact ~590 — a real fall
+  const harder = physCreature(world, 600, 0);
+  harder.y = 600; harder.vy = 700; harder.grounded = false; // impact ~790
+  const events0 = world.events.length;
+  for (const cc of [soft, hard, harder])
+    for (let i = 0; i < 40 && !cc.grounded; i++) stepPhysics(cc, world, 0.1);
+  assert.ok(soft.grounded && hard.grounded && harder.grounded, 'all three touched down');
+  assert.equal(soft.biochem.injury, 0, 'a hop costs nothing');
+  assert.ok(hard.biochem.injury > 0, 'a fall leaves a mark');
+  assert.ok(harder.biochem.injury > hard.biochem.injury, 'harder falls hurt more');
+  assert.ok(hard.biochem.adrenaline > 0.3, 'the landing startles');
+  assert.ok(hard.flinchT > 0, 'the painter gets a flinch to show');
+  const landings = world.events.slice(events0).filter((e) => e.type === 'hardLanding');
+  assert.equal(landings.length, 2, 'two hard landings made the chronicle, not the hop');
 });

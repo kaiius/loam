@@ -158,9 +158,11 @@ export function render(r, world, ui, t) {
     (ui.selected === a ? 1 : 0) - (ui.selected === b ? 1 : 0));
   for (const c of sorted) {
     const plat = world.platforms[c.platformIndex];
-    if (ui.selected === c) drawSelectionRing(ctx, c, plat.y, t);
-    drawCreature(ctx, c, plat.y, t);
-    drawLabel(ctx, c, plat.y, ui);
+    // Physics: creatures have their own y now — the airborne draw mid-air.
+    const cy = (c.y !== undefined && c.y !== null) ? c.y : plat.y;
+    if (ui.selected === c) drawSelectionRing(ctx, c, cy, t);
+    drawCreature(ctx, c, cy, t);
+    drawLabel(ctx, c, cy, ui);
   }
 
   // Hand-dragged ghost handled by UI overlay (DOM), skip here.

@@ -29,9 +29,10 @@ export const ACTIONS = [
   'seekHome', // walk back toward the imprinted home range
   'climb', // move up/down a climb link to another branch
   'groom', // groom the nearest creature — the troop's bonding ritual
+  'jump', // leap: gravity's answer to the gap between branches (physics)
 ];
 
-export const N_IN = 21; // 19 senses + bias... see senseVector
+export const N_IN = 22; // 20 senses + jumpNear + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -42,7 +43,7 @@ const MIN_ASSOC = 16; // pruning never goes below this
 // senses: [hunger, tiredness, boredom, loneliness, fear, light,
 //           foodDist, foodDir, creatureDist, creatureDir, toyDist, toyDir,
 //           isAdult, illness, homeDist, kinNear, bondNear,
-//           climbUp, climbDown, bias]
+//           climbUp, climbDown, groomNear, jumpNear, bias]
 // v0.12 rule kept: never renumber. New senses append before the bias.
 export function senseVector(s) {
   return [
@@ -50,7 +51,7 @@ export function senseVector(s) {
     s.foodDist, s.foodDir, s.creatureDist, s.creatureDir,
     s.toyDist, s.toyDir, s.isAdult, s.illness,
     s.homeDist || 0, s.kinNear || 0, s.bondNear || 0,
-    s.climbUp || 0, s.climbDown || 0, s.groomNear || 0, 1,
+    s.climbUp || 0, s.climbDown || 0, s.groomNear || 0, s.jumpNear || 0, 1,
   ];
 }
 

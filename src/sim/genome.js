@@ -1,9 +1,10 @@
 // Digital DNA for Canopy tanglekins: diploid genome, inheritance with
 // CHROMOSOMAL meiosis + epigenetics, and phenotype expression.
 //
-// The 40 loci are Wildcode v0.12's (borrowed from paulthecat — 37 genes,
+// The 42 loci are Wildcode v0.12's (borrowed from paulthecat — 37 genes,
 // incl. the sense→action instinct genes, morphology, tradition fidelity)
-// plus 3 canopy genes (instClimbUp, instClimbDown, instLonelyGroom).
+// plus 5 canopy genes (instClimbUp, instClimbDown, instLonelyGroom,
+// instJump, legPower).
 //
 // The machinery is Emberhollow's: 8 chromosomes, meiosis with 1–3 crossovers
 // per chromosome (linked genes travel together; distant genes assort),
@@ -57,10 +58,15 @@ export const GENES = [
   // social grooming (new): loneliness drives grooming (action 10), the
   // troop's bonding ritual. Grooming builds bonds and oxytocin.
   { key: 'instLonelyGroom', kind: 'float', sense: 3, action: 10, founder: 0.6 },
+  // physics (new): a jumpable ledge nearby (sense 21) drives the jump
+  // action (11). Same v0.5 precedent: an action with no instinct pathway
+  // is never tried and never learned.
+  { key: 'instJump', kind: 'float', sense: 20, action: 11, founder: 0.5 },
   // morphology — body parts with stat tradeoffs. What you see IS the DNA.
   { key: 'diet', kind: 'choice', choices: ['herbivore', 'omnivore', 'carnivore'], founder: 0 },
   { key: 'mouthSize', kind: 'float', founder: 0.5 },
   { key: 'legLength', kind: 'float', founder: 0.5 },
+  { key: 'legPower', kind: 'float', founder: 0.5 }, // jump impulse — how hard the legs launch
   { key: 'spikes', kind: 'float', founder: 0.2 },
   { key: 'fur', kind: 'float', founder: 0.5 },
   // tradition — fidelity of cultural transmission.
@@ -76,7 +82,7 @@ const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 export const CHROMOSOMES = [
   // 1 — Morphology
   ['bodyHue', 'patternDensity', 'size', 'tailLength', 'eyeSize', 'pattern', 'earShape',
-   'diet', 'mouthSize', 'legLength', 'spikes', 'fur'],
+   'diet', 'mouthSize', 'legLength', 'legPower', 'spikes', 'fur'],
   // 2 — Metabolism
   ['hungerRate', 'energyDrain', 'lifespan', 'growthRate', 'fertility', 'immunity'],
   // 3 — Neuroarchitecture
@@ -86,7 +92,8 @@ export const CHROMOSOMES = [
    'instHungerSeek', 'instHungerEat', 'instTiredSleep', 'instBoredPlay',
    'instLonelyApproach', 'instFearFlee', 'instLightSleep', 'instFoodDistSeek',
    'instCreatureDistApproach', 'instToyDistPlay', 'instLonelyMate',
-   'instIllnessSeek', 'instHomeSeek', 'instClimbUp', 'instClimbDown', 'instLonelyGroom'],
+   'instIllnessSeek', 'instHomeSeek', 'instClimbUp', 'instClimbDown', 'instLonelyGroom',
+   'instJump'],
   // 5 — Drives (reserved: sensitivity loci for future chemistry work)
   [],
   // 6 — Immune (reserved)

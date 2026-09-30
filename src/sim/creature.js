@@ -13,6 +13,18 @@ let nextId = 1;
 
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
+// --- physics: the canopy has gravity now ---------------------------------
+// y grows downward (screen space). Ground platform at y=800 spans the whole
+// world, so every fall ends somewhere — there is no void below.
+export const GRAVITY = 900; // px/s^2 — the world's own law, not a dice roll
+export const MAX_FALL = 950; // terminal velocity px/s
+export const FALL_HURT_V = 520; // land faster than this and it costs you
+export const FALL_DMG = 1 / 900; // injury per px/s of impact past the threshold
+export const JUMP_V_BASE = 260; // px/s upward at legPower 0
+export const JUMP_V_GAIN = 420; // +px/s of launch at legPower 1
+export const JUMP_RANGE_DY = 280; // highest ledge the jumpNear sense can see
+export const JUMP_RANGE_DX = 220; // farthest sideways the jumpNear sense sees
+
 const NAMES = [
   'Pip', 'Moss', 'Wren', 'Pebble', 'Fig', 'Nix', 'Bramble', 'Tansy',
   'Clover', 'Soot', 'Miso', 'Plum', 'Ash', 'Juniper', 'Sorrel', 'Dune',
@@ -36,6 +48,13 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     sleepTicks: 0, // consecutive sleeping ticks (gates consolidation)
     x,
     platformIndex,
+    // physics: real vertical position + velocity. Grounded creatures stand
+    // on their platform's y; airborne ones answer to gravity. y snaps to
+    // the platform on the first physics tick (see stepPhysics).
+    y: opts.y !== undefined ? opts.y : undefined,
+    vx: 0,
+    vy: 0,
+    grounded: true,
     // v0.12: home-range imprinting. Birthplace is home — permanent.
     // Philopatry, not a leash: the brain (via homeDist + instHomeSeek)
     // decides how much it matters.
@@ -118,7 +137,7 @@ function nearestSpatial(sorted, x, range, excludeId) {
   return best ? { obj: best, dist: bestD / range, dir: Math.sign(best.x - x) || 1 } : null;
 }
 
-function gatherSenses(c, world) {
+export function gatherSenses(c, world) {
   const b = c.biochem;
   // v0.6 morphology: sight range comes from the eyeSize gene.
   const range = c.pheno.sightRange || SENSE_RANGE;
@@ -155,6 +174,27 @@ function gatherSenses(c, world) {
       else climbDown = 1;
     }
   }
+  // Physics sense (new): jumpNear — 1 when a jumpable ledge (a higher
+  // platform within leap range) is nearby. The instJump gene wires this to
+  // the jump action; the brain learns the rest.
+  let jumpNear = 0;
+  {
+    const py = world.platforms[c.platformIndex].y;
+    const maxD = Math.hypot(JUMP_RANGE_DX, JUMP_RANGE_DY);
+    let bd = Infinity;
+    for (let i = 0; i < world.platforms.length; i++) {
+      if (i === c.platformIndex) continue;
+      const p = world.platforms[i];
+      const dy = py - p.y; // positive = ledge above
+      if (dy < 30 || dy > JUMP_RANGE_DY) continue;
+      const cx = Math.max(p.x1, Math.min(p.x2, c.x));
+      const dx = Math.abs(c.x - cx);
+      if (dx > JUMP_RANGE_DX) continue;
+      const d = Math.hypot(dx, dy);
+      if (d < bd) bd = d;
+    }
+    if (bd < Infinity) jumpNear = 1 - bd / maxD;
+  }
   return {
     _range: range, // px base for dist normalization (used by contagion/mating checks)
     hunger: b.hunger,
@@ -167,7 +207,7 @@ function gatherSenses(c, world) {
     homeDist: c.homeX !== undefined ? clamp01(Math.abs(c.x - c.homeX) / 800) : 0,
     kinNear: otherObj ? pedigreeKin(world, c, otherObj) : 0,
     bondNear: otherObj && world.bonds ? getBond(world.bonds, c, otherObj) : 0,
-    climbUp, climbDown,
+    climbUp, climbDown, jumpNear,
     foodDist: food ? food.dist : 1,
     foodDir: food ? food.dir : 0,
     creatureDist: other ? other.dist : 1,
@@ -181,7 +221,7 @@ function gatherSenses(c, world) {
   };
 }
 
-function moveAlong(c, world, dir, dt, mult = 1) {
+function moveAlong(c, world, dir, dt, mult = 1, edge = 'turn') {
   const stage = ageStage(c.biochem, c.pheno);
   const sickSlow = c.biochem.illness > 0.5 ? 0.7 : 1; // illness saps strength
   // v0.9: wounds slow the body — the body's history constrains the soul.
@@ -193,21 +233,83 @@ function moveAlong(c, world, dir, dt, mult = 1) {
   const r = creatureRadius(c);
   c.x += dir * speed * dt;
   if (Math.abs(dir) > 0) c._active = Math.max(c._active || 0, Math.min(1, mult)); // exertion for the chemistry
-  if (c.x < plat.x1 + r) {
-    c.x = plat.x1 + r;
-    c.wanderDir *= -1;
-  } else if (c.x > plat.x2 - r) {
-    c.x = plat.x2 - r;
-    c.wanderDir *= -1;
+  // edge: 'turn' (wanderers turn around at the brink — branches stay livable)
+  //   or 'fall' (directed feet can walk off the edge — gravity takes it).
+  if (c.x < plat.x1 + r || c.x > plat.x2 - r) {
+    if (edge === 'turn' || !c.grounded) {
+      if (c.x < plat.x1 + r) { c.x = plat.x1 + r; c.wanderDir *= -1; }
+      else { c.x = plat.x2 - r; c.wanderDir *= -1; }
+    } else {
+      // Directed movement walks off the edge — the fall begins.
+      c.grounded = false;
+      c.vx = dir * speed;
+      c.vy = Math.min(c.vy, 0);
+    }
   }
   if (dir !== 0) c.facing = dir;
   c.hopPhase += dt * 10;
 }
 
+// Integrate gravity, land on platforms, take fall damage. The world's own
+// natural law — cause and effect, never dice.
+export function stepPhysics(c, world, dt) {
+  const plat = world.platforms[c.platformIndex];
+  if (c.y === undefined || c.y === null) {
+    // First tick: snap to the platform. (createCreature can't see the world.)
+    // Position only — a jump or walk-off that fired earlier this same tick
+    // already set grounded=false and a velocity; don't stomp the launch.
+    c.y = plat.y;
+    if (c.grounded) { c.vx = 0; c.vy = 0; }
+  }
+  if (c.grounded) {
+    c.y = plat.y; // stand on the branch
+    c.vy = 0;
+    return;
+  }
+  // Airborne: gravity integrates.
+  const prevY = c.y;
+  c.vy = Math.min(MAX_FALL, c.vy + GRAVITY * dt);
+  c.x += c.vx * dt;
+  // The world has walls: nobody leaves sideways.
+  if (c.x < 0) { c.x = 0; c.vx = Math.abs(c.vx) * 0.3; }
+  if (c.x > world.width) { c.x = world.width; c.vx = -Math.abs(c.vx) * 0.3; }
+  c.y += c.vy * dt;
+  // Landing: falling through a platform's span means standing on it.
+  // (Only while falling — leaping up through a branch is allowed.)
+  if (c.vy > 0) {
+    for (let i = 0; i < world.platforms.length; i++) {
+      const p = world.platforms[i];
+      if (c.x >= p.x1 && c.x <= p.x2 && prevY <= p.y && c.y >= p.y) {
+        const impact = c.vy;
+        c.y = p.y;
+        c.vy = 0;
+        c.vx = 0;
+        c.grounded = true;
+        c.platformIndex = i;
+        land(c, world, impact);
+        break;
+      }
+    }
+  }
+}
+
+// Touchdown: hard landings cost injury, startle, and a flinch the painter
+// shows. Soft landings are just Tuesday.
+function land(c, world, impact) {
+  if (impact <= FALL_HURT_V) return;
+  const b = c.biochem;
+  const excess = impact - FALL_HURT_V;
+  b.injury = clamp01(b.injury + excess * FALL_DMG);
+  b.adrenaline = clamp01(b.adrenaline + 0.35); // the landing startles
+  c.flinchT = 0.45;
+  c.reward -= 0.25;
+  world.events.push({ type: 'hardLanding', creature: c, impact: Math.round(impact), t: world.time });
+}
+
 function moveToward(c, world, targetX, dt, mult = 1) {
   const dx = targetX - c.x;
   if (Math.abs(dx) < 4) return true; // arrived
-  moveAlong(c, world, Math.sign(dx), dt, mult);
+  moveAlong(c, world, Math.sign(dx), dt, mult, 'fall'); // directed feet can walk off
   return false;
 }
 
@@ -443,6 +545,8 @@ function executeAction(c, world, dt, s) {
       } else {
         // Through the gap — arrive on the new branch.
         c.platformIndex = best.to;
+        c.y = world.platforms[best.to].y; // arrive standing, not floating
+        c.vy = 0; c.vx = 0; c.grounded = true;
         c.actionTimer = 0; // re-decide from the new branch
         c.reward += 0.05; // climbing somewhere new feels good
         c._active = 1;
@@ -464,6 +568,26 @@ function executeAction(c, world, dt, s) {
         if (world.bonds) nudgeBond(world, c, other, 0.06 * dt);
       } else if (other && other.platformIndex === c.platformIndex) {
         moveToward(c, world, other.x, dt, 0.9);
+      } else {
+        c.action = 'wander';
+        c.actionTimer = 0;
+      }
+      break;
+    }
+    case 'jump': {
+      // The physics action: launch off the branch. legPower sets the
+      // impulse; gravity does the rest. Grounded only — no mid-air jumps.
+      // The genome opens the pathway (instJump); the world teaches the aim —
+      // mistimed leaps end in hard landings, and hard landings teach.
+      c.actionLabel = 'jumping';
+      if (c.grounded) {
+        const power = c.pheno.legPower ?? 0.5;
+        c.vy = -(JUMP_V_BASE + JUMP_V_GAIN * power);
+        c.vx = c.facing * (60 + power * 120);
+        c.grounded = false;
+        c._active = 1; // jumping is work — the chemistry bills it
+        c.reward += 0.05; // airtime feels good
+        world.events.push({ type: 'jumped', creature: c, t: world.time });
       } else {
         c.action = 'wander';
         c.actionTimer = 0;
@@ -795,6 +919,10 @@ export function updateCreature(c, world, dt) {
   // stimulus, including the crash inside executeAction — so the brain, the
   // painter, and the tests see this tick's fear, not last tick's.
   b.fear = clamp01(b.adrenaline);
+
+  // Physics closes the tick: gravity integrates, landings resolve, falls hurt.
+  // (Dragged creatures returned early — the hand holds them, not the world.)
+  stepPhysics(c, world, dt);
 
   c.mood = mood(b);
 }
