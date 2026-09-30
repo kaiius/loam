@@ -6,8 +6,10 @@ import assert from 'node:assert/strict';
 
 import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, DUP_RATE, DEL_RATE, MAX_EXTRA } from '../src/sim/genome.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from '../src/sim/brain.js';
-import { createBiochem, tickBiochem, mood } from '../src/sim/biochem.js';
+import { createBiochem, tickBiochem, mood, ageStage } from '../src/sim/biochem.js';
 import { createRng } from '../src/sim/rng.js';
+import { SvgCtx } from './svg-shim.mjs';
+import { drawCreature } from '../src/render/painter.js';
 import { createWorld, bindWorld, populate, tickWorld, addFood, layEgg, addPebble, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE } from '../src/sim/world.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
@@ -2306,6 +2308,10 @@ test('v0.14: hatchlings of divergent parents carry the cost in lifespan', () => 
 test('v0.14: computeSpecies clusters adults by genome distance', () => {
   const world = bindWorld(createWorld(1422));
   populate(world);
+  // Founders are incidental — v0.15 starts them as adults, so exclude them
+  // from this experiment's census.
+  const founderIds = new Set(world.creatures.map((c) => c.id));
+  world.creatures = world.creatures.filter((c) => !founderIds.has(c.id));
   const rng = createRng(77);
   const mkGroup = (val, n) => {
     const out = [];
@@ -2331,6 +2337,10 @@ test('v0.14: computeSpecies clusters adults by genome distance', () => {
 test('v0.14: a lineage split fires a speciation event', () => {
   const world = bindWorld(createWorld(1423));
   populate(world);
+  // Founders are incidental to this test — v0.15 starts them as adults, so
+  // they would join the species census. Keep the experiment to the 8-group.
+  const founderIds = new Set(world.creatures.map((c) => c.id));
+  world.creatures = world.creatures.filter((c) => !founderIds.has(c.id));
   const rng = createRng(78);
   const group = [];
   for (let i = 0; i < 8; i++) {
@@ -3150,4 +3160,65 @@ test('v0.14.2: followPoint centers the world point', () => {
   const s = worldToScreen(r, w, 1000, 500);
   assert.ok(Math.abs(s.x - 800) < 1e-9 && Math.abs(s.y - 450) < 1e-9, `centered, got ${s.x},${s.y}`);
   assert.ok(r.cam.manual, 'following arms the manual camera');
+});
+
+// v0.15 "Bloom": breeding diagnosis. The v2 courtship fix made mating fire;
+// the die-outs came from juvenile founders dying before they could breed
+// (seed 11 / seed 99 autopsies). Founders now start as young adults.
+test('v0.15: founders start as young adults, breedable from the first minute', () => {
+  const world = bindWorld(createWorld(7));
+  populate(world);
+  assert.equal(world.creatures.length, 4, 'four founders');
+  for (const c of world.creatures) {
+    assert.equal(ageStage(c.biochem, c.pheno), 'adult', `${c.name} starts adult`);
+    assert.ok(c.pheno.lifespanSec * 0.25 < c.biochem.age, 'past the juvenile threshold');
+  }
+});
+
+test('v0.15: courtship fires and eggs hatch within the first minutes (seed 7)', () => {
+  const world = bindWorld(createWorld(7));
+  populate(world);
+  let matings = 0, births = 0;
+  const origPush = world.events.push.bind(world.events);
+  world.events.push = (e) => {
+    if (e.type === 'mating') matings++;
+    else if (e.type === 'hatch') births++;
+    return origPush(e);
+  };
+  for (let i = 0; i < 3000; i++) tickWorld(world, 0.1); // 300 sim-seconds
+  assert.ok(matings >= 1, `expected courtship, got ${matings} matings`);
+  assert.ok(births >= 1, `expected hatchlings, got ${births} births`);
+});
+
+// v0.15 "Bloom": the v2 morphology render genes were dead — the painter never
+// read bulk, tailCurl, earSize, earTilt, armLength, or regional pigmentation.
+// A gene the painter ignores cannot change the render, so per-gene SVG
+// differences prove the wiring.
+test('v0.15: morphology genes (bulk/tailCurl/ears/regional pigment) reach the painter', () => {
+  const world = bindWorld(createWorld(7));
+  populate(world);
+  const c = world.creatures[0];
+  const draw = (mut) => {
+    const saved = {};
+    for (const k of Object.keys(mut)) { saved[k] = c.pheno[k]; c.pheno[k] = mut[k]; }
+    const ctx = new SvgCtx(400, 400);
+    drawCreature(ctx, c, 350, 1.0);
+    const svg = ctx.toSVG();
+    for (const k of Object.keys(mut)) c.pheno[k] = saved[k];
+    return svg;
+  };
+  const classic = draw({});
+  assert.ok(classic.length > 1000, 'the painter produced a render');
+  for (const mut of [
+    { bulk: 1.0 }, { bulk: 0.0 },
+    { tailCurl: 1.0 }, { tailCurl: 0.0 },
+    { earScale: 1.5 }, { earTiltRad: 0.5 },
+    { armLength: 1.0 },
+    { pigTorsoHueDeg: 180 }, { pigTorsoSatShift: -60 }, { pigTorsoPat: 'spots' },
+    { pigHeadHueDeg: -120 }, { pigHeadPat: 'spots' },
+    { pigLimbsHueDeg: 90 }, { pigLimbsSatShift: 60 },
+  ]) {
+    const k = Object.keys(mut)[0];
+    assert.notEqual(draw(mut), classic, `${k} changes the render`);
+  }
 });

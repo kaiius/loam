@@ -1040,8 +1040,14 @@ export function populate(world) {
     const c = createCreature(randomGenome(rng), fx, fpi, rng,
       i < 2 ? { name: names[i] } : {});
     c.name = uniqueName(world, c.name);
-    // Start them as juveniles so the player gets to know them.
-    c.biochem.age = c.pheno.lifespanSec * 0.15;
+    // Start them as young adults, not juveniles. The breeding window is
+    // 25%–80% of lifespan, and juvenile founders kept dying (starvation,
+    // illness, short lifespans) before they could ever mate — the seed-11 /
+    // seed-99 extinction pattern: "aren't breeding and keep dying out".
+    // 0.4 clears even the slowest maturation (matTime stretches childhood
+    // to 37.5% of lifespan), so every founder is breedable from the first
+    // minute the player watches.
+    c.biochem.age = c.pheno.lifespanSec * 0.4;
     recordLineage(world, c);
     founders.push(c);
   }

@@ -64,6 +64,7 @@ export function createUI(canvas, renderer, world) {
     <div id="camctl">
       <button id="zoomIn" title="Zoom in">＋</button>
       <button id="zoomOut" title="Zoom out">－</button>
+      <button id="nextCreature" title="Jump to the next creature">🐒</button>
       <button id="recenter" title="Recenter on the whole world">⌂</button>
     </div>
   `;
@@ -108,6 +109,20 @@ export function createUI(canvas, renderer, world) {
   root.querySelector('#recenter').addEventListener('click', () => {
     recenterCamera(renderer, world);
     ui.follow = false;
+  });
+  // v0.15 "Bloom": cycle through every living creature — center + follow
+  // each in turn. Answers "where are the creatures?" no matter where one
+  // has wandered; also the repo-side twin of the hosted page's 🐒 button.
+  ui._nextIdx = 0;
+  root.querySelector('#nextCreature').addEventListener('click', () => {
+    const alive = world.creatures.filter((c) => c.alive);
+    if (!alive.length) return;
+    const c = alive[ui._nextIdx % alive.length];
+    ui._nextIdx = (ui._nextIdx + 1) % alive.length;
+    ui.setSelected(c);
+    refreshPanel(panel, ui);
+    const plat = world.platforms[c.platformIndex];
+    if (plat) followPoint(renderer, world, c.x, plat.y - 40);
   });
 
   // ---- v0.14: the Teacher — Sunny's in-sim avatar ----

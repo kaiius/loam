@@ -188,7 +188,16 @@ export function teacherRewardNearest(world, teacher) {
 // Travel runs in two phases: walk to the departure point (this branch's
 // nearest point to the target), swing across, then walk to the target x.
 const TEACHER_SPEED = 110; // px/s
-function moveToward(teacher, world, dt) {
+// NOTE (v0.15 "Bloom"): this was plain `moveToward` until it collided with
+// creature.js's `moveToward` in the dist bundle — scripts/build.js
+// concatenates every module into ONE scope, so the later definition
+// (teacher's) silently replaced the creature one and every creature's
+// wander/eat/play/mate movement ran teacher logic with
+// `c.targetX === undefined`, writing NaN into creature.x. Module scope
+// hides the collision in src/ (tests stay green); the shipped bundle is
+// where it bites. Keep this name unique across modules — build.js enforces
+// it with a duplicate-declaration guard.
+function moveTeacherToward(teacher, world, dt) {
   const plat = world.platforms[teacher.platformIndex];
   const tplat = world.platforms[teacher.targetPlatform];
 
@@ -260,7 +269,7 @@ export function tickTeacher(world, teacher, dt) {
     if (cmd) runCommand(world, teacher, cmd);
     // Drift toward any commanded destination; otherwise perch.
     if (teacher.platformIndex !== teacher.targetPlatform || Math.abs(teacher.targetX - teacher.x) > 6) {
-      const arrived = moveToward(teacher, world, dt);
+      const arrived = moveTeacherToward(teacher, world, dt);
       if (!teacher.demoQueue.length) teacher.actionLabel = arrived ? 'perching' : 'traveling';
     } else if (!teacher.demoQueue.length) {
       teacher.vx = 0;
@@ -309,7 +318,7 @@ export function tickTeacher(world, teacher, dt) {
     }
     case 'travel': {
       teacher.actionLabel = 'traveling';
-      if (moveToward(teacher, world, dt)) {
+      if (moveTeacherToward(teacher, world, dt)) {
         logTeach(world, { t: world.time, kind: 'arrive', zone: zoneAt(teacher.x).key });
         teacher.state = countListeners(world, teacher) > 0 ? 'demo' : 'perch';
         if (teacher.state === 'demo') teacherDemo(world, teacher);

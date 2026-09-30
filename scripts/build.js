@@ -47,6 +47,84 @@ if (/^\s*import[\s(]/m.test(js)) {
   throw new Error('Bundle still contains import statements — check the transform.');
 }
 
+// v0.15 "Bloom": namespace-safety guard. The bundle concatenates every
+// module into ONE top-level scope, so two modules declaring the same
+// top-level name silently collide — JS hoisting lets the LATER definition
+// win. That shipped the invisibility bug: teacher.js's `moveToward`
+// replaced creature.js's, and every creature's movement wrote NaN into
+// x (module scope hid it from all src/ tests). Duplicates with byte-
+// identical declarations (e.g. the shared clamp01 helper) are provably
+// harmless; anything else fails the build loudly.
+assertNoCollisions();
+
+function topLevelDecls(src) {
+  // Capture top-level `function name(`, `const/let name =`, `class name`
+  // declarations with their FULL normalized text, so identity comparison
+  // sees the body, not just the signature line.
+  const decls = [];
+  const lines = src.split('\n');
+  const norm = (s) => s.replace(/\s+/g, ' ').trim();
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(?:export\s+)?(?:function|const|let|class)\s+([A-Za-z_$][\w$]*)/);
+    if (!m) continue;
+    const name = m[1];
+    let text = lines[i];
+    if (/^\s*(?:export\s+)?function/.test(lines[i]) || /^\s*(?:export\s+)?class/.test(lines[i])) {
+      // Brace-balance through the whole body.
+      let depth = 0, started = false, j = i;
+      for (; j < lines.length; j++) {
+        for (const ch of lines[j]) {
+          if (ch === '{') { depth++; started = true; }
+          else if (ch === '}') depth--;
+        }
+        if (started && depth === 0) break;
+      }
+      text = lines.slice(i, j + 1).join('\n');
+      i = j;
+    } else {
+      // const/let: through the terminating semicolon at paren/brace depth 0.
+      let depth = 0, j = i, done = false;
+      const buf = [];
+      for (; j < lines.length && !done; j++) {
+        buf.push(lines[j]);
+        for (const ch of lines[j]) {
+          if ('({['.includes(ch)) depth++;
+          else if (')}]'.includes(ch)) depth--;
+          else if (ch === ';' && depth === 0) done = true;
+        }
+      }
+      text = buf.join('\n');
+      i = j - 1; // j already advanced past the last consumed line; the for-loop's i++ lands on the next unconsumed line
+    }
+    decls.push({ name, text: norm(text) });
+  }
+  return decls;
+}
+
+function assertNoCollisions() {
+  const byName = new Map();
+  for (const mod of MODULES) {
+    const src = readFileSync(join(root, mod), 'utf8');
+    for (const d of topLevelDecls(src)) {
+      if (!byName.has(d.name)) byName.set(d.name, []);
+      byName.get(d.name).push({ mod, text: d.text });
+    }
+  }
+  for (const [name, defs] of byName) {
+    if (defs.length < 2) continue;
+    const bodies = new Set(defs.map((d) => d.text));
+    if (bodies.size > 1) {
+      const where = defs.map((d) => `  ${d.mod}: ${d.text}`).join('\n');
+      throw new Error(
+        `Bundle namespace collision: top-level "${name}" declared in ${defs.length} modules ` +
+        `with DIFFERENT definitions (later module wins by hoisting — this shipped the ` +
+        `moveToward/NaN invisibility bug). Rename one copy.\n${where}`
+      );
+    }
+    console.log(`note: "${name}" declared identically in ${defs.map((d) => d.mod).join(', ')} — harmless`);
+  }
+}
+
 const html = readFileSync(join(root, 'index.html'), 'utf8');
 const css = html.match(/<style>([\s\S]*?)<\/style>/)[1];
 

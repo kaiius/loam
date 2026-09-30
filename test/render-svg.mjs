@@ -19,7 +19,7 @@ if (!world.eggs.length) layEgg(world, 1050, 0, randomGenome(world.rng), null);
 const W = 1440, H = 810;
 const ctx = new SvgCtx(W, H);
 const fakeCanvas = { width: W, height: H, clientWidth: W, clientHeight: H };
-const r = { canvas: fakeCanvas, ctx, scale: 1, ox: 0, oy: 0, dpr: 1, stars: [] };
+const r = { canvas: fakeCanvas, ctx, scale: 1, ox: 0, oy: 0, dpr: 1, stars: [], cam: { manual: true, x: 800, y: 400, zoom: 1 }, fitScale: 1 };
 let a = 1234567;
 const rnd = () => { a = (a * 16807) % 2147483647; return (a - 1) / 2147483646; };
 for (let i = 0; i < 140; i++) r.stars.push({ x: rnd(), y: rnd() * 0.6, s: rnd() });

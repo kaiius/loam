@@ -75,10 +75,38 @@ export function drawCreature(ctx, c, groundY, t) {
   const muzzleC = shade(hueDeg, 40 - satLoss, 78);
   const crownC = shade(hueDeg, 55 - satLoss, 38);
 
+  // v0.15 "Bloom": regional pigmentation — head, torso, and limbs read
+  // their own hue/sat genes, so selection can paint regions independently.
+  // Founder values (0.5) → zero offset: the classic look is unchanged.
+  const torsoHue = hueDeg + (p.pigTorsoHueDeg ?? 0);
+  const torsoSat = 58 - satLoss + (p.pigTorsoSatShift ?? 0) / 2;
+  const torsoBase = shade(torsoHue, torsoSat, 60);
+  const torsoDark = shade(torsoHue, torsoSat - 6, 44);
+  const headHue = hueDeg + (p.pigHeadHueDeg ?? 0);
+  const headSat = 58 - satLoss + (p.pigHeadSatShift ?? 0) / 2;
+  const headBase = shade(headHue, headSat, 60);
+  const headDark = shade(headHue, headSat - 6, 44);
+  const headMuzzle = shade(headHue, 40 - satLoss, 78);
+  const headCrown = shade(headHue, 55 - satLoss, 38);
+  const limbHue = hueDeg + (p.pigLimbsHueDeg ?? 0);
+  const limbSat = 52 - satLoss + (p.pigLimbsSatShift ?? 0) / 2;
+  const limbBase = shade(limbHue, limbSat + 6, 60);
+  const limbDark = shade(limbHue, limbSat, 44);
+  // Regional patterns: 'none' (the founder) falls back to the classic
+  // whole-body pattern gene; an explicit regional pattern overrides it.
+  const torsoPat = (p.pigTorsoPat && p.pigTorsoPat !== 'none') ? p.pigTorsoPat : p.pattern;
+  const headPat = (p.pigHeadPat && p.pigHeadPat !== 'none') ? p.pigHeadPat : null;
+  const limbPat = (p.pigLimbsPat && p.pigLimbsPat !== 'none') ? p.pigLimbsPat : null;
+
   // Limb lengths from the morphology genes.
   const legLen = r * (0.15 + p.legLength * 0.6); // hip → foot
-  const armLen = r * (0.45 + p.legLength * 0.65); // shoulder → hand
+  // v0.15: armLength replaces legLength in the arm formula (founder → same).
+  const armLen = r * (0.45 + (p.armLength ?? p.legLength) * 0.65); // shoulder → hand
   const tailLen = r * (0.9 + p.tailLength * 1.6); // prehensile tail
+  // v0.15: tailCurl scales how tightly the tail coils (founder → as before).
+  const tailCurlK = 0.6 + (p.tailCurl ?? 0.5) * 0.8;
+  // v0.15: bulk is body girth — the torso's width (founder → as before).
+  const bulkK = 0.7 + (p.bulk ?? 0.5) * 0.36; // ×0.88 at founder
 
   ctx.save();
   ctx.translate(c.x, groundY);
@@ -103,7 +131,7 @@ export function drawCreature(ctx, c, groundY, t) {
   // ---- Tail (behind everything). ----
   {
     const sway = Math.sin(t * (c.mood === 'content' ? 3.4 : 1.8) + c.id * 2) * r * 0.16;
-    ctx.strokeStyle = dark;
+    ctx.strokeStyle = limbDark; // v0.15: limbs read the limb pigment genes
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(3, r * 0.17 * (1 + (bristling ? 0.5 : 0))); // bristle puffs the tail
     ctx.beginPath();
@@ -111,26 +139,26 @@ export function drawCreature(ctx, c, groundY, t) {
     if (climbing) {
       // Wrapped: the tail coils around the branch — the fifth limb.
       ctx.moveTo(bx, by);
-      ctx.quadraticCurveTo(bx - tailLen * 0.5, by + r * 0.35,
-        bx - tailLen * 0.25, by + r * 0.55);
+      ctx.quadraticCurveTo(bx - tailLen * 0.5 * tailCurlK, by + r * 0.35,
+        bx - tailLen * 0.25 * tailCurlK, by + r * 0.55);
       ctx.quadraticCurveTo(bx, by + r * 0.7, bx + tailLen * 0.2, by + r * 0.45);
     } else if (sleeping) {
       // Over the nose: curled right around to the face.
       ctx.moveTo(bx, by);
-      ctx.quadraticCurveTo(bx - tailLen * 0.7, by - r * 0.4,
+      ctx.quadraticCurveTo(bx - tailLen * 0.7 * tailCurlK, by - r * 0.4,
         headX + r * 0.3, headY + r * 0.42);
     } else {
       // The classic curl: up behind, tip swaying.
       ctx.moveTo(bx, by);
-      ctx.quadraticCurveTo(bx - tailLen * 0.55, by - tailLen * 0.25 + sway,
-        bx - tailLen * 0.35, by - tailLen * 0.75 + sway * 1.7);
-      ctx.quadraticCurveTo(bx - tailLen * 0.2, by - tailLen * 1.0 + sway * 2,
+      ctx.quadraticCurveTo(bx - tailLen * 0.55 * tailCurlK, by - tailLen * 0.25 + sway,
+        bx - tailLen * 0.35 * tailCurlK, by - tailLen * 0.75 + sway * 1.7);
+      ctx.quadraticCurveTo(bx - tailLen * 0.2 * tailCurlK, by - tailLen * 1.0 + sway * 2,
         bx + tailLen * 0.05, by - tailLen * 0.92 + sway * 1.6);
     }
     ctx.stroke();
-    // Tail rings — deterministic bands from the pattern gene.
+    // Tail rings — deterministic bands; the limb pattern gene can restyle them.
     if (p.pattern !== 'stripes' || true) {
-      ctx.strokeStyle = crownC;
+      ctx.strokeStyle = limbPat === 'stripes' ? limbDark : crownC;
       ctx.globalAlpha = 0.5;
       ctx.lineWidth = Math.max(2, r * 0.06);
       for (let i = 1; i <= nRings; i++) {
@@ -155,7 +183,7 @@ export function drawCreature(ctx, c, groundY, t) {
 
   // ---- Legs + feet. ----
   {
-    ctx.strokeStyle = dark;
+    ctx.strokeStyle = limbDark;
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(3, r * 0.17);
     const hips = [[-r * 0.32, torsoY + r * 0.62], [r * 0.32, torsoY + r * 0.62]];
@@ -179,7 +207,7 @@ export function drawCreature(ctx, c, groundY, t) {
       ctx.quadraticCurveTo((hx + fx) / 2 + bend, (hy + fy) / 2, fx, fy);
       ctx.stroke();
       // Foot.
-      ctx.fillStyle = dark;
+      ctx.fillStyle = limbDark;
       ctx.beginPath();
       ctx.ellipse(fx + r * 0.08, fy + r * 0.03, r * 0.3, r * 0.15, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -188,9 +216,9 @@ export function drawCreature(ctx, c, groundY, t) {
 
   // ---- Torso. ----
   {
-    ctx.fillStyle = base;
+    ctx.fillStyle = torsoBase; // v0.15: torso reads the torso pigment genes
     ctx.beginPath();
-    ctx.ellipse(0, torsoY, r * 0.88 * sx, r * 1.0 * sy, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, torsoY, r * bulkK * sx, r * 1.0 * sy, 0, 0, Math.PI * 2);
     ctx.fill();
     // Belly patch — paler, and satiety shows: a full belly swells.
     const full = 1 - b.hunger;
@@ -202,13 +230,13 @@ export function drawCreature(ctx, c, groundY, t) {
     ctx.fill();
     ctx.globalAlpha = 1;
     // Fur markings: spots or stripes, clipped to the torso.
-    ctx.fillStyle = dark;
+    ctx.fillStyle = torsoDark;
     ctx.globalAlpha = 0.5;
     ctx.save();
     ctx.beginPath();
-    ctx.ellipse(0, torsoY, r * 0.88 * sx, r * 1.0 * sy, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, torsoY, r * bulkK * sx, r * 1.0 * sy, 0, 0, Math.PI * 2);
     ctx.clip();
-    if (p.pattern === 'stripes') {
+    if (torsoPat === 'stripes') {
       const n = 3 + Math.round(p.patternDensity * 3);
       for (let i = 0; i < n; i++) {
         const px = -r * 0.7 + (i / (n - 1)) * r * 1.4;
@@ -251,7 +279,7 @@ export function drawCreature(ctx, c, groundY, t) {
   // ---- Arms. ----
   {
     const shX = r * 0.32, shY = torsoY - r * 0.42; // shoulder
-    ctx.strokeStyle = base;
+    ctx.strokeStyle = limbBase;
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(3, r * 0.15);
     const drawArm = (x0, y0, x1, y1, bendX, bendY, handR) => {
@@ -259,11 +287,11 @@ export function drawCreature(ctx, c, groundY, t) {
       ctx.moveTo(x0, y0);
       ctx.quadraticCurveTo((x0 + x1) / 2 + bendX, (y0 + y1) / 2 + bendY, x1, y1);
       ctx.stroke();
-      ctx.fillStyle = dark; // hand
+      ctx.fillStyle = limbDark; // hand
       ctx.beginPath();
       ctx.arc(x1, y1, handR, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = base;
+      ctx.fillStyle = limbBase;
     };
     if (climbing) {
       // Reaching up, gripping the branch above.
@@ -295,13 +323,19 @@ export function drawCreature(ctx, c, groundY, t) {
   {
     // Far ear first (behind the head).
     const earFlat = b.fear * 0.8;
+    // v0.15: earSize scales the ears, earTilt sets their jaunty angle.
+    // Founder values (0.5) → scale 1.0, tilt 0: unchanged.
+    const earK = p.earScale ?? 1;
+    const earTilt = p.earTiltRad ?? 0;
     const drawEar = (ex, ey, s) => {
       ctx.save();
       ctx.translate(ex, ey);
+      ctx.rotate(earTilt * s);
+      s *= earK;
       if (p.earShape === 'pointy') {
         ctx.rotate(-earFlat * 0.4);
-        ctx.fillStyle = base;
-        ctx.strokeStyle = dark;
+        ctx.fillStyle = headBase;
+        ctx.strokeStyle = headDark;
         ctx.lineWidth = Math.max(2, r * 0.05);
         ctx.beginPath();
         ctx.moveTo(-r * 0.2 * s, r * 0.14 * s);
@@ -319,21 +353,21 @@ export function drawCreature(ctx, c, groundY, t) {
         }
       } else if (p.earShape === 'floppy') {
         ctx.rotate(s * (0.7 + earFlat * 0.4));
-        ctx.fillStyle = base;
-        ctx.strokeStyle = dark;
+        ctx.fillStyle = headBase;
+        ctx.strokeStyle = headDark;
         ctx.lineWidth = Math.max(2, r * 0.05);
         ctx.beginPath();
         ctx.ellipse(0, -r * 0.2 * s, r * 0.16 * s, r * 0.36 * s, 0, 0, Math.PI * 2);
         ctx.fill(); ctx.stroke();
       } else { // round monkey ear
         ctx.rotate(-earFlat * 0.5);
-        ctx.fillStyle = base;
-        ctx.strokeStyle = dark;
+        ctx.fillStyle = headBase;
+        ctx.strokeStyle = headDark;
         ctx.lineWidth = Math.max(2, r * 0.05);
         ctx.beginPath();
         ctx.arc(0, 0, r * 0.24 * s, 0, Math.PI * 2);
         ctx.fill(); ctx.stroke();
-        ctx.fillStyle = muzzleC;
+        ctx.fillStyle = headMuzzle;
         ctx.beginPath();
         ctx.arc(0, 0, r * 0.12 * s, 0, Math.PI * 2);
         ctx.fill();
@@ -343,13 +377,28 @@ export function drawCreature(ctx, c, groundY, t) {
     drawEar(headX + r * 0.1, headY - r * 0.32, 0.8); // far ear, smaller
 
     // Skull.
-    ctx.fillStyle = base;
+    ctx.fillStyle = headBase; // v0.15: head reads the head pigment genes
     ctx.beginPath();
     ctx.arc(headX, headY, headR, 0, Math.PI * 2);
     ctx.fill();
+    // Head markings from the head pattern gene (founder 'none' → plain skull).
+    if (headPat === 'spots' || headPat === 'stripes') {
+      ctx.fillStyle = headDark;
+      ctx.globalAlpha = 0.45;
+      const hspots = spots.slice(0, 5);
+      for (const s of hspots) {
+        const px = headX + Math.cos(s.a) * headR * 0.55 * s.rr;
+        const py = headY + Math.sin(s.a) * headR * 0.55 * s.rr - headR * 0.15;
+        ctx.beginPath();
+        if (headPat === 'stripes') ctx.fillRect(px - headR * 0.05, py - headR * 0.25, headR * 0.1, headR * 0.5);
+        else ctx.arc(px, py, headR * 0.09 * s.s * 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
     // Crown cap — a darker cap of fur, some tanglekins have it.
     if (crownDark) {
-      ctx.fillStyle = crownC;
+      ctx.fillStyle = headCrown;
       ctx.globalAlpha = 0.65;
       ctx.beginPath();
       ctx.arc(headX - r * 0.05, headY - r * 0.12, headR * 0.92, Math.PI * 1.05, Math.PI * 1.95);
@@ -362,12 +411,12 @@ export function drawCreature(ctx, c, groundY, t) {
 
     // Muzzle — the monkey's face.
     const mzX = headX + r * 0.38, mzY = headY + r * 0.22;
-    ctx.fillStyle = muzzleC;
+    ctx.fillStyle = headMuzzle;
     ctx.beginPath();
     ctx.ellipse(mzX, mzY, r * 0.34, r * 0.26, 0.15, 0, Math.PI * 2);
     ctx.fill();
     // Nose.
-    ctx.fillStyle = dark;
+    ctx.fillStyle = headDark;
     ctx.beginPath();
     ctx.ellipse(mzX + r * 0.2, mzY - r * 0.05, r * 0.07, r * 0.05, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -376,7 +425,7 @@ export function drawCreature(ctx, c, groundY, t) {
     const eyeScale = 0.7 + p.eyeSize * 0.8;
     const eyeY = headY - r * 0.14;
     if (sleeping) {
-      ctx.strokeStyle = dark;
+      ctx.strokeStyle = headDark;
       ctx.lineWidth = Math.max(2, r * 0.06);
       for (const ex of [headX + r * 0.12, headX + r * 0.48]) {
         ctx.beginPath();
@@ -417,7 +466,7 @@ export function drawCreature(ctx, c, groundY, t) {
     {
       const open = eating ? (0.5 + 0.5 * Math.abs(Math.sin(t * 6 + c.id))) : 0;
       const ms = (0.5 + p.mouthSize * 0.8) * r * 0.2;
-      ctx.strokeStyle = dark;
+      ctx.strokeStyle = headDark;
       ctx.lineWidth = Math.max(2, r * 0.05);
       ctx.fillStyle = '#5a2f35';
       if (open > 0.05) {

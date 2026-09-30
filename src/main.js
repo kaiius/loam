@@ -26,6 +26,9 @@ window.canopyTeacher = {
   },
   mode: (m) => setTeacherMode(world, world.teacher, m),
 };
+// v0.15 "Bloom": debug handle for the dist smoke test — lets it assert the
+// bundled world stays finite (the moveToward/NaN invisibility regression).
+window.canopyWorld = world;
 
 const SIM_DT = 0.1; // 10 sim ticks per second at 1x
 let acc = 0;

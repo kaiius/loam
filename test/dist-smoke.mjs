@@ -81,3 +81,27 @@ for (let f = 0; f < 600; f++) {
   if (typeof rafCb !== 'function') throw new Error(`rAF loop died at frame ${f}`);
 }
 console.log('DIST SMOKE OK — bundled page initialized and ran 600 frames');
+
+// v0.15 "Bloom": the moveToward/NaN invisibility regression check. The dist
+// bundle concatenates every module into one scope, so a duplicate top-level
+// function name silently rebinds — creature movement ran teacher logic and
+// wrote NaN into creature.x (invisible creatures, census still said 4).
+// Module-scoped src/ tests can never catch this; the bundled world can.
+{
+  const world = global.window.canopyWorld;
+  if (!world) throw new Error('dist smoke: window.canopyWorld missing — world not exposed');
+  const bad = [];
+  for (const c of world.creatures) {
+    if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) bad.push(`${c.name} x=${c.x} y=${c.y}`);
+  }
+  if (world.teacher) {
+    // The teacher's y is null by design (derived from its platform each
+    // frame); only x must stay finite.
+    if (!Number.isFinite(world.teacher.x)) bad.push(`teacher x=${world.teacher.x}`);
+  }
+  if (bad.length) {
+    throw new Error(`dist smoke: NON-FINITE positions after 600 frames (invisibility bug):\n  ${bad.join('\n  ')}`);
+  }
+  if (!world.creatures.length) throw new Error('dist smoke: no creatures in the bundled world');
+  console.log(`DIST SMOKE OK — ${world.creatures.length} creatures, all positions finite`);
+}
