@@ -21,6 +21,7 @@ import { finalizeEpisode, maybeFoundGrove, doEat, createCreature, updateCreature
 import { createBonds, getBond, nudgeBond, tickBonds, pedigreeKin, detectTribes, socialStats } from '../src/sim/social.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant, plantMeiosis, PLANT_GENES } from '../src/sim/plantgenome.js';
 import { createTeacher, tickTeacher, commandTeacher, setTeacherMode, teacherDemo, teacherReward, teacherRewardNearest, emitTeacherCall, TEACHER_MOTIF, TEACHER_PITCH, IMITATION_WINDOW, gatherTeacherSenses, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, foodFlavor } from '../src/sim/teacher.js';
+import { worldToScreen, screenToWorld, fitCamera, zoomAt, panBy, recenterCamera, followPoint, CAM_MIN_ZOOM, CAM_MAX_ZOOM, CAM_PAN_MARGIN } from '../src/render/renderer.js';
 
 const N_SENSES = 24; // canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor
 
@@ -3084,4 +3085,69 @@ test('v0.14.1: rich ground enters the chronicle — the land remembers', () => {
   const chs = buildChronicle(world);
   const present = chs.find((c) => c.id === 'present');
   assert.ok(present.entries.some((e) => e.icon === '🪱'), 'the chronicle carries the rich-ground entry');
+});
+
+// ---- v0.14.2 "Wayfinding": camera math — pure functions, no DOM ----
+
+const fakeR = () => ({ scale: 1, ox: 0, oy: 0, dpr: 1, fitScale: 0, cam: { manual: false }, canvas: { width: 1600, height: 900 } });
+const fakeWorld = () => ({ width: 4000, height: 1000, groundY: 900 });
+
+test('v0.14.2: worldToScreen/screenToWorld round-trip', () => {
+  const r = fakeR(); const w = fakeWorld();
+  fitCamera(r, w);
+  const s = worldToScreen(r, w, 123, 456);
+  const back = screenToWorld(r, s.x, s.y);
+  assert.ok(Math.abs(back.x - 123) < 1e-9 && Math.abs(back.y - 456) < 1e-9, `round-trip, got ${back.x},${back.y}`);
+});
+
+test('v0.14.2: zoom is clamped and centered on the cursor', () => {
+  const r = fakeR(); const w = fakeWorld();
+  fitCamera(r, w);
+  const fs = r.fitScale;
+  zoomAt(r, w, 1000, 800, 450); // absurd factor in
+  assert.ok(Math.abs(r.scale - fs * CAM_MAX_ZOOM) < 1e-9, `clamped to max, got ${r.scale / fs}`);
+  zoomAt(r, w, 0.0001, 800, 450); // absurd factor out
+  assert.ok(Math.abs(r.scale - fs * CAM_MIN_ZOOM) < 1e-9, `clamped to min, got ${r.scale / fs}`);
+  // Centering: the world point under the cursor stays fixed (cursor chosen
+  // where the pan clamp does not engage, so the invariant is tested pure).
+  fitCamera(r, w);
+  const before = screenToWorld(r, 800, 700);
+  zoomAt(r, w, 2, 800, 700);
+  const after = screenToWorld(r, 800, 700);
+  assert.ok(Math.hypot(after.x - before.x, after.y - before.y) < 1e-6,
+    `world point under cursor did not move, drift ${Math.hypot(after.x - before.x, after.y - before.y)}`);
+  assert.ok(r.cam.manual, 'zooming arms the manual camera');
+});
+
+test('v0.14.2: pan is clamped — the world can never be lost', () => {
+  const r = fakeR(); const w = fakeWorld();
+  fitCamera(r, w);
+  const ww = w.width * r.scale, wh = w.height * r.scale;
+  panBy(r, w, 1e7, 1e7);
+  assert.ok(Math.abs(r.ox - (1600 - CAM_PAN_MARGIN)) < 1e-9, `ox clamped right, got ${r.ox}`);
+  assert.ok(Math.abs(r.oy - (900 - CAM_PAN_MARGIN)) < 1e-9, `oy clamped down, got ${r.oy}`);
+  panBy(r, w, -1e7, -1e7);
+  assert.ok(Math.abs(r.ox - (CAM_PAN_MARGIN - ww)) < 1e-9, `ox clamped left, got ${r.ox}`);
+  assert.ok(Math.abs(r.oy - (CAM_PAN_MARGIN - wh)) < 1e-9, `oy clamped up, got ${r.oy}`);
+  assert.ok(r.cam.manual, 'panning arms the manual camera');
+});
+
+test('v0.14.2: recenter drops back to auto-fit', () => {
+  const r = fakeR(); const w = fakeWorld();
+  fitCamera(r, w);
+  zoomAt(r, w, 3, 800, 450);
+  panBy(r, w, 500, 500);
+  assert.ok(r.cam.manual, 'camera was manual');
+  recenterCamera(r, w);
+  assert.ok(!r.cam.manual, 'recenter disarms the manual camera');
+  assert.ok(Math.abs(r.scale - r.fitScale) < 1e-12, 'scale back at fit');
+});
+
+test('v0.14.2: followPoint centers the world point', () => {
+  const r = fakeR(); const w = fakeWorld();
+  fitCamera(r, w);
+  followPoint(r, w, 1000, 500);
+  const s = worldToScreen(r, w, 1000, 500);
+  assert.ok(Math.abs(s.x - 800) < 1e-9 && Math.abs(s.y - 450) < 1e-9, `centered, got ${s.x},${s.y}`);
+  assert.ok(r.cam.manual, 'following arms the manual camera');
 });

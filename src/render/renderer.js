@@ -12,6 +12,12 @@ export function createRenderer(canvas) {
     ctx: canvas.getContext('2d'),
     scale: 1, ox: 0, oy: 0, dpr: 1,
     stars: [],
+    // v0.14.2 "Wayfinding": the camera. fitScale is the auto-fit zoom;
+    // the user zoom is scale/fitScale, clamped. cam.manual false means the
+    // camera auto-fits every frame (the v0.14 behavior); any manual move
+    // flips it on and the render loop stops overriding it.
+    fitScale: 0,
+    cam: { manual: false },
   };
   // Deterministic starfield.
   let a = 1234567;
@@ -26,6 +32,9 @@ function resize(r) {
   r.dpr = Math.min(2, window.devicePixelRatio || 1);
   r.canvas.width = r.canvas.clientWidth * r.dpr;
   r.canvas.height = r.canvas.clientHeight * r.dpr;
+  // A resize re-fits the world — the stored manual framing no longer matches.
+  r.cam.manual = false;
+  r.fitScale = 0;
 }
 
 export function worldToScreen(r, world, x, y) {
@@ -36,11 +45,67 @@ export function screenToWorld(r, sx, sy) {
   return { x: (sx - r.ox) / r.scale, y: (sy - r.oy) / r.scale };
 }
 
-function fitCamera(r, world) {
+// v0.14.2 "Wayfinding": camera limits. Zoom is relative to the fitted
+// scale; pan is clamped so at least CAM_PAN_MARGIN device px of the world
+// stay visible — the world can never be lost off-screen.
+export const CAM_MIN_ZOOM = 0.45;
+export const CAM_MAX_ZOOM = 4.5;
+export const CAM_PAN_MARGIN = 300;
+
+export function fitCamera(r, world) {
   const w = r.canvas.width, h = r.canvas.height;
   r.scale = Math.min(w / world.width, h / (world.height * 0.92)) * r.dpr;
   r.ox = (w - world.width * r.scale) / 2;
   r.oy = h - world.groundY * r.scale - 8 * r.dpr;
+  r.fitScale = r.scale;
+}
+
+// Keep the world findable: clamp the offset so the world rect always
+// overlaps the viewport by at least CAM_PAN_MARGIN px on each axis.
+export function clampPan(r, world) {
+  const W = r.canvas.width, H = r.canvas.height;
+  const ww = world.width * r.scale, wh = world.height * r.scale;
+  const m = CAM_PAN_MARGIN;
+  r.ox = Math.min(W - m, Math.max(m - ww, r.ox));
+  r.oy = Math.min(H - m, Math.max(m - wh, r.oy));
+}
+
+// Zoom centered on a screen point (device px): the world point under the
+// cursor stays under the cursor. factor > 1 zooms in.
+export function zoomAt(r, world, factor, cx, cy) {
+  if (!(r.fitScale > 0)) fitCamera(r, world);
+  const before = screenToWorld(r, cx, cy);
+  const z = Math.min(CAM_MAX_ZOOM, Math.max(CAM_MIN_ZOOM, (r.scale / r.fitScale) * factor));
+  r.scale = r.fitScale * z;
+  r.ox = cx - before.x * r.scale;
+  r.oy = cy - before.y * r.scale;
+  r.cam.manual = true;
+  clampPan(r, world);
+}
+
+// Pan by a screen delta (device px).
+export function panBy(r, world, dx, dy) {
+  if (!(r.fitScale > 0)) fitCamera(r, world);
+  r.ox += dx;
+  r.oy += dy;
+  r.cam.manual = true;
+  clampPan(r, world);
+}
+
+// Back to the full-world framing.
+export function recenterCamera(r, world) {
+  r.cam.manual = false;
+  fitCamera(r, world);
+}
+
+// Center the camera on a world point, keeping the current zoom.
+// Used by follow-the-selected-creature.
+export function followPoint(r, world, x, y) {
+  if (!(r.fitScale > 0)) fitCamera(r, world);
+  r.ox = r.canvas.width / 2 - x * r.scale;
+  r.oy = r.canvas.height / 2 - y * r.scale;
+  r.cam.manual = true;
+  clampPan(r, world);
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -54,7 +119,8 @@ const SKY_NIGHT_TOP = [12, 16, 42], SKY_NIGHT_BOT = [38, 44, 84];
 
 export function render(r, world, ui, t) {
   const { ctx, canvas } = r;
-  fitCamera(r, world);
+  // v0.14.2 "Wayfinding": auto-fit only until the player moves the camera.
+  if (!r.cam.manual) fitCamera(r, world);
   const W = canvas.width, H = canvas.height;
   const light = world.light;
   const tod = timeOfDay(world);

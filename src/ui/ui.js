@@ -1,7 +1,7 @@
 // UI overlay: top bar, selection panel, toasts, and the player's hand
 // (select, drag, pet via double-click).
 
-import { screenToWorld } from '../render/renderer.js';
+import { screenToWorld, zoomAt, panBy, recenterCamera, followPoint } from '../render/renderer.js';
 import { petCreature, scoldCreature, creatureRadius } from '../sim/creature.js';
 import { ageStage, mood } from '../sim/biochem.js';
 import { layEgg, DAY_LENGTH, LINEAGE_TRAITS, zoneAt } from '../sim/world.js';
@@ -21,6 +21,10 @@ export function createUI(canvas, renderer, world) {
     selected: null,
     hover: null,
     dragging: null,
+    // v0.14.2 "Wayfinding": camera state — drag-pan, pinch, follow.
+    follow: false, // camera tracks the selected creature/teacher
+    camPan: null, // drag on empty space
+    pinch: null, // two-finger pinch zoom
     world,
     _panelAt: 0,
     treeOpen: false,
@@ -56,7 +60,12 @@ export function createUI(canvas, renderer, world) {
     <div id="evopanel" class="bigpanel hidden"></div>
     <div id="chronpanel" class="bigpanel hidden"></div>
     <div id="toasts"></div>
-    <div id="hint">Click a creature to inspect · drag to move it · double-click to pet · 🧑‍🏫 finds the Teacher</div>
+    <div id="hint">Click a creature to inspect · drag to move it · double-click to pet · drag background to pan · scroll to zoom · 🧑‍🏫 finds the Teacher</div>
+    <div id="camctl">
+      <button id="zoomIn" title="Zoom in">＋</button>
+      <button id="zoomOut" title="Zoom out">－</button>
+      <button id="recenter" title="Recenter on the whole world">⌂</button>
+    </div>
   `;
   document.body.appendChild(root);
 
@@ -80,10 +89,31 @@ export function createUI(canvas, renderer, world) {
     toast(toastsEl, '🥚 A wild egg appeared!');
   });
 
+  // ---- v0.14.2 "Wayfinding": camera controls ----
+  // Selecting a creature (or the Teacher) re-arms camera-follow; selecting
+  // anything else — or nothing — breaks it. Manual panning breaks it too.
+  ui.setSelected = (obj) => {
+    ui.selected = obj;
+    ui.follow = !!(obj && (obj.kind === 'creature' || obj.kind === 'teacher'));
+  };
+  const zoomCenter = () => ({ x: renderer.canvas.width / 2, y: renderer.canvas.height / 2 });
+  root.querySelector('#zoomIn').addEventListener('click', () => {
+    const c = zoomCenter();
+    zoomAt(renderer, world, 1.25, c.x, c.y);
+  });
+  root.querySelector('#zoomOut').addEventListener('click', () => {
+    const c = zoomCenter();
+    zoomAt(renderer, world, 1 / 1.25, c.x, c.y);
+  });
+  root.querySelector('#recenter').addEventListener('click', () => {
+    recenterCamera(renderer, world);
+    ui.follow = false;
+  });
+
   // ---- v0.14: the Teacher — Sunny's in-sim avatar ----
   const teacherBtn = root.querySelector('#teacherBtn');
   teacherBtn.addEventListener('click', () => {
-    ui.selected = world.teacher;
+    ui.setSelected(world.teacher);
     ui.teacherMoveArm = false;
     refreshPanel(panel, ui);
     toast(toastsEl, `🧑‍🏫 ${world.teacher.mode === 'possessed' ? 'The Teacher is yours — possess it.' : 'The Teacher wanders on its own. Possess it from its panel.'}`);
@@ -137,7 +167,7 @@ export function createUI(canvas, renderer, world) {
       const id = Number(g.dataset.node);
       const live = world.creatures.find((c) => c.id === id);
       ui.treeFocus = id;
-      if (live) ui.selected = live;
+      if (live) ui.setSelected(live);
       renderTree(treePanel, ui);
       refreshPanel(panel, ui);
     }
@@ -172,11 +202,11 @@ export function createUI(canvas, renderer, world) {
       renderEvo(evoPanel, ui);
     } else if (tab === 'world') {
       if (btn.dataset.teacher) {
-        ui.selected = world.teacher;
+        ui.setSelected(world.teacher);
         refreshPanel(panel, ui);
       } else {
         const c = world.creatures.find((o) => o.id === Number(btn.dataset.cid));
-        if (c) { ui.selected = c; refreshPanel(panel, ui); }
+        if (c) { ui.setSelected(c); refreshPanel(panel, ui); }
         else toast(toastsEl, 'That tanglekin is gone — its line lives on in the family tree.');
       }
     }
@@ -225,7 +255,7 @@ export function createUI(canvas, renderer, world) {
       const plat = dropPlatform(world, x, y);
       commandTeacher(te, { cmd: 'moveTo', x, platformIndex: plat >= 0 ? plat : te.platformIndex });
       ui.teacherMoveArm = false;
-      ui.selected = te;
+      ui.setSelected(te);
       canvas.style.cursor = 'default';
       refreshPanel(panel, ui);
       return;
@@ -237,6 +267,10 @@ export function createUI(canvas, renderer, world) {
       // v0.14: grabbing the teacher is tactile contact — it feels the hand.
       if (hit.type === 'teacher') hit.obj.touchT = world.time;
       canvas.style.cursor = 'grabbing';
+    } else {
+      // v0.14.2 "Wayfinding": the press started on empty space — this is a
+      // camera pan, never a creature grab. Positions in device px.
+      ui.camPan = { sx: e.clientX * renderer.dpr, sy: e.clientY * renderer.dpr, moved: false };
     }
   });
 
@@ -251,18 +285,40 @@ export function createUI(canvas, renderer, world) {
       }
       return;
     }
+    // v0.14.2 "Wayfinding": drag-pan. Manual panning breaks follow.
+    if (ui.camPan) {
+      const p = ui.camPan;
+      const cx = e.clientX * renderer.dpr, cy = e.clientY * renderer.dpr;
+      if (p.px !== undefined) {
+        if (Math.hypot(cx - p.sx, cy - p.sy) > 5 * renderer.dpr) p.moved = true;
+        if (p.moved) {
+          panBy(renderer, world, cx - p.px, cy - p.py);
+          ui.follow = false;
+        }
+      }
+      p.px = cx; p.py = cy;
+      canvas.style.cursor = 'grabbing';
+      return;
+    }
     const hit = hitTest(world, x, y);
     ui.hover = hit && (hit.type === 'creature' || hit.type === 'teacher') ? hit.obj : null;
-    canvas.style.cursor = hit && hit.type !== 'none' ? 'grab' : 'default';
+    canvas.style.cursor = 'grab'; // empty space is pannable too
   });
 
   window.addEventListener('mouseup', (e) => {
+    // v0.14.2: a camera pan ends here. A pan that never moved is a no-op
+    // click on empty space — selection is left alone.
+    if (ui.camPan) {
+      ui.camPan = null;
+      canvas.style.cursor = 'default';
+      return;
+    }
     const d = ui.dragging;
     if (!d) return;
     const { x, y } = toWorld(e);
     if (d.hit.obj.dragged !== undefined) d.hit.obj.dragged = false;
     if (!d.moved) {
-      ui.selected = d.hit.obj; // a click selects
+      ui.setSelected(d.hit.obj); // a click selects
     } else {
       // Drop onto the nearest sensible platform.
       const plat = dropPlatform(world, x, y);
@@ -288,7 +344,63 @@ export function createUI(canvas, renderer, world) {
       // v0.14: the teacher can be petted too — touch with consequences.
       const c = petTeacher(world, hit.obj);
       toast(toastsEl, `💕 You pet the Teacher. (comfort ${c.toFixed(1)})`);
+    } else if (!hit || hit.type === 'none') {
+      // v0.14.2 "Wayfinding": double-click on empty space recenters the
+      // whole world. (Double-clicking a creature still pets it.)
+      recenterCamera(renderer, world);
+      ui.follow = false;
     }
+  });
+
+  // v0.14.2 "Wayfinding": wheel zooms centered on the cursor.
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    zoomAt(renderer, world,
+      (e.deltaY || 0) > 0 ? 1 / 1.15 : 1.15,
+      (e.clientX - rect.left) * renderer.dpr,
+      (e.clientY - rect.top) * renderer.dpr);
+  }, { passive: false });
+
+  // v0.14.2: two-finger pinch zoom + pan on touch. A single finger is left
+  // alone — it rides the synthesized mouse path (tap/drag) above.
+  canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      ui.dragging = null;
+      ui.camPan = null;
+      ui.pinch = pinchState(renderer, e.touches);
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    if (ui.pinch && e.touches.length === 2) {
+      e.preventDefault();
+      const prev = ui.pinch;
+      const next = pinchState(renderer, e.touches);
+      zoomAt(renderer, world, next.d / prev.d, next.mx, next.my);
+      panBy(renderer, world, next.mx - prev.mx, next.my - prev.my);
+      ui.follow = false; // manual panning breaks follow
+      ui.pinch = next;
+    }
+  }, { passive: false });
+  const endPinch = (e) => { if (e.touches.length < 2) ui.pinch = null; };
+  canvas.addEventListener('touchend', endPinch);
+  canvas.addEventListener('touchcancel', endPinch);
+
+  // v0.14.2: arrow keys pan the camera (manual panning breaks follow).
+  window.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const step = 60 * renderer.dpr;
+    let dx = 0, dy = 0;
+    if (e.key === 'ArrowLeft') dx = step;
+    else if (e.key === 'ArrowRight') dx = -step;
+    else if (e.key === 'ArrowUp') dy = step;
+    else if (e.key === 'ArrowDown') dy = -step;
+    else return;
+    e.preventDefault();
+    panBy(renderer, world, dx, dy);
+    ui.follow = false;
   });
 
   // ---- Per-frame update ----
@@ -316,8 +428,18 @@ export function createUI(canvas, renderer, world) {
     }
 
     // Selection may have died.
-    if (ui.selected && ui.selected.kind === 'creature' && !ui.selected.alive) ui.selected = null;
-    if (ui.selected && ui.selected.kind === 'egg' && !world.eggs.includes(ui.selected)) ui.selected = null;
+    if (ui.selected && ui.selected.kind === 'creature' && !ui.selected.alive) ui.setSelected(null);
+    if (ui.selected && ui.selected.kind === 'egg' && !world.eggs.includes(ui.selected)) ui.setSelected(null);
+
+    // v0.14.2 "Wayfinding": follow — keep the selected creature or Teacher
+    // centered, at the current zoom. Runs before render() each frame.
+    if (ui.follow && ui.selected && (ui.selected.kind === 'creature' || ui.selected.kind === 'teacher')) {
+      const s = ui.selected;
+      const plat = world.platforms[s.platformIndex];
+      if (plat) followPoint(renderer, world, s.x, plat.y - 40);
+    } else if (ui.follow) {
+      ui.follow = false;
+    }
 
     // Throttled panel refresh.
     const now = performance.now();
@@ -376,6 +498,20 @@ function dropPlatform(world, x, y) {
     if (dy > -70 && dy < bestDy) { bestDy = dy; best = i; }
   });
   return best;
+}
+
+// v0.14.2 "Wayfinding": pinch geometry in device px — span and midpoint.
+function pinchState(renderer, touches) {
+  const rect = renderer.canvas.getBoundingClientRect();
+  const ax = (touches[0].clientX - rect.left) * renderer.dpr;
+  const ay = (touches[0].clientY - rect.top) * renderer.dpr;
+  const bx = (touches[1].clientX - rect.left) * renderer.dpr;
+  const by = (touches[1].clientY - rect.top) * renderer.dpr;
+  return {
+    d: Math.max(1, Math.hypot(ax - bx, ay - by)),
+    mx: (ax + bx) / 2,
+    my: (ay + by) / 2,
+  };
 }
 
 function toast(box, msg) {
@@ -457,14 +593,16 @@ function refreshPanel(panel, ui) {
       <div class="p-actions">
         <button id="p-pet">💕 Pet</button>
         <button id="p-scold">😠 Scold</button>
+        <button id="p-follow">${ui.follow ? '📍 Following ✓' : '📍 Follow'}</button>
       </div>`;
-    panel.querySelector('#p-close').onclick = () => { ui.selected = null; refreshPanel(panel, ui); };
+    panel.querySelector('#p-close').onclick = () => { ui.setSelected(null); refreshPanel(panel, ui); };
     panel.querySelector('#p-pet').onclick = () => petCreature(c);
     panel.querySelector('#p-scold').onclick = () => scoldCreature(c);
+    panel.querySelector('#p-follow').onclick = () => { ui.follow = !ui.follow; refreshPanel(panel, ui); };
     panel.querySelectorAll('.l-kid').forEach((btn) => {
       btn.onclick = () => {
         const kid = ui.world.creatures.find((o) => String(o.id) === btn.dataset.kid);
-        if (kid) { ui.selected = kid; refreshPanel(panel, ui); }
+        if (kid) { ui.setSelected(kid); refreshPanel(panel, ui); }
       };
     });
   } else if (sel.kind === 'teacher') {
@@ -482,13 +620,14 @@ function refreshPanel(panel, ui) {
         <button id="t-reward">🌟 Reward nearest</button>
         <button id="t-eat">👅 Taste fruit</button>
         <button id="t-move">📍 Move here…</button>
+        <button id="t-follow">${ui.follow ? '📍 Following ✓' : '📍 Follow'}</button>
       </div>
       <div class="senses"><div class="l-title">👁️ Senses — what Sunny feels</div>
         ${teacherSenseLines(ui.world, te).map((l) => `<div class="sense">${escapeHtml(l)}</div>`).join('')}
         <div class="p-actions"><button id="t-copy">📋 Copy senses</button></div>
       </div>
       <div class="hint2">A visitor, not a tanglekin — no hunger, no mating, no death. Demos seed the zone dialect; rewards select for imitators.</div>`;
-    panel.querySelector('#p-close').onclick = () => { ui.selected = null; refreshPanel(panel, ui); };
+    panel.querySelector('#p-close').onclick = () => { ui.setSelected(null); refreshPanel(panel, ui); };
     panel.querySelector('#t-mode').onclick = () => {
       setTeacherMode(ui.world, te, possessed ? 'autonomous' : 'possessed');
       refreshPanel(panel, ui);
@@ -510,6 +649,7 @@ function refreshPanel(panel, ui) {
       toast(toastsEl, '📍 Click anywhere in the canopy to send the Teacher there.');
       refreshPanel(panel, ui);
     };
+    panel.querySelector('#t-follow').onclick = () => { ui.follow = !ui.follow; refreshPanel(panel, ui); };
     panel.querySelector('#t-eat').onclick = () => {
       ensurePossessed(ui.world, te);
       commandTeacher(te, { cmd: 'eat' });
@@ -531,7 +671,7 @@ function refreshPanel(panel, ui) {
       <div class="badges">hatches in ~${Math.max(0, sel.timer).toFixed(0)}s</div>
       <div class="family">${sel.parents ? `Parents #${sel.parents[0]} × #${sel.parents[1]}` : 'Wild egg'}</div>
       <div class="hint2">Keep it safe. It wobbles when hatching is near.</div>`;
-    panel.querySelector('#p-close').onclick = () => { ui.selected = null; refreshPanel(panel, ui); };
+    panel.querySelector('#p-close').onclick = () => { ui.setSelected(null); refreshPanel(panel, ui); };
   }
 }
 
