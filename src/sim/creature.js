@@ -64,6 +64,10 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     vx: 0,
     vy: 0,
     grounded: true,
+    // v0.17.2: the observer's hand. While dragged, updateCreature pauses
+    // physics (the hand holds the body, not the world) — the UI sets this
+    // on grab and clears it on release. It was designed but never wired.
+    dragged: false,
     // v0.12: home-range imprinting. Birthplace is home — permanent.
     // Philopatry, not a leash: the brain (via homeDist + instHomeSeek)
     // decides how much it matters.

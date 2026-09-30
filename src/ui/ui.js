@@ -372,9 +372,12 @@ export function createUI(canvas, renderer, world) {
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 5) d.moved = true;
       if (d.moved && d.draggable) {
         // v0.17.2: the hand moves in two dimensions — held objects follow the
-        // cursor in x AND y (Joshua: "I should be able to do both").
+        // cursor in x AND y (the teacher is platform-bound: it has no y body,
+        // so only x follows for it).
         d.hit.obj.x = Math.max(20, Math.min(world.width - 20, x));
-        d.hit.obj.y = Math.max(20, Math.min(world.height - 20, y));
+        if (d.hit.type !== 'teacher') {
+          d.hit.obj.y = Math.max(20, Math.min(world.height - 20, y));
+        }
         if (d.hit.type === 'toy') d.hit.obj.vx = 0;
       }
       return;
@@ -417,6 +420,17 @@ export function createUI(canvas, renderer, world) {
       // Drop onto the nearest sensible platform.
       const plat = dropPlatform(world, x, y);
       if (plat >= 0) d.hit.obj.platformIndex = plat;
+      // v0.17.2: released in the sky, it falls — gravity is the world's own
+      // law. A creature let go above its branch drops with real physics
+      // (stepPhysics lands it, with fall damage as modeled); released at
+      // branch level it stays grounded and stands.
+      if (d.hit.type === 'creature') {
+        const cp = world.platforms[d.hit.obj.platformIndex];
+        if (cp && d.hit.obj.y < cp.y - 8) {
+          d.hit.obj.grounded = false;
+          d.hit.obj.vy = 0;
+        }
+      }
       // v0.14: dragging the Teacher re-targets it — otherwise it would walk back.
       if (d.hit.obj.kind === 'teacher') {
         d.hit.obj.targetX = d.hit.obj.x;

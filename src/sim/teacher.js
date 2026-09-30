@@ -45,6 +45,9 @@ export function createTeacher(world, x = 800, platformIndex = 0) {
     x,
     y: null, // derived from the platform each frame
     platformIndex,
+    // v0.17.2: the observer's hand. While dragged, movement pauses (the
+    // hand holds the teacher) — the senses stay on; being held is feeling.
+    dragged: false,
     facing: 1,
     vx: 0,
     hopPhase: 0,
@@ -282,6 +285,9 @@ export function tickTeacher(world, teacher, dt) {
       teacher.actionLabel = DEMO_LABELS[teacher.demoType] || DEMO_LABELS.contact;
     }
   }
+
+  // v0.17.2: held by the observer's hand — the body waits, the senses stay on.
+  if (teacher.dragged) { teacher.vx = 0; return; }
 
   if (teacher.mode === 'possessed') {
     // The hand of Sunny: commands only, no policy.

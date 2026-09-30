@@ -4,7 +4,7 @@
 import { createRng } from './rng.js';
 import { randomGenome, inherit, genomeDistance } from './genome.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
-import { createCreature, updateCreature, creatureRadius } from './creature.js';
+import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL } from './creature.js';
 import { ageStage } from './biochem.js';
 import { createCulture, sampleCulture, pruneExtinct, adoptTradition, fidelityOf } from './culture.js';
 import { createBonds, tickBonds, detectTribes, nudgeBond } from './social.js';
@@ -192,6 +192,8 @@ export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1, rot
   const plat = world.platforms[platformIndex];
   world.foods.push({
     kind: 'food', id: oid(), x, platformIndex, y: plat.y, foodKind: kind, amount,
+    vx: 0, vy: 0, // v0.17.2: loose food obeys gravity when lifted and released
+    dragged: false, // v0.17.2: the observer's hand — gravity pauses while held
     // v0.13: plant-genome provenance — which plant bore this fruit, its
     // bitterness, and its nutrition. Enables seed dispersal + learned
     // avoidance of bitter plants.
@@ -249,7 +251,8 @@ export function addCritter(world, x, platformIndex, kind) {
 export function addToy(world, x, platformIndex) {
   const plat = world.platforms[platformIndex];
   world.toys.push({
-    kind: 'ball', id: oid(), x, platformIndex, y: plat.y, vx: 0, r: 16,
+    kind: 'ball', id: oid(), x, platformIndex, y: plat.y, vx: 0, vy: 0, r: 16,
+    dragged: false, // v0.17.2: the observer's hand — gravity pauses while held
   });
 }
 
@@ -261,7 +264,8 @@ export function addPebble(world, x, platformIndex) {
   const plat = world.platforms[platformIndex];
   world.pebbles.push({
     kind: 'pebble', id: oid(), x, platformIndex, y: plat.y,
-    vx: 0, r: (world.decorRng || world.rng).range(9, 17),
+    vx: 0, vy: 0, r: (world.decorRng || world.rng).range(9, 17),
+    dragged: false, // v0.17.2: the observer's hand — gravity pauses while held
   });
 }
 
@@ -308,6 +312,8 @@ export function layEgg(world, x, platformIndex, genome, parents = null, gen = 0,
   const plat = world.platforms[platformIndex];
   world.eggs.push({
     kind: 'egg', id: oid(), x, y: plat.y, platformIndex, genome, parents,
+    vx: 0, vy: 0, // v0.17.2: eggs obey gravity when lifted and released
+    dragged: false, // v0.17.2: the observer's hand — gravity pauses while held
     gen, traditionIds, // v0.7: pedigree depth + vertical cultural inheritance
     timer: (18 + world.rng.range(0, 10)) * gestMult, wobble: 0, // v2 (L): gestation scales
     parentDist, // v0.14: parental genome distance — the hybrid penalty input
@@ -1065,8 +1071,32 @@ export function tickWorld(world, dt) {
     if (rng.chance(dt * 0.2)) cr.vx = -cr.vx;
   }
 
+  // v0.17.2: light bodies obey gravity. Toys, pebbles, loose food, and eggs
+  // rest on their platform; lifted into the sky and released, they fall and
+  // land on whatever platform span they drop through — the same landing rule
+  // as creatures (falling only; nothing leaps up through a branch). While
+  // held by the observer's hand (dragged) they hang still.
+  function stepLightBody(o, dt) {
+    if (o.dragged) return;
+    const prevY = o.y;
+    o.vy = Math.min(MAX_FALL, (o.vy || 0) + GRAVITY * dt);
+    o.y += o.vy * dt;
+    if (o.vy > 0) {
+      for (let i = 0; i < world.platforms.length; i++) {
+        const p = world.platforms[i];
+        if (o.x >= p.x1 && o.x <= p.x2 && prevY <= p.y && o.y >= p.y) {
+          o.y = p.y; o.vy = 0; o.platformIndex = i;
+          break;
+        }
+      }
+    }
+    if (o.y > world.height - 10) { o.y = world.height - 10; o.vy = 0; }
+  }
+
   // Toys: friction.
   for (const t of world.toys) {
+    if (t.dragged) continue;
+    stepLightBody(t, dt);
     const plat = world.platforms[t.platformIndex];
     t.x += t.vx * dt;
     t.vx *= 1 - Math.min(1, 2.5 * dt);
@@ -1082,6 +1112,8 @@ export function tickWorld(world, dt) {
   // creatures into a permanent 55px spacer, sterilizing the world — in a
   // 1D world there is no "around". Stones are kickable clutter, not walls.
   for (const p of world.pebbles) {
+    if (p.dragged) continue;
+    stepLightBody(p, dt);
     const plat = world.platforms[p.platformIndex];
     p.x += p.vx * dt;
     p.vx *= 1 - Math.min(1, 3 * dt);
@@ -1107,8 +1139,12 @@ export function tickWorld(world, dt) {
     }
   }
 
-  // Eggs hatch.
+  // v0.17.2: loose food falls when lifted into the sky and released.
+  for (const f of world.foods) stepLightBody(f, dt);
+
+  // Eggs hatch (and fall, if lifted into the sky and released).
   for (const egg of [...world.eggs]) {
+    stepLightBody(egg, dt);
     egg.timer -= dt;
     egg.wobble = Math.max(0, egg.wobble - dt);
     if (egg.timer < 3) egg.wobble = 0.3; // wobbling before hatch
