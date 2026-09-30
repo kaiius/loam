@@ -47,6 +47,7 @@ export function createWorld(seed = 1) {
     eggs: [],
     creatures: [],
     pebbles: [], // v0.9: pushable stones — the world as material
+    minerals: [], // v0.17.1 "Touch": static mineral deposits — observer-only until the technology release
     events: [], // { type, creature?, t } — consumed by UI
     culture: createCulture(), // v0.7: the tradition registry — inheritance that isn't DNA
     lineage: new Map(), // v0.10: every creature ever born — { id: { id, name, parents, generation, bornAt, traits } }. Dead ancestors stay resolvable for the lineage view.
@@ -262,6 +263,36 @@ export function addPebble(world, x, platformIndex) {
     kind: 'pebble', id: oid(), x, platformIndex, y: plat.y,
     vx: 0, r: (world.decorRng || world.rng).range(9, 17),
   });
+}
+
+// v0.17.1 "Touch": minerals. Static deposits — they never move, grow, or
+// tick. hardness 0..1 describes the stone (the technology release will
+// make it matter for toolmaking; for now it is honest description, not a
+// gate). amount = collectable samples remaining; depleted deposits stay
+// in the world, labeled as such, rather than vanishing.
+// CREATURES CANNOT USE MINERALS YET — see src/sim/observer.js.
+export const MINERAL_TYPES = [
+  { key: 'flint', name: 'Flint', color: '#4a4a52', hardness: 0.9, blurb: 'Sharp-edged stone. Future toolheads will want this.' },
+  { key: 'quartz', name: 'Quartz', color: '#cfd8e6', hardness: 0.7, blurb: 'Glassy crystal. Catches the light; good for nothing yet.' },
+  { key: 'clay', name: 'Clay', color: '#a5715c', hardness: 0.3, blurb: 'Soft earth. Malleable — future hands could shape it.' },
+];
+
+export function mineralType(key) {
+  return MINERAL_TYPES.find((t) => t.key === key) || MINERAL_TYPES[0];
+}
+
+export function addMineral(world, x, platformIndex, typeKey) {
+  const plat = world.platforms[platformIndex];
+  if (!plat) return null;
+  const type = mineralType(typeKey);
+  const m = {
+    kind: 'mineral', id: oid(), x, platformIndex, y: plat.y,
+    mineralKey: type.key, mineralName: type.name,
+    color: type.color, hardness: type.hardness, blurb: type.blurb,
+    amount: 4, // samples per deposit
+  };
+  world.minerals.push(m);
+  return m;
 }
 
 // v0.14: postzygotic barrier — hybrid viability falls as the parents'
@@ -1228,6 +1259,13 @@ export function populate(world) {
   addToy(world, 800, 0);
   // v0.9: pebbles scattered on the forest floor — the world as material.
   for (let i = 0; i < 8; i++) addPebble(world, rng.range(80, 1520), 0);
+  // v0.17.1 "Touch": mineral deposits. Fixed positions (no rng — worldgen
+  // order is load-bearing for determinism, and these must never shift the
+  // main stream's sequence). Observer-only until the technology release.
+  addMineral(world, 300, 0, 'flint');   // forest floor, verdant side
+  addMineral(world, 800, 0, 'clay');    // forest floor, arid stretch
+  addMineral(world, 1300, 0, 'flint');  // forest floor, highland side
+  addMineral(world, 600, 7, 'quartz');  // upper branch — the climb is the price
   // Four founder tanglekins with fresh random genomes, born in the lower
   // branches. (v0.5: was two. Two founders made every lineage a coin flip —
   // four founders (two breeding pairs) give the population the demographic

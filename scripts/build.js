@@ -21,6 +21,7 @@ const MODULES = [
   'src/sim/social.js',
   'src/sim/creature.js',
   'src/sim/world.js',
+  'src/sim/observer.js', // v0.17.1 "Touch": the observer's hands (imports addFood, zoneAt from world.js)
   'src/sim/teacher.js',
   'src/sim/chronicle.js',
   'src/render/painter.js',
