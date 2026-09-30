@@ -371,7 +371,22 @@ test('v0.5: mate finally has an instinct pathway', () => {
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 42); // v0.12's 37 + canopy's 5 (3 movement instincts + instJump + legPower)
+  assert.equal(GENES.length, 43); // v0.12's 37 + canopy's 6 (3 movement instincts + instJump + legPower + brainSize)
+});
+
+test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
+  const rng = createRng(7);
+  // Founder: 8.0 ± 25% → ~600–1000 assoc neurons (emberling scale).
+  const founder = createBrain(testPheno(7), rng);
+  assert.ok(founder.nAssoc >= 600 && founder.nAssoc <= 1000,
+    `founder brain ~emberling scale, got ${founder.nAssoc}`);
+  // No cap: a large expressed value yields a proportionally large brain.
+  const big = createBrain(testPheno(7, { brainSize: 30 }), rng);
+  assert.equal(big.nAssoc, 3000, 'brainSize 30 → 3000 neurons, uncapped');
+  // The locus itself is unbounded: phenotype of huge alleles is not clamped.
+  const g = randomGenome(createRng(9));
+  g.alleles.brainSize = [40, 60];
+  assert.equal(phenotype(g).brainSize, 50, 'exp locus not clamped to 1');
 });
 
 test('v0.5: a lonely brain with the mating instinct chooses to court', () => {
@@ -552,7 +567,10 @@ test('v0.6: a spiky neighbor raises fear through the live tick', () => {
   a.platformIndex = 0; b.platformIndex = 0;
   a.biochem.fear = 0;
   a.action = 'wander'; a.actionTimer = 5;
-  for (let t = 0; t < 30; t++) tickWorld(world, 0.1);
+  for (let t = 0; t < 30; t++) {
+    b.x = 710; b.platformIndex = 0; // keep the spiky neighbor parked next to a
+    tickWorld(world, 0.1);
+  }
   assert.ok(a.biochem.fear > 0, `fear should rise near spikes (got ${a.biochem.fear.toFixed(3)})`);
 });
 

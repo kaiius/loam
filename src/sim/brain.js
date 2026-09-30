@@ -56,8 +56,10 @@ export function senseVector(s) {
 }
 
 function assocSize(pheno) {
-  // Evolvable: the memory gene sizes the associative layer (48–128).
-  return 48 + Math.round((pheno.memory ?? 0.5) * 80);
+  // The brainSize locus sizes the associative layer: 100 × expressed value,
+  // with NO upper cap — founder 8.0 gives ~800 (emberling scale) and evolution
+  // may drive it upward without bound. Floor of 16 keeps degenerate genomes alive.
+  return Math.max(16, Math.round(100 * (pheno.brainSize ?? 8.0)));
 }
 
 function randSparse(rng, rows, cols, density, scale) {
@@ -117,6 +119,11 @@ export function createBrain(pheno, rng) {
 
 const tanh = (x) => Math.tanh(x);
 
+// Expected a2m fan-in at the original ~88-neuron scale (density 0.5).
+// The motor readout normalizes against this so learned-pathway magnitude
+// is invariant to brain size.
+const REF_FANIN = 44;
+
 // Attention: sharpen the sense vector by the EMA of recent salience.
 // What the brain has been attending to shapes what it hears now.
 function applyAttention(brain, input) {
@@ -158,14 +165,19 @@ export function forward(brain, input) {
   for (let i = 0; i < nA; i++) {
     if (i !== winner) assoc[i] *= 0.15;
   }
-  // Motor: sparse readout, 1:1 with actions.
+  // Motor: sparse readout, 1:1 with actions. The learned sum is normalized
+  // by fan-in so its magnitude stays size-invariant: without this, a large
+  // brain's random readout noise drowns the instinct pathway. REF_FANIN is
+  // the expected fan-in at the original ~88-neuron scale, so behavior there
+  // is unchanged and bigger brains keep the same signal balance.
   const { idx: mIdx, w: mW } = brain.a2m;
   const o = new Array(N_OUT);
   for (let j = 0; j < N_OUT; j++) {
     let pre = brain.biasM[j];
     const cols = mIdx[j];
     const ws = mW[j];
-    for (let n = 0; n < cols.length; n++) pre += ws[n] * assoc[cols[n]];
+    const norm = Math.sqrt(REF_FANIN / Math.max(1, cols.length));
+    for (let n = 0; n < cols.length; n++) pre += ws[n] * assoc[cols[n]] * norm;
     const iw = brain.instW[j];
     for (let k = 0; k < N_IN; k++) pre += iw[k] * input[k];
     o[j] = tanh(pre);
@@ -247,7 +259,9 @@ function maybeGrow(brain, pheno) {
   const rng = brain.rng;
   const p = brain.neurogenesis * 0.01;
   const juvenile = brain.age < 3000; // ~first minutes of life at 10Hz
-  if (juvenile && rng.chance(p * 2) && brain.nAssoc < 128) {
+  // No cap on growth: the juvenile window (~+40 neurons typical) bounds it.
+  // Adult brains trim dead weight but the genetic scale survives aging.
+  if (juvenile && rng.chance(p * 2)) {
     addAssocNeuron(brain);
   } else if (!juvenile && rng.chance(p * 0.5) && brain.nAssoc > MIN_ASSOC) {
     pruneAssocNeuron(brain);

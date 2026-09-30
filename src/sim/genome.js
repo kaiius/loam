@@ -1,10 +1,10 @@
 // Digital DNA for Canopy tanglekins: diploid genome, inheritance with
 // CHROMOSOMAL meiosis + epigenetics, and phenotype expression.
 //
-// The 42 loci are Wildcode v0.12's (borrowed from paulthecat — 37 genes,
+// The 43 loci are Wildcode v0.12's (borrowed from paulthecat — 37 genes,
 // incl. the sense→action instinct genes, morphology, tradition fidelity)
-// plus 5 canopy genes (instClimbUp, instClimbDown, instLonelyGroom,
-// instJump, legPower).
+// plus 6 canopy genes (instClimbUp, instClimbDown, instLonelyGroom,
+// instJump, legPower, brainSize).
 //
 // The machinery is Emberhollow's: 8 chromosomes, meiosis with 1–3 crossovers
 // per chromosome (linked genes travel together; distant genes assort),
@@ -35,6 +35,13 @@ export const GENES = [
   { key: 'sociability', kind: 'float' },
   { key: 'boldness', kind: 'float' },
   { key: 'memory', kind: 'float' }, // episodic memory capacity (16–64)
+  // brainSize is an UNBOUNDED locus (kind 'exp'): a positive multiplier with
+  // no ceiling. Associative-layer neurons = 100 × expressed value, so the
+  // founder 8.0 gives ~800 — emberling scale — and mutation + selection can
+  // drive it upward forever. There is deliberately no cap: brains may evolve
+  // endlessly. (The practical cost is compute per tick, which grows linearly
+  // with neuron count — a tradeoff the lineage itself will negotiate.)
+  { key: 'brainSize', kind: 'exp', founder: 8.0 },
   // instincts — evolvable sense→action reflex weights. `sense`/`action` index
   // into the brain's sense vector / action list; `founder` biases gen-0.
   { key: 'instHungerSeek', kind: 'float', sense: 0, action: 0, founder: 0.8 },
@@ -86,7 +93,7 @@ export const CHROMOSOMES = [
   // 2 — Metabolism
   ['hungerRate', 'energyDrain', 'lifespan', 'growthRate', 'fertility', 'immunity'],
   // 3 — Neuroarchitecture
-  ['learningRate', 'memory'],
+  ['learningRate', 'memory', 'brainSize'],
   // 4 — Instincts
   ['curiosity', 'sociability', 'boldness',
    'instHungerSeek', 'instHungerEat', 'instTiredSleep', 'instBoredPlay',
@@ -116,6 +123,10 @@ export function randomAllele(gene, rng) {
     return rng.int(0, gene.choices.length - 1);
   }
   if (gene.founder !== undefined) {
+    if (gene.kind === 'exp') {
+      // Unbounded locus: founder × ±25%, never clamped above.
+      return Math.max(0.05, gene.founder * (1 + (rng.next() - 0.5) * 0.5));
+    }
     return clamp01(gene.founder + (rng.next() - 0.5) * 0.5);
   }
   return rng.next();
@@ -139,6 +150,14 @@ function mutateAllele(gene, value, rng, rate = MUTATION_RATE) {
   if (gene.kind === 'choice') {
     const options = gene.choices.map((_, i) => i).filter((i) => i !== value);
     return rng.pick(options);
+  }
+  if (gene.kind === 'exp') {
+    // Unbounded locus: multiplicative mutation, no ceiling. 5% large-effect
+    // re-roll around the founder, else a small proportional step — brains
+    // can ratchet up (or down) without bound across generations.
+    if (rng.chance(0.05)) return gene.founder * (0.5 + rng.next() * 1.5);
+    const step = rng.gauss ? rng.gauss(0, 0.06) : (rng.next() - 0.5) * 0.12;
+    return Math.max(0.05, value * (1 + step));
   }
   // 5% large-effect re-roll, else a small Gaussian step.
   if (rng.chance(0.05)) return rng.next();
@@ -207,6 +226,8 @@ export function phenotype(genome) {
     const mark = (genome.marks && genome.marks[gene.key]) || 1.0;
     if (gene.kind === 'choice') {
       p[gene.key] = gene.choices[a];
+    } else if (gene.kind === 'exp') {
+      p[gene.key] = Math.max(0.05, ((a + b) / 2) * mark); // never capped above
     } else {
       p[gene.key] = clamp01(((a + b) / 2) * mark);
     }
@@ -241,6 +262,10 @@ export function relatedness(g1, g2) {
     const [a2, b2] = g2.alleles[gene.key];
     if (gene.kind === 'choice') {
       same += (a1 === a2 ? 0.5 : 0) + (b1 === b2 ? 0.5 : 0);
+    } else if (gene.kind === 'exp') {
+      // Unbounded loci compare relatively — absolute distance is meaningless.
+      const rel = (x, y) => 1 - Math.min(1, Math.abs(x - y) / Math.max(x, y, 1e-6));
+      same += rel(a1, a2) * 0.5 + rel(b1, b2) * 0.5;
     } else {
       same += (1 - Math.abs(a1 - a2)) * 0.5 + (1 - Math.abs(b1 - b2)) * 0.5;
     }
