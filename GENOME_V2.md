@@ -1,14 +1,20 @@
 # Genome v2 — the tanglekin genome
 
-*43 → 178 loci, 46 genes across 9 families. Every gene is wired into the sim —
-no dead genes. Structure = Paul (Wildcode v0.12), depth = Emberhollow (diploid
-meiosis, epigenetics, chemistry-under-drives).*
+*43 → 227 loci (the v2 core was 178 loci / 47 genes across 9 families; v0.13–v0.20
+appended the rest). Every gene is wired into the sim — no dead genes.
+Structure = Paul (Wildcode v0.12), depth = Emberhollow (diploid meiosis,
+epigenetics, chemistry-under-drives).*
 
 ## Gene count
 
 - v0.12 + canopy: 43 loci.
-- v2: **178 loci, 46 genes** across 9 families (R/C/E/B/L/M/S/D + the original
+- v2: **178 loci, 47 genes** across 9 families (R/C/E/B/L/M/S/D + the original
   morphology/neurochemistry/instinct core).
+- v0.13–v0.20 additions (appended per the never-renumber invariant; the test
+  suite asserts the live total): v0.13 plant-genome support, v0.14 voice genes
+  ×7 + instWasteFlee, v0.16 language-substrate ×6, v0.17 evo-devo ×25,
+  v0.18 realms ×6, v0.20 hands instincts ×3, v0.20 "Falling" instFallVocal —
+  **227 loci total** as of the Falling build (`GENES.length` in genome.js).
 - Inheritance: true diploid — parental genomes fuse, chromosomes align and
   cross over (duplications/deletions/mutations), then one genome is randomly
   destroyed (the Creatures/norn scheme). 8 chromosomes, thematic; linked genes

@@ -130,6 +130,7 @@ export const SENSE32 = [
   'airborne', 'farLedge', 'submerged', 'waterNear', // v0.17: the body-plan senses
   'thirst', 'cold', 'heat', 'buriedNear', // v0.18: the realms senses
   'objectNear', 'heldWeight', // v0.20: the hands senses
+  'falling', // v0.20 "Falling": the vestibular sense — appended, never renumbered
 ];
 // The pre-v0.17 vocabulary — family-C genes name senses against these
 // indices, which are never renumbered.
@@ -413,6 +414,23 @@ GENES.push(
 // === end GENOME v0.20 creature loci =======================================
 export const HANDS20_KEYS = new Set(GENES.slice(HANDS20_START).map((g) => g.key));
 
+// === v0.20 "Falling" loci ==================================================
+// instFallVocal: falling(34) → vocal(12) — the fall-scream. Paul's v0.5 rule:
+// every new action needs an instinct gene; the vestibular sense is new, the
+// vocal action is old, and the wire between them is new. Fear past 0.6 makes
+// groundCallType emit 'alarm', so the scream carries the alarm context
+// honestly — the lexicon's alarm prototype gets its meaning from real falls.
+// The gain is evolvable: lineages that scream on the way down can be heard.
+// Founder 0.4 (not dormant): the reflex is live from the first generation.
+// Drawn from the v0.20 hands sub-stream (same pass, own key set) so the main
+// RNG sequence stays bit-identical.
+const FALLING20_START = GENES.length;
+GENES.push(
+  { key: 'instFallVocal', kind: 'float', sense: 34, action: 12, founder: 0.4 },
+);
+// === end GENOME v0.20 "Falling" loci ======================================
+export const FALLING20_KEYS = new Set(GENES.slice(FALLING20_START).map((g) => g.key));
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
@@ -466,6 +484,8 @@ export const CHROMOSOMES = [
    'instWaterDrink', 'instThirstDrink', 'instColdBask', 'instDig',
    // v0.20 "Hands": the manipulation instincts — grasp, wield, put down
    'instObjectGrasp', 'instCarryDrop', 'instThreatStrike',
+   // v0.20 "Falling": the fall-scream rides the instinct chromosome
+   'instFallVocal',
    ..._chrS],
   // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
   [..._chrD, ..._chrC],
@@ -579,14 +599,16 @@ export function randomGenome(rng, opts = {}) {
   const isNew17 = (k) => EVO17_KEYS.has(k);
   const isNew18 = (k) => REALMS18_KEYS.has(k);
   const isNew20 = (k) => HANDS20_KEYS.has(k);
+  const isNewFalling = (k) => FALLING20_KEYS.has(k);
+  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k);
   for (const gene of GENES) {
-    if (gene.key.startsWith('lex') || isNew17(gene.key) || isNew18(gene.key) || isNew20(gene.key)) continue;
+    if (gene.key.startsWith('lex') || isNewer(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
     marks[gene.key] = 1.0;
   }
   let h = 0x1a6c0de;
   for (const gene of GENES) {
-    if (gene.key.startsWith('lex') || isNew17(gene.key) || isNew18(gene.key) || isNew20(gene.key)) continue;
+    if (gene.key.startsWith('lex') || isNewer(gene.key)) continue;
     for (const a of alleles[gene.key]) h = (Math.imul(h, 31) + Math.floor(a * 1e9)) | 0;
   }
   const langRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_LANG) : h >>> 0);
@@ -597,7 +619,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h2 = 0x5eed17;
   for (const gene of GENES) {
-    if (isNew17(gene.key) || isNew18(gene.key) || isNew20(gene.key)) continue;
+    if (isNewer(gene.key)) continue;
     for (const a of alleles[gene.key]) h2 = (Math.imul(h2, 31) + Math.floor(a * 1e9)) | 0;
   }
   const evoRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_EVO) : h2 >>> 0);
@@ -608,7 +630,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h3 = 0x18ea1d;
   for (const gene of GENES) {
-    if (isNew18(gene.key) || isNew20(gene.key)) continue;
+    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key)) continue;
     for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
   }
   const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
@@ -619,14 +641,17 @@ export function randomGenome(rng, opts = {}) {
   }
   // v0.20 "Hands": the manipulation instincts draw from their own
   // sub-stream — new loci never shift the main RNG sequence.
+  // v0.20 "Falling": instFallVocal rides this same pass (own key set) —
+  // the h4 seed stays bit-identical to the hands-only v0.20, and the
+  // falling gene draws after the hands genes, deterministically.
   let h4 = 0x20a05;
   for (const gene of GENES) {
-    if (isNew20(gene.key)) continue;
+    if (isNew20(gene.key) || isNewFalling(gene.key)) continue;
     for (const a of alleles[gene.key]) h4 = (Math.imul(h4, 31) + Math.floor(a * 1e9)) | 0;
   }
   const handsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_HANDS) : h4 >>> 0);
   for (const gene of GENES) {
-    if (!isNew20(gene.key)) continue;
+    if (!isNew20(gene.key) && !isNewFalling(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, handsRng), randomAllele(gene, handsRng)];
     marks[gene.key] = 1.0;
   }

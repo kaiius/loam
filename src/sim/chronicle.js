@@ -33,7 +33,7 @@ const DIALECT_S = 0.5;
 const NOTABLE = new Set([
   'hatch', 'death', 'mating', 'speciation', 'traditionFounded',
   'traditionAdopted', 'epimark', 'novelGenome', 'beautifulMutant', 'seedDispersed',
-  'soilRich',
+  'soilRich', 'strandedFall', // v0.20 "Falling": a canopy-to-floor fall is an event
 ]);
 
 const dayOf = (t) => `Day ${Math.floor((t || 0) / DAY_LENGTH) + 1}`;
@@ -343,6 +343,16 @@ function present(world) {
     if (e.type === 'soilRich') {
       // v0.14.1: the detritus layer made history — the dead feeding the living.
       els.push(entry(world, { t: e.t, icon: '🪱', text: `The ground in ${e.zone || 'a biome'} grew rich — rot and litter become the next harvest.` }));
+      continue;
+    }
+    if (e.type === 'strandedFall') {
+      // v0.20 "Falling": the fall delivered the creature somewhere — the
+      // chronicle names the below. The climb back is the creature's problem.
+      els.push(entry(world, {
+        t: e.t, icon: '🪂',
+        text: `${cname(world, c)} fell from the high branches to ${zoneName(e.zone)} — a long way from home.`,
+        creatureId: cid(c),
+      }));
       continue;
     }
   }

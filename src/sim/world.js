@@ -314,6 +314,40 @@ export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1, rot
   if (world.onSpawn) world.onSpawn(amount);
 }
 
+// v0.20 "Falling": windfall constants — the share of expired canopy fruit
+// that drops to the floor, and how long it lasts down there.
+export const WINDFALL_P = 0.5;
+export const WINDFALL_ROT = 300; // seconds before windfall composts
+
+// The ground platform below a point — the understory floor that catches
+// what falls. Null over open water and the groundless deep.
+function groundBelow(world, x, y) {
+  let best = -1, bestY = Infinity;
+  for (let i = 0; i < world.platforms.length; i++) {
+    const p = world.platforms[i];
+    if (p.kind !== 'ground') continue;
+    if (x < p.x1 || x > p.x2 || p.y <= y) continue;
+    if (p.y < bestY) { bestY = p.y; best = i; }
+  }
+  return best;
+}
+
+// v0.20 "Falling": an expired canopy fruit falls to the understory instead
+// of vanishing. Leaves still compost in place (the detritus layer); fruit
+// becomes floor food — the below is a place with an economy, not a plane.
+export function dropWindfall(world, f, rng) {
+  if (!f || f.foodKind === 'leaf') return;
+  if (!rng.chance(WINDFALL_P)) return; // the coin says it rots where it hangs
+  const gi = groundBelow(world, f.x, f.y || 0);
+  if (gi < 0) return; // over open water: plip, gone
+  if (world.foods.length > 80) return; // the floor can't stockpile either
+  const jx = f.x + (rng ? rng.range(-24, 24) : 0);
+  addFood(world, jx, gi, f.foodKind, f.amount, WINDFALL_ROT, {
+    plantId: f.plantId, bitterness: f.bitterness || 0,
+    nutrition: (f.nutrition || 1) * 0.8, // overripe: still food, less of it
+  });
+}
+
 // v0.13 "Roots": seed dispersal — the coevolution loop. When a creature
 // eats fruit, the parent plant's genes may ride along: a seed is deposited
 // at the creature's position and sprouts into a seedling carrying a selfed
@@ -1368,7 +1402,16 @@ export function tickWorld(world, dt) {
             plantId: p.id, bitterness: ph.bitterness || 0, nutrition,
           });
         }
-        if (world.foods.length > 60) world.foods.splice(0, world.foods.length - 60);
+        // v0.20 "Falling": windfall — the oldest uneaten fruit doesn't vanish,
+        // it falls. Overripe fruit drops to the ground platform below and
+        // becomes floor food (slightly less nutritious, and it rots within
+        // minutes so the floor can't stockpile). The canopy keeps its fresh
+        // fruit where it grows; what nobody wanted becomes the understory's
+        // economy — a reason to descend, where the bears are.
+        if (world.foods.length > 60) {
+          const fallen = world.foods.splice(0, world.foods.length - 60);
+          for (const f of fallen) dropWindfall(world, f, rng);
+        }
       }
     }
   }

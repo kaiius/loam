@@ -48,7 +48,7 @@ export const ACTIONS = [
   'drop', // release the held object with the carrier's velocity (v0.20 Hands)
 ];
 
-export const N_IN = 35; // 34 senses + bias... see senseVector
+export const N_IN = 36; // 35 senses + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -74,6 +74,7 @@ export function senseVector(s) {
     s.airborne || 0, s.farLedge || 0, s.submerged || 0, s.waterNear || 0,
     s.thirst || 0, s.cold || 0, s.heat || 0, s.buriedNear || 0,
     s.objectNear || 0, s.heldWeight || 0, // v0.20: the hands senses
+    s.falling || 0, // v0.20 "Falling": the vestibular sense — appended, never renumbered
     1,
   ];
 }

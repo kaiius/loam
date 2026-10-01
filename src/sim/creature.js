@@ -29,6 +29,12 @@ export const GRAVITY = 900; // px/s^2 — the world's own law, not a dice roll
 export const MAX_FALL = 950; // terminal velocity px/s
 export const FALL_HURT_V = 520; // land faster than this and it costs you
 export const FALL_DMG = 1 / 900; // injury per px/s of impact past the threshold
+// v0.20 "Falling": the vestibular threshold — dropping faster than this, the
+// fall is felt while it happens (sense 34). Below it, short hops stay quiet.
+export const FALL_FEEL_V = 180;
+// v0.20 "Falling": a fall longer than this strands — the landing is an
+// ecological event (chronicle line, a long climb back), not a damage tick.
+export const STRAND_PX = 350;
 export const JUMP_V_BASE = 260; // px/s upward at legPower 0
 export const JUMP_V_GAIN = 420; // +px/s of launch at legPower 1
 export const JUMP_RANGE_DY = 280; // highest ledge the jumpNear sense can see
@@ -454,6 +460,12 @@ export function gatherSenses(c, world) {
     if (grasp) objectNear = 1 - Math.min(1, grasp.dist / (c.pheno.groomReach || 40));
   }
   const heldWeight = c.held ? clamp01(c.held.weight || 0) : 0;
+  // v0.20 "Falling": the vestibular sense — 0 on the branch or leaping up;
+  // while dropping fast it climbs toward 1 with the fall's intensity.
+  // Gliders feel less (glideLift bleeds vy); the founder's hops stay quiet.
+  const vy = Number.isFinite(c.vy) ? c.vy : 0;
+  const falling = (!c.grounded && vy > FALL_FEEL_V)
+    ? clamp01((vy - FALL_FEEL_V) / (MAX_FALL - FALL_FEEL_V)) : 0;
   const senses = {
     _range: range, // px base for dist normalization (used by contagion/mating checks)
     hunger: b.hunger,
@@ -477,6 +489,7 @@ export function gatherSenses(c, world) {
     heat: heatSense(b, c.pheno),
     buriedNear,
     objectNear, heldWeight, // v0.20: the hands senses
+    falling, // v0.20 "Falling": the vestibular sense (index 34)
     _heardCall: heard.call || null, // v0.16: the full acoustic event for the lexicon
     wasteOdor: wasteOdorOf(world, c.x), // v0.14: disgust — the smell of fouled ground
     _alarmHeard: heard.alarm, // v0.14: alarm calls reassure — fear drains slightly
@@ -597,6 +610,9 @@ export function stepPhysics(c, world, dt) {
       c.y = plat.y; // stand on the branch
     }
     c.vy = 0;
+    // v0.20 "Falling": while grounded, remember where the next fall starts.
+    c._fallStartY = c.y;
+    c._fallPeak = 0;
     return;
   }
   // v0.20: anti-slip — a body just below its own platform, well inside the
@@ -619,6 +635,19 @@ export function stepPhysics(c, world, dt) {
   // slightly toward the facing direction. c.gliding is only ever true
   // with real wings, so the founder's falls are untouched.
   integrateGravity(c, world, dt);
+  // v0.20 "Falling": the fall is felt WHILE it happens, not just at the
+  // landing. Dropping fast, fear and adrenaline climb with the fall's
+  // intensity — the vestibular signal the brain's new sense reads. Fear
+  // past 0.6 grounds the call type as 'alarm' (groundCallType), so the
+  // scream the fall-instinct fires carries honest meaning; the landing
+  // startle in land() scales with the peak fear the fall produced.
+  if (!c.grounded && c.vy > FALL_FEEL_V && c.biochem) {
+    const fi = clamp01((c.vy - FALL_FEEL_V) / (MAX_FALL - FALL_FEEL_V));
+    if (fi > (c._fallPeak || 0)) c._fallPeak = fi;
+    const b = c.biochem;
+    b.fear = clamp01(b.fear + 0.8 * fi * dt);
+    b.adrenaline = clamp01(b.adrenaline + 0.5 * fi * dt);
+  }
 }
 
 // v0.20 "One physics": the airborne gravity branch, extracted from
@@ -711,6 +740,24 @@ function applyStimulus(c, eventName) {
 function land(c, world, impact) {
   const wasGliding = c.gliding;
   c.gliding = false;
+  // v0.20 "Falling": how far the body fell, and how frightening the fall
+  // was at its peak. _fallStartY is the last grounded height (stepPhysics
+  // keeps it current); predators falling through integrateGravity never
+  // set it, so their landings stay quiet.
+  const fallPeak = c._fallPeak || 0;
+  const fallDist = (c._fallStartY !== undefined) ? c.y - c._fallStartY : 0;
+  c._fallPeak = 0;
+  // v0.20 "Falling": a canopy-to-floor fall strands — even a soft one. The
+  // stranding is about where the fall delivered the creature, not how hard
+  // it landed. The chronicle notes the delivery; the world's existing costs
+  // do the rest: climbing back up bills energy, homesickness drains comfort
+  // far from home, bonds decay with separation, and arctic floors have bears.
+  if (fallDist > STRAND_PX) {
+    world.events.push({
+      type: 'strandedFall', creature: c,
+      fallPx: Math.round(fallDist), zone: zoneAt(c.x).key, t: world.time,
+    });
+  }
   impact = impact * (1 - (c.pheno.fallSoak || 0));
   if (impact <= FALL_HURT_V) {
     if (wasGliding) c.reward += 0.05; // the touchdown after a real glide
@@ -719,7 +766,10 @@ function land(c, world, impact) {
   const b = c.biochem;
   const excess = impact - FALL_HURT_V;
   b.injury = clamp01(b.injury + excess * FALL_DMG);
-  b.adrenaline = clamp01(b.adrenaline + 0.35); // the landing startles
+  // The landing startles — more when the fall itself was frightening.
+  // A hop that lands hard is a surprise; a long screaming fall that lands
+  // hard is the thing the fear was about.
+  b.adrenaline = clamp01(b.adrenaline + 0.35 * (0.5 + fallPeak));
   c.flinchT = 0.45;
   c.reward -= 0.25;
   applyStimulus(c, 'hardLanding'); // v2 (S): the fall's evolvable valence
