@@ -114,7 +114,10 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   } else {
     // v0.18: hypothermia doubles fatigue gain — the cold exhausts.
     const hypoGain = b.coreTemp < (0.25 - (pheno.coldTol ?? 0.5) * 0.1) ? 2 : 1;
-    b.fatigue = clamp01(b.fatigue + drainRate * hypoGain * dt);
+    // v0.23 "Weather": wet fur costs heat — drying is metabolic work, billed
+    // through fatigue so shelter-seeking has a real price.
+    const wetDrain = (ctx.wet01 || 0) * 0.006;
+    b.fatigue = clamp01(b.fatigue + (drainRate * hypoGain + wetDrain) * dt);
   }
 
   // Oxytocin: the bonding chemical. Grooming is the troop's ritual —

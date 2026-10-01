@@ -13,6 +13,7 @@ import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA
 // v0.18 "Realms": the biome map — region layout, temperature fields,
 // waters, ground. Pure geography; every call NaN-guarded at use.
 import { biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, groundYAt } from './biomes.js';
+import { windAt, tempAt, cloudAt } from './weather.js';
 
 let nextId = 1;
 
@@ -665,6 +666,16 @@ export function integrateGravity(c, world, dt) {
   const vy0 = Number.isFinite(c.vy) ? c.vy : 0;
   c.vy = Math.min(MAX_FALL, vy0 + GRAVITY * (1 - glideLift) * dt);
   if (c.gliding) c.vx += c.facing * 30 * dt;
+  // v0.23 "Weather": the wind carries every airborne body — Galilean carry,
+  // not a force. A stone and a glider are borne east equally; the glider
+  // goes farther only because lift keeps it aloft longer. Grounded bodies
+  // are not carried. (An acceleration model has no terminal velocity — a
+  // steady breeze would push a soaring vulture past wind speed forever,
+  // which no brain can fight. The air moves; the creature keeps its own
+  // air-relative velocity.)
+  if (!c.grounded && world.climate) {
+    c.x += windAt(world, c.x) * dt;
+  }
   c.x += (Number.isFinite(c.vx) ? c.vx : 0) * dt;
   // The world has walls: nobody leaves sideways.
   if (c.x < 0) { c.x = 0; c.vx = Math.abs(c.vx) * 0.3; }
@@ -1799,6 +1810,20 @@ export function updateCreature(c, world, dt) {
     ambTemp = ambientTemp(c.x, c.y);
     ambHeat = ambientHeat(c.x, c.y);
   } catch (e) { /* chemistry defaults cover it */ }
+  // v0.23 "Weather": the creature feels the GENERATED temperature field, not
+  // the painted biome map. tempAt is on the same 0..1/0.5-neutral scale the
+  // biochem expects, and the seed reproduces painted behavior at worldgen —
+  // so selection tracks the weather as biomes drift. Heat is read off the
+  // same field (hot air), not the desert's address.
+  if (world.climate) {
+    ambTemp = tempAt(world, c.x, c.y);
+    ambHeat = Math.max(0, Math.min(1, (ambTemp - 0.55) / 0.45));
+    // v0.23: rain wets fur; warmth dries it. Thick cloud means rain.
+    const rainHere = cloudAt(world, c.x);
+    const dryRate = 0.02 * (0.3 + ambTemp) * (1 - Math.min(1, rainHere) * 0.8);
+    const wetting = rainHere > 0.6 ? (rainHere - 0.6) * 0.5 * dt : 0;
+    c.wetness = clamp01((c.wetness || 0) + wetting - dryRate * dt);
+  }
   if (!Number.isFinite(ambTemp)) ambTemp = 0.5;
   if (!Number.isFinite(ambHeat)) ambHeat = 0;
   // v0.17 "Bauplan": growing novel structures costs fuel. Juveniles pay
@@ -1827,6 +1852,7 @@ export function updateCreature(c, world, dt) {
     drank,
     basking: c._basking || 0,
     sailDump: pheno.sailDump || 0,
+    wet01: c.wetness || 0, // v0.23 "Weather": drying wet fur bills fatigue
   });
   // v0.18: flailing (swimming without membranes) costs 3× the oxygen.
   // The chemistry doesn't read a flail flag, so the surcharge is billed

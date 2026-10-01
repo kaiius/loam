@@ -3783,7 +3783,8 @@ test('v0.17: glide without wings degrades to exactly a jump', () => {
     return c;
   };
   const glider = mk('glide', 800);
-  const jumper = mk('jump', 1000);
+  const jumper = mk('jump', 800); // same column: v0.23 wind is real, so same
+  // air ⇒ the degrade comparison controls for environment, not luck
   tickWorld(world, 0.1);
   assert.ok(!glider.grounded && !jumper.grounded, 'both left the ground');
   assert.equal(glider.vy, jumper.vy, 'the jump impulse, exactly');
@@ -4655,6 +4656,7 @@ test('v0.20: the landing startle scales with the fear the fall produced', () => 
 
 test('v0.20: a canopy-to-floor fall strands — an event, not a footnote', () => {
   const world = v09world(74);
+  for (const col of world.climate.cols) col.windU = 0; // still air: the test is about falling, not wind
   const c = physCreature(world, 1700, 8);
   // The fall bookkeeping: a grounded tick records where the fall starts.
   c.x = 1700; c.y = 280; c.grounded = true;

@@ -7,6 +7,7 @@ import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele 
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
 import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
+import { createClimate, initClimateFromPainted, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, WEATHER_COL_W, WEATHER_COLS } from './weather.js';
 
 // v0.18: the biome map is the world's geography now — re-export its API so
 // world.js stays the sim's facade.
@@ -175,6 +176,38 @@ export function createWorld(seed = 1) {
       archipelago: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
       deep: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
     },
+    // v0.23 "Weather": the sky as physics. Per-column climate field —
+    // temperature, vapor, cloud, soil moisture, wind — on its own RNG
+    // sub-stream. Initialized from the painted biome map (the initial
+    // condition only); the field then evolves by physics and biome labels
+    // drift via the Whittaker lookup (biomeKeyAt with a world).
+    climate: createClimate(seed),
+  };
+  initClimateFromPainted(world.climate, (x, y) => BIOMES[biomeAt(x, y)].key);
+  // Per-column terrain elevation (ground/rock/ridge/shelf only — branches are
+  // not terrain) for orographic lift, and open-water fraction for evaporation.
+  // Computed once at worldgen — the land doesn't move.
+  world.climate.terrainElev = [];
+  world.climate.waterFrac = [];
+  {
+    const waters = waterRects();
+    const TERRAIN = new Set(['ground', 'rock', 'ridge', 'shelf']);
+    for (let i = 0; i < WEATHER_COLS; i++) {
+      const x0 = i * WEATHER_COL_W, x1 = x0 + WEATHER_COL_W;
+      let elev = 0;
+      for (const p of world.platforms) {
+        if (!TERRAIN.has(p.kind)) continue;
+        if (p.x2 > x0 && p.x1 < x1) elev = Math.max(elev, 830 - p.y);
+      }
+      world.climate.terrainElev.push(Math.max(0, elev));
+      let w = 0;
+      for (const r of waters) w += Math.max(0, Math.min(x1, r.x1) - Math.max(x0, r.x0));
+      world.climate.waterFrac.push(Math.min(1, w / WEATHER_COL_W));
+    }
+  }
+  world.climateGeo = {
+    terrainElev: (x) => world.climate.terrainElev[Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(x / WEATHER_COL_W)))],
+    waterFrac: (x) => world.climate.waterFrac[Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(x / WEATHER_COL_W)))],
   };
   // Climb links: pairs of platforms whose x-ranges overlap and whose
   // vertical gap is climbable (60–240px). Computed once at worldgen —
@@ -1377,7 +1410,10 @@ export function tickPollination(world, dt) {
 
 export function tickWorld(world, dt) {
   world.time += dt;
+  // v0.23 "Weather": the sky ticks FIRST — clouds shade the light below.
+  if (world.climate) tickClimate(world, dt, world.climateGeo);
   updateLight(world);
+  if (world.climate) world.light *= 1 - 0.55 * world.climate.meanCloud; // cloud-shading feedback
   const rng = world.rng;
 
   // Plants grow fruit.
@@ -1387,6 +1423,12 @@ export function tickWorld(world, dt) {
     // excretion, built by decomposition) scales growth. Fertile ground
     // grows faster; exhausted ground stalls.
     p.growth = Math.min(1, p.growth + (dt / 150) * (0.5 + (p.pheno ? p.pheno.growthRate : 0.5)) * soilGrowthMul(world, p.zone));
+    // v0.23 "Weather": drought withers like cold. Soil moisture below 0.12
+    // stresses the plant; prolonged drought kills it back to a sprout.
+    if (world.climate) {
+      const ds = droughtStressAt(world, p.x);
+      if (ds > 0) p.growth = Math.max(0, p.growth - ds * dt * 0.015);
+    }
     p.sway += dt;
     if (p.growth >= 1) {
       p.fruitTimer -= dt;
@@ -1412,7 +1454,11 @@ export function tickWorld(world, dt) {
           // new frontiers.
           const ph = p.pheno || {};
           const intervalGene = 0.7 + 0.6 * (ph.interval !== undefined ? ph.interval : 0.5);
-          const bk = p.zone;
+          // v0.23 "Weather": the stress biome is EMERGENT — the Whittaker
+          // lookup on the generated T/M field, not the painted zone. At
+          // worldgen the two agree (pinned); they drift apart as the climate
+          // evolves, and selection follows the weather, not the map.
+          const bk = world.climate ? biomeKeyAt(p.x, p.y || 800, world) : p.zone;
           const fruitMul = BIOME_FRUIT_MUL[bk] !== undefined ? BIOME_FRUIT_MUL[bk] : 1;
           let zoneStress;
           if (p.kind === 'herb') {

@@ -27,7 +27,23 @@ export function biomeAt(x, y) {
   return Math.min(7, Math.floor(xc / 600));
 }
 
-export function biomeKeyAt(x, y) {
+import { createRng } from './rng.js';
+import { whittakerKey, colAt } from './weather.js';
+
+// v0.23 "Weather": emergent biomes. With a world (climate state), the key
+// comes from the Whittaker lookup on the generated T/M field — biomes drift
+// as the climate evolves. Without one (pure geography: tests, renderers),
+// the painted map is the answer. Altitude cools the reading via the lapse,
+// so high peaks emerge as alpine without any painted "mountain = cold" rule.
+export function biomeKeyAt(x, y, world = null) {
+  if (world && world.climate) {
+    const c = colAt(world.climate, x);
+    const bi = biomeAt(x, y);
+    const waterKey = bi >= 5 ? BIOMES[bi].key : null; // water bodies are geography
+    const lapse = Math.max(0, 800 - y) / 550;
+    const Teff = Math.max(0, Math.min(1, c.T - lapse * 0.30));
+    return whittakerKey(Teff, c.soil, waterKey);
+  }
   return BIOMES[biomeAt(x, y)].key;
 }
 
