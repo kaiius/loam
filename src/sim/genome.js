@@ -448,6 +448,12 @@ export const FALLING20_KEYS = new Set(GENES.slice(FALLING20_START).map((g) => g.
 const WEB22_START = GENES.length;
 GENES.push(
   { key: 'instBite', kind: 'float', sense: 8, action: 23, founder: 0.02 },
+  // v0.22.1: the hunger gate. instBite fires on distance (the hunt-call);
+  // instHungerBite fires on hunger (the strike drive). A hungry carnivore
+  // near prey gets bite from hunger even when the distance wire goes quiet
+  // at close range — satiation-gated predation, per ECOLOGY_DESIGN §9.
+  // Founder 0.02 = dormant (the way swim shipped); predators override to 0.8.
+  { key: 'instHungerBite', kind: 'float', sense: 0, action: 23, founder: 0.02 },
 );
 // === end GENOME v0.22 loci =================================================
 export const WEB22_KEYS = new Set(GENES.slice(WEB22_START).map((g) => g.key));
@@ -509,6 +515,8 @@ export const CHROMOSOMES = [
    'instFallVocal',
    // v0.22 "Web of Life": the bite instinct rides the instinct chromosome
    'instBite',
+   // v0.22.1: the hunger gate for the strike — hunger → bite
+   'instHungerBite',
    ..._chrS],
   // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
   [..._chrD, ..._chrC],

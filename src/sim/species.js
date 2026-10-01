@@ -111,7 +111,7 @@ export const SPECIES = {
     overrides: {
       brainSize: 0.7, size: 0.8, mouthSize: 0.9,
       budShoulderGrow: 0.8, budShoulderType: GRASP,
-      diet: CARN, instBite: 0.8, eyeSize: 0.75, legPower: 0.6,
+      diet: CARN, instBite: 0.8, instHungerBite: 1.0, eyeSize: 0.75, legPower: 0.6,
     },
     exact: ['diet carnivore', 'instBite 0.8', 'mouthSize 0.9'],
   },
@@ -120,7 +120,7 @@ export const SPECIES = {
     desc: 'Pack-hunter founder. Large, cursorial (leg bias), social instincts up — pack = bonds.',
     overrides: {
       brainSize: 0.75, size: 0.75, legLength: 0.85, legPower: 0.8,
-      diet: CARN, instBite: 0.85, mouthSize: 0.8,
+      diet: CARN, instBite: 0.85, instHungerBite: 1.0, mouthSize: 0.8,
       sociability: 0.8, curiosity: 0.5,
     },
     exact: ['diet carnivore', 'instBite 0.85', 'sociability 0.8 (pack)'],
@@ -133,7 +133,7 @@ export const SPECIES = {
       budNeckGrow: 0.5, budNeckType: GILL,
       budMidGrow: 0.7, budMidType: FIN,
       budShoulderGrow: 0.6, budShoulderType: GRASP,
-      diet: CARN, instBite: 0.9, curiosity: 0.1,
+      diet: CARN, instBite: 0.9, instHungerBite: 1.0, curiosity: 0.1,
     },
     exact: ['diet carnivore', 'instBite 0.9', 'curiosity 0.1 (stillness)'],
   },
@@ -145,7 +145,7 @@ export const SPECIES = {
       budNeckGrow: 1, budNeckType: GILL,
       budMidGrow: 1, budMidType: FIN,
       segCount: 1, // bodySegs = 1 + segCount = 2
-      diet: CARN, instBite: 0.9, eyeSize: 0.7,
+      diet: CARN, instBite: 0.9, instHungerBite: 1.0, eyeSize: 0.7,
     },
     exact: ['gillArea > 0', 'finArea > 0', 'bodySegs 2', 'instBite 0.9'],
   },
@@ -155,7 +155,7 @@ export const SPECIES = {
     overrides: {
       brainSize: 0.6, size: 0.9, fur: 1.0,
       mouthSize: 0.85, diet: OMNI,
-      instBite: 0.8, instDig: 0.3, legPower: 0.55,
+      instBite: 0.8, instHungerBite: 1.0, instDig: 0.3, legPower: 0.55,
     },
     exact: ['fur 1.0 (maxed)', 'instBite 0.8', 'diet omnivore'],
   },

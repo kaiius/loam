@@ -1586,6 +1586,62 @@ function executeAction(c, world, dt, s) {
       c.actionTimer = 0;
       break;
     }
+    case 'bite': {
+      // v0.22.1: the attack verb finally lands. The brain selects it via
+      // instBite (sense 8 creatureDist → action 23); here it just executes —
+      // ordinary machinery, no hunt scripts, no prey-finding cheats. The
+      // target is the nearest creature in strike reach (the same helper the
+      // carry-strike uses), found through the spatial hash when live.
+      c.actionLabel = 'biting';
+      c._active = 0.8; // biting is work — the chemistry bills it (fatigue)
+      const target = nearestCreatureInReach(c, world);
+      if (target) {
+        const dir = Math.sign(target.x - c.x) || c.facing || 1;
+        // Damage = attacker mouthSize × body mass vs defender spikeArmor.
+        // Mass is the honest proxy: size gene × life-stage size.
+        const mouth = c.pheno.mouthSize ?? 0.5;
+        const mass = (c.pheno.size ?? 0.5) * stageSize(ageStage(c.biochem, c.pheno));
+        const armor = target.pheno.spikeArmor ?? 0;
+        const dmg = Math.max(0.01, 0.15 * mouth * mass * (1 - Math.min(0.9, armor)));
+        target.biochem.injury = clamp01(target.biochem.injury + dmg);
+        target.flinchT = 0;
+        target.vx = (target.vx || 0) + dir * 25 * mouth * mass; // the shake
+        target.vy = (target.vy || 0) - 12 * mouth * mass;
+        // Spike retaliation — reuses the v0.9 clash numbers: one
+        // retaliation rule, not two. Biting a spiky target hurts the biter.
+        const spikes = target.pheno.spikes || 0;
+        if (spikes > 0.35 && c.clashCooldown <= 0) {
+          c.biochem.injury = clamp01(c.biochem.injury + 0.14 * spikes);
+          c.biochem.adrenaline = clamp01(c.biochem.adrenaline + 0.5);
+          c.flinchT = 0.45;
+          c.clashCooldown = 3;
+          c.reward -= 0.2;
+          if (world.bonds) nudgeBond(world, c, target, -0.3);
+          world.events.push({ type: 'clash', creature: c, other: target, t: world.time });
+        }
+        // A wound is a wound: severe injury bleeds health through the
+        // chemistry channels, and a kill leaves a corpse via noteDeath —
+        // the v0.18 scavenging path does the rest.
+        world.events.push({ type: 'bite', creature: c, other: target, dmg, t: world.time });
+        c.actionTimer = 0;
+      } else {
+        // No creature in strike reach. The eat precedent (v0.11): if one
+        // is in sight but out of reach, go get it — standing still was a
+        // livelock that starved a founder. Nothing sensed at all → wander,
+        // the codebase convention for a targetless action. (A weak bite
+        // instinct must never become a standing-still trap: the vulture
+        // QA caught exactly that — flock-mates in sight, out of reach,
+        // dying of thirst while snapping at air.)
+        if (s._other) {
+          c.actionLabel = 'closing in';
+          moveToward(c, world, s._other.x, dt, 0.9);
+        } else {
+          c.action = 'wander';
+          c.actionTimer = 0;
+        }
+      }
+      break;
+    }
     case 'wander':
     default:
       c.actionLabel = 'wandering';
@@ -1685,7 +1741,7 @@ export function updateCreature(c, world, dt) {
     if (isDead(b, pheno)) {
       c.alive = false;
       const oldAge = b.age >= pheno.lifespanSec;
-      noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : 'ill health');
+      noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : b.injury > 0.6 ? 'wounds' : 'ill health');
       return;
     }
     return;
@@ -1795,7 +1851,7 @@ export function updateCreature(c, world, dt) {
   if (isDead(b, pheno)) {
     c.alive = false;
     const oldAge = b.age >= pheno.lifespanSec;
-    noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : 'ill health');
+    noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : b.injury > 0.6 ? 'wounds' : 'ill health');
     return;
   }
 
