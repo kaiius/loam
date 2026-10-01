@@ -8,11 +8,14 @@
 // it, not because a tag says it may.
 //
 // Ten founders follow ECOLOGY_DESIGN.md §4 (tanglekins + four prey classes
-// + five predators). Two are Joshua's 2026-10-01 roster additions:
+// + five predators). Joshua's roster additions:
 //   - vulture ("soarer"), the 11th founder: obligate scavenger
 //   - beetle-detritivore ("midden beetle"): the beetle's second ecotype —
 //     same loci, different founder values; the pollinator keeps flowers,
 //     the detritivore gets the waste.
+//   - v0.22.2: flutter (13th) and grub (14th) — the legacy scripted
+//     critters (butterfly, bug) promoted to full founder creatures on the
+//     one engine. The old critter path is retired entirely.
 //
 // Founder-exactness is contractual: each entry documents the traits the
 // founder MUST express on day one (wings grown, fur maxed, gills grown),
@@ -28,6 +31,7 @@ const PIN = {
   tanglekin: 1, skimmer: 2, scurrier: 3, beetle: 4, 'beetle-detritivore': 5,
   minnow: 6, 'jungle-cat': 7, 'plains-runner': 8, 'mangrove-croc': 9,
   shark: 10, bear: 11, vulture: 12,
+  flutter: 13, grub: 14, // v0.22.2 — the promoted critters
 };
 
 // Diet choice indices: ['herbivore', 'omnivore', 'carnivore'].
@@ -199,6 +203,48 @@ export const SPECIES = {
       'heatTol 0.8 (desert bird — the scurrier\'s tolerance or better)',
     ],
   },
+  flutter: { // v0.22.2 — the butterfly, promoted to a full creature.
+    name: 'flutter', tier: 3, cap: 30,
+    desc: 'Butterfly lineage, promoted off the scripted critter path. ' +
+      'Day-one flyer; pollinates the canopy — visits carry pollen between ' +
+      'flowers, and fruit set rises with pollination. Soft-bodied: the ' +
+      'prey of small hunters, the way the old bug-critter was prey of nothing.',
+    overrides: {
+      brainSize: 0.15, size: 0.12, bodyHue: 0.92, // pink — the legacy butterfly's wings
+      budDorsalGrow: 1, budDorsalType: MEMBRANE, budDorsalPow: 0.85, // wings on day one; adults clear the glide gate
+      diet: HERB, // nectar
+      mouthSize: 0.15, eyeSize: 0.5, // sips, doesn't bite
+      instFoodDistSeek: 0.85, // finds flowers
+      instAirborneGlide: 0.6, // fluttery flight, not soaring
+      instFearFlee: 0.9, // the prey strategy: leave
+      spikes: 0, // soft — no armor
+      energyDrain: 0.3, curiosity: 0.7,
+    },
+    exact: ['dorsal membranes grown day one (budDorsalGrow 1)',
+      'diet herbivore (nectar-feeding)',
+      'pink hue (bodyHue ~0.92) — the old butterfly, recognizable',
+      'instFearFlee 0.9, spikes 0 (soft-bodied prey)',
+      'pollinates: winged + tiny, carries pollen flower to flower'],
+  },
+  grub: { // v0.22.2 — the bug, promoted to a full creature.
+    name: 'grub', tier: 3, cap: 40,
+    desc: 'Bug lineage, promoted off the scripted critter path. The prey ' +
+      'base: soft, fearful, everywhere — grazes detritus on the forest ' +
+      'floor and feeds everything that bites.',
+    overrides: {
+      brainSize: 0.12, size: 0.1, bodyHue: 0.05, // dark — the legacy bug's shell
+      diet: OMNI, // detritus + scraps
+      mouthSize: 0.12, eyeSize: 0.3,
+      instFoodDistSeek: 0.6,
+      instFearFlee: 1.0, // the whole strategy is fleeing
+      spikes: 0, // soft — edible
+      legPower: 0.4, energyDrain: 0.25, curiosity: 0.3, immunity: 0.3,
+    },
+    exact: ['diet omnivore (detritus grazer)',
+      'instFearFlee 1.0 — the prey strategy',
+      'spikes 0, size ≤ 0.12 (soft and edible)',
+      'dark hue (bodyHue ~0.05) — the old bug, recognizable'],
+  },
 };
 
 // The founder genome: same loci, pinned sub-streams, overridden values.
@@ -223,6 +269,16 @@ export function speciesKeys() {
   return Object.keys(SPECIES);
 }
 
+// v0.22.2 — phenotypic signature of the promoted critter lineages (flutter,
+// grub): tiny + pink, or tinier + dark. Size and hue, never a species label —
+// the engine doesn't branch on species, and neither do the tests. Used to
+// separate the 14 promoted founders from the 8 GENESIS_COHORTS.
+export function isPromotedLineage(c) {
+  const ph = c.pheno || {};
+  return (ph.size <= 0.15 && (ph.bodyHue || 0) > 0.85) ||
+    (ph.size <= 0.12 && (ph.bodyHue || 0) < 0.15);
+}
+
 export function tierOf(speciesKey) {
   return SPECIES[speciesKey].tier;
 }
@@ -234,8 +290,8 @@ export function tierOf(speciesKey) {
 export const STARTER_SETS = {
   arctic: [['scurrier', 6], ['bear', 1]],
   mountains: [['beetle', 8], ['scurrier', 4], ['skimmer', 4]],
-  jungle: [['beetle', 10], ['beetle-detritivore', 5], ['scurrier', 6], ['skimmer', 4], ['jungle-cat', 1]],
-  plains: [['beetle', 10], ['beetle-detritivore', 5], ['scurrier', 6], ['skimmer', 6], ['plains-runner', 2], ['vulture', 2]],
+  jungle: [['beetle', 10], ['beetle-detritivore', 5], ['scurrier', 6], ['skimmer', 4], ['jungle-cat', 1], ['flutter', 6], ['grub', 6]],
+  plains: [['beetle', 10], ['beetle-detritivore', 5], ['scurrier', 6], ['skimmer', 6], ['plains-runner', 2], ['vulture', 2], ['grub', 8], ['flutter', 4]],
   desert: [['beetle', 6], ['scurrier', 4], ['skimmer', 4], ['vulture', 1]],
   shallows: [['beetle', 6], ['beetle-detritivore', 4], ['minnow', 10], ['skimmer', 4], ['scurrier', 4], ['mangrove-croc', 1]],
   archipelago: [['beetle', 6], ['minnow', 8], ['skimmer', 6], ['scurrier', 4]],
@@ -250,6 +306,7 @@ export const CAPS = {
   vulture: 3,
   skimmer: 12, scurrier: 16,
   beetle: 80, 'beetle-detritivore': 40, minnow: 40,
+  flutter: 30, grub: 40, // v0.22.2 — the promoted critters
 };
 
 // --- brain tiers (§12.2) ------------------------------------------------------

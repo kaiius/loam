@@ -300,7 +300,7 @@ export function gatherSenses(c, world) {
   }
   if (!food) food = nearest(world.foods, c.x, c.platformIndex, range);
   const other = nearestSpatial(world._spatial && world._spatial.get(c.platformIndex), c.x, range, c.id);
-  const toy = nearest([...world.toys, ...world.critters], c.x, c.platformIndex, range);
+  const toy = nearest(world.toys, c.x, c.platformIndex, range); // v0.22.2: critters retired — toys only
   const stage = ageStage(b, c.pheno);
   // v0.12: the social senses. homeDist — how far from the imprinted home
   // range (0 at home, 1 at 800px+). kinNear — pedigree kinship of the

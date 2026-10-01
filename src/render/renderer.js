@@ -1,5 +1,5 @@
 // Canvas renderer: sky, parallax hills, platforms, plants, food, eggs,
-// toys, critters, creatures. Camera fits the whole terrarium.
+// toys, creatures. Camera fits the whole terrarium.
 
 import { drawCreature, drawTeacher, drawBiomeBands, drawWater, drawWaters, drawPredator } from './painter.js';
 import { creatureRadius } from '../sim/creature.js';
@@ -294,8 +294,8 @@ export function render(r, world, ui, t) {
     if (ui.selected === m) drawInspectRing(ctx, m.x, m.y - 18, 30, 26, t);
   }
 
-  // Critters.
-  for (const cr of world.critters) drawCritter(ctx, cr, t, light);
+  // v0.22.2: the scripted critters are retired — their lineages are
+  // creatures now (flutter, grub), drawn by the genome-driven painter.
 
   // v0.18 "Realms": predators — every agent of selection is visible.
   // Paul's v0.17-dev lesson: no phantom killers.
@@ -867,39 +867,9 @@ function drawInspectRing(ctx, x, y, rx, ry, t) {
   ctx.setLineDash([]);
 }
 
-function drawCritter(ctx, cr, t, light) {
-  const y = cr.y - 8 + (cr.kind === 'butterfly' ? Math.sin(cr.t * 3) * 14 - 26 : 0);
-  if (cr.kind === 'bug') {
-    ctx.fillStyle = rgb(mix([40, 36, 50], [74, 63, 90], light));
-    ctx.beginPath();
-    ctx.ellipse(cr.x, y, 9, 6, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = rgb(mix([40, 36, 50], [74, 63, 90], light));
-    ctx.lineWidth = 1.6;
-    for (const s of [-1, 1]) for (let i = 0; i < 3; i++) {
-      ctx.beginPath();
-      ctx.moveTo(cr.x - 4 + i * 4, y + 4);
-      ctx.lineTo(cr.x - 6 + i * 4, y + 11 + s * 2);
-      ctx.stroke();
-    }
-  } else {
-    const flap = Math.sin(cr.t * 18) * 0.9;
-    ctx.fillStyle = 'rgba(240,180,220,0.9)';
-    for (const s of [-1, 1]) {
-      ctx.save();
-      ctx.translate(cr.x, y);
-      ctx.rotate(s * (0.5 + flap * 0.5));
-      ctx.beginPath();
-      ctx.ellipse(s * 9, 0, 9, 5.5, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-    ctx.fillStyle = '#5a4a6a';
-    ctx.beginPath();
-    ctx.ellipse(cr.x, y, 3, 7, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
+// v0.22.2 — drawCritter retired with the scripted critters. The flutter and
+// grub are full creatures now, drawn by the genome-driven painter (bodyHue
+// 0.92 pink / 0.05 dark carry the old butterfly/bug's look).
 
 function drawSelectionRing(ctx, c, groundY, t) {
   const r = creatureRadius(c) * 1.7;

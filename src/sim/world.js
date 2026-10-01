@@ -1,7 +1,8 @@
-// The world: terrain, plants, food, critters, toys, eggs, creatures,
+// The world: terrain, plants, food, toys, eggs, creatures,
 // and the day/night cycle. Owns the tick orchestration.
 
 import { createRng } from './rng.js';
+import { founderGenome } from './species.js';
 import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele } from './genome.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
@@ -117,7 +118,6 @@ export function createWorld(seed = 1) {
     ],
     plants: [],
     foods: [],
-    critters: [],
     toys: [],
     eggs: [],
     creatures: [],
@@ -277,6 +277,7 @@ export function addPlant(world, x, platformIndex, genome, opts = {}) {
   world.plants.push({
     kind: 'plant', id: oid(), x, platformIndex, y: plat ? plat.y : floatY(world, x),
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
+    pollination: 0, // v0.22.2: 0..1 — raised by pollinator visits; fruit set scales with it
     sway: world.rng.range(0, Math.PI * 2),
     zone: biomeKeyAt(x), // v0.18: biome key (8)
     morph: opts.morph || floraFor(biomeKeyAt(x)).morph, // v0.18: flora morph
@@ -293,6 +294,7 @@ export function addHerb(world, x, platformIndex, genome, opts = {}) {
   world.plants.push({
     kind: 'herb', id: oid(), x, platformIndex, y: plat ? plat.y : floatY(world, x),
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
+    pollination: 0, // v0.22.2: inert on herbs (they bear leaves, not fruit)
     sway: world.rng.range(0, Math.PI * 2),
     zone: biomeKeyAt(x), // v0.18: biome key (8)
     morph: opts.morph || 'herb',
@@ -386,14 +388,9 @@ export function disperseSeed(world, c, food) {
   world.events.push({ type: 'seedDispersed', plant: seedling, parentId: parent.id, t: world.time });
 }
 
-export function addCritter(world, x, platformIndex, kind) {
-  const plat = world.platforms[platformIndex];
-  world.critters.push({
-    kind, id: oid(), x, platformIndex, y: plat.y,
-    vx: world.rng.pick([-1, 1]) * world.rng.range(15, 40),
-    t: world.rng.range(0, 100),
-  });
-}
+// v0.22.2 — addCritter is retired. The butterfly and the bug were promoted
+// to full founder creatures (flutter, grub in species.js) on the one
+// engine; the scripted brainless-critter path is gone.
 
 export function addToy(world, x, platformIndex) {
   const plat = world.platforms[platformIndex];
@@ -1332,6 +1329,52 @@ function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg
   if (i >= 0) world.eggs.splice(i, 1);
 }
 
+// v0.22.2 — pollination. Any small winged creature (realized wingArea from
+// the body plan — phenotypic, never a species label) visiting a mature
+// flower carries pollen: arriving with ANOTHER plant's pollen raises the
+// flower's pollination meter (0..1, decays); fruit set scales with it in
+// the fruiting block above. The visitor sips nectar — a small _ate trickle
+// through the same chemistry path as eating. The flutter's whole niche is
+// this loop; the skimmer freelances it (hummingbird ecology).
+const POLLINATION_VISIT_R = 80;   // px, horizontal
+const POLLINATION_VISIT_DY = 140; // px, vertical
+
+export function tickPollination(world, dt) {
+  for (const c of world.creatures) {
+    if (!c.alive) continue;
+    const ph = c.pheno || {};
+    if ((ph.size === undefined ? 1 : ph.size) > 0.3) continue; // small bodies only
+    const wingArea = (c.bodyPlan && c.bodyPlan.wingArea) || 0;
+    if (wingArea <= 0.1 && !c.gliding && c.grounded) continue; // must fly to visit
+    let best = null, bd = Infinity;
+    for (const p of world.plants) {
+      if (p.kind !== 'plant' || p.growth < 1) continue;
+      const dx = Math.abs(p.x - c.x);
+      if (dx > POLLINATION_VISIT_R) continue;
+      const dy = Math.abs(p.y - (c.y === undefined ? p.y : c.y));
+      if (dy > POLLINATION_VISIT_DY) continue;
+      const d = dx + dy * 0.5;
+      if (d < bd) { bd = d; best = p; }
+    }
+    if (!best) continue;
+    // Pollen exchange: only other-flower pollen fertilizes.
+    if (c.pollenFrom !== undefined && c.pollenFrom !== best.id) {
+      best.pollination = Math.min(1, (best.pollination || 0) + 0.25 * Math.min(1, dt * 4));
+      if (world.time - (world._lastPollenLog === undefined ? -1e9 : world._lastPollenLog) > 60) {
+        world.events.push({ type: 'pollinated', plant: best.id, by: c.id, t: world.time });
+        world._lastPollenLog = world.time;
+      }
+    }
+    c.pollenFrom = best.id;
+    // Nectar: a sip, through the same _ate path as eating.
+    c._ate = (c._ate || 0) + 0.12 * dt;
+  }
+  // Pollen washes off / goes stale.
+  for (const p of world.plants) {
+    if (p.pollination > 0) p.pollination = Math.max(0, p.pollination - dt * 0.004);
+  }
+}
+
 export function tickWorld(world, dt) {
   world.time += dt;
   updateLight(world);
@@ -1403,7 +1446,11 @@ export function tickWorld(world, dt) {
         // cactusfruit, berry, moss, propagule) — all eat at fruitEfficiency.
         const dropKind = p.kind === 'herb' ? 'leaf' : (p.fruitKind || 'fruit');
         const ph = p.pheno || {};
-        const fruits = p.kind === 'herb' ? 1 : 1 + Math.round(2 * (ph.yield !== undefined ? ph.yield : 0.5));
+        // v0.22.2 — pollination sets fruit. Wind and gravity pollinate a
+      // baseline (0.6×); a flower visited by pollinators sets up to 1.4×.
+      // The flutter's whole niche is moving this number.
+      const polMul = p.kind === 'herb' ? 1 : 0.6 + 0.8 * (p.pollination || 0);
+      const fruits = p.kind === 'herb' ? 1 : Math.max(1, Math.round((1 + Math.round(2 * (ph.yield !== undefined ? ph.yield : 0.5))) * polMul));
         const nutrition = p.kind === 'herb'
           ? 0.3 * (0.5 + (ph.potency !== undefined ? ph.potency : 0.5))
           : 0.5 + (ph.fruitSize !== undefined ? ph.fruitSize : 0.5);
@@ -1426,6 +1473,9 @@ export function tickWorld(world, dt) {
     }
   }
 
+  // v0.22.2: pollinators visit flowers (pollen exchange + nectar sips).
+  tickPollination(world, dt);
+
   // v0.14: the waste cycle — decomposition and leaching run on the soil,
   // once per tick, after the plants have eaten from it.
   // v0.14.1: leaf litter sheds before decomposition runs, so shed mass
@@ -1440,15 +1490,12 @@ export function tickWorld(world, dt) {
   // and carcass meat carry timers; plant fruit is eaten or it hangs.)
   compostRot(world);
 
-  // Critters wander.
-  for (const cr of world.critters) {
-    const plat = world.platforms[cr.platformIndex];
-    cr.t += dt;
-    cr.x += cr.vx * dt;
-    if (cr.x < plat.x1 + 10) { cr.x = plat.x1 + 10; cr.vx = Math.abs(cr.vx); }
-    if (cr.x > plat.x2 - 10) { cr.x = plat.x2 - 10; cr.vx = -Math.abs(cr.vx); }
-    if (rng.chance(dt * 0.2)) cr.vx = -cr.vx;
-  }
+  // v0.22.2: the retired critters' wander draws. Each of the 8 scripted
+  // critters drew one rng.chance() per tick as it wandered; the per-tick
+  // stream is load-bearing (the brain decides from this same stream, and
+  // pinned behavioral trajectories depend on it), so burn the same 8 draws
+  // here, where the wander loop ran, to keep the stream bit-identical.
+  for (let i = 0; i < 8; i++) rng.chance(dt * 0.2);
 
   function stepLightBody(o, dt) {
     if (o.dragged) return;
@@ -1743,9 +1790,21 @@ export function populate(world) {
     const plat = world.platforms[pi];
     addFood(world, rng.range(plat.x1 + 40, plat.x2 - 40), pi, 'fruit', 1);
   }
-  // Critters in the branches, a ball on the forest floor.
-  for (let i = 0; i < 5; i++) addCritter(world, rng.range(mx(100), mx(1500)), 1 + rng.int(0, 5), 'bug');
-  for (let i = 0; i < 3; i++) addCritter(world, rng.range(mx(200), mx(1400)), 4 + rng.int(0, 2), 'butterfly');
+  // v0.22.2: the scripted critters are retired — no bugs, no butterflies.
+  // (Their lineages live on as the flutter and grub founder creatures,
+  // spawned in populateGenesis on the one engine.)
+  // The rng stream is load-bearing for worldgen determinism: the old
+  // addCritter spawns consumed 5 draws each (x, platform, direction, speed,
+  // phase) × 8 critters. Burn the same 40 draws so every downstream roll —
+  // founders included — stays bit-identical.
+  for (let i = 0; i < 5; i++) {
+    rng.range(mx(100), mx(1500)); rng.int(0, 5);
+    rng.pick([-1, 1]); rng.range(15, 40); rng.range(0, 100);
+  }
+  for (let i = 0; i < 3; i++) {
+    rng.range(mx(200), mx(1400)); rng.int(0, 2);
+    rng.pick([-1, 1]); rng.range(15, 40); rng.range(0, 100);
+  }
   addToy(world, mx(800), 0);
   // v0.9: pebbles scattered on the forest floor — the world as material.
   for (let i = 0; i < 8; i++) addPebble(world, rng.range(mx(80), mx(1520)), 0);
@@ -2017,6 +2076,39 @@ export const GENESIS_COHORTS = [
   { biome: 7, key: 'deep', x: 4325, pi: 42, shifts: [['coldTol', 0.8]] },
 ];
 
+// v0.22.2 — the promoted critters. The legacy scripted bugs and butterflies
+// are retired; their lineages enter genesis as founder creatures on the one
+// engine — genomes, brains, bodies. Flutters take the branches (flowers),
+// grubs take the forest floor (detritus). Pinned founder sub-streams
+// (PIN 13/14) keep worldgen deterministic: same seed → same flutter.
+function spawnPromotedCohorts(world) {
+  const rng = world.rng;
+  const branchPis = [];
+  const groundPis = [];
+  world.platforms.forEach((p, i) => {
+    if (p.x2 < 1100 || p.x1 > 1900) return; // the jungle, where the critters lived
+    if (p.kind === 'branch') branchPis.push(i);
+    if (p.kind === 'ground') groundPis.push(i);
+  });
+  const spawn = (speciesKey, n, pis) => {
+    for (let i = 0; i < n && pis.length > 0; i++) {
+      const pi = pis[i % pis.length];
+      const plat = world.platforms[pi];
+      const c = createCreature(
+        founderGenome(speciesKey, rng),
+        rng.range(plat.x1 + 20, plat.x2 - 20), pi, rng);
+      c.biochem.age = c.pheno.lifespanSec * 0.3; // young adults — breedable soon
+      c.sex = i % 2 === 0 ? 'female' : 'male'; // every cohort breeds
+      c.name = uniqueName(world, c.name);
+      recordLineage(world, c);
+      world.seenGenomes.add(genomeHash(c.genome));
+      world.creatures.push(c);
+    }
+  };
+  spawn('flutter', 6, branchPis);
+  spawn('grub', 8, groundPis);
+}
+
 export function populateGenesis(world) {
   const rng = world.rng;
   const seed = world.seed === undefined ? 1 : world.seed;
@@ -2069,6 +2161,9 @@ export function populateGenesis(world) {
     const fx = Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, c.x + rng.range(-60, 60)));
     addFood(world, fx, c.platformIndex, 'fruit', 1);
   }
+  // v0.22.2: the promoted critters join genesis — flutters on the branches
+  // (flowers), grubs on the forest floor (detritus).
+  spawnPromotedCohorts(world);
   recordFounderMeans(world); // the divergence baseline across all cohorts
   return world;
 }

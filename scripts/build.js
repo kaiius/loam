@@ -20,6 +20,8 @@ const MODULES = [
   'src/sim/culture.js',
   'src/sim/language.js',
   'src/sim/social.js',
+  'src/sim/species.js', // founder table (PIN salts) — before creature.js/world.js (TDZ)
+  'src/sim/microbes.js', // living decomposer layer — before world.js (TDZ)
   'src/sim/creature.js',
   'src/sim/world.js',
   'src/sim/observer.js', // v0.17.1 "Touch": the observer's hands (imports addFood, zoneAt from world.js)

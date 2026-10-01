@@ -1973,7 +1973,7 @@ test('physics: jumpNear sees a leapable ledge, and only that', () => {
   // ledge 300px up (past JUMP_RANGE_DY=280) proves the range gate.
   const stub = {
     platforms: [{ x1: 0, x2: 1600, y: 800 }, { x1: 200, x2: 400, y: 500 }],
-    climbLinks: [], foods: [], creatures: [], critters: [], toys: [],
+    climbLinks: [], foods: [], creatures: [], toys: [],
     light: 1, bonds: null,
   };
   const cs = { ...c, x: 300, platformIndex: 0 };

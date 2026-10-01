@@ -2,6 +2,7 @@
 // the vulture founder, the detritivore beetle ecotype, and the living
 // bacterial decomposer layer. Founder-exactness is contractual: these
 // tests check the traits each founder MUST express on day one.
+// v0.22.2 adds the critter promotion: flutter (13th) and grub (14th).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -27,11 +28,12 @@ const founderAllele = (species, key, seed = 11) =>
 
 // --- the SPECIES table --------------------------------------------------------
 
-test('v0.22: twelve table entries — ten §4 founders + vulture + midden beetle', () => {
+test('v0.22: fourteen table entries — ten §4 founders + vulture + midden beetle + flutter + grub', () => {
   const keys = speciesKeys();
-  assert.equal(keys.length, 12);
+  assert.equal(keys.length, 14);
   for (const k of ['tanglekin', 'skimmer', 'scurrier', 'beetle', 'beetle-detritivore',
-    'minnow', 'jungle-cat', 'plains-runner', 'mangrove-croc', 'shark', 'bear', 'vulture']) {
+    'minnow', 'jungle-cat', 'plains-runner', 'mangrove-croc', 'shark', 'bear', 'vulture',
+    'flutter', 'grub']) {
     assert.ok(SPECIES[k], `${k} in the table`);
     assert.ok(SPECIES[k].desc, `${k} documented`);
     assert.ok(SPECIES[k].exact.length > 0, `${k} has founder-exactness claims`);

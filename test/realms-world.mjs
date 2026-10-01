@@ -11,6 +11,7 @@ import {
   ambientCold, ambientHeat, ambientTemp, waterAt, waterRects, waterDepthAt,
   groundYAt, floraFor, genomeHash,
 } from '../src/sim/world.js';
+import { isPromotedLineage } from '../src/sim/species.js';
 
 // --- §2: the biome map -------------------------------------------------------
 
@@ -123,15 +124,18 @@ test('v0.18: platformIndexAt finds the jungle floor', () => {
 test('v0.18: populateGenesis spawns 8 cohorts, 3–5 creatures each, both sexes', () => {
   const world = bindWorld(createWorld(42));
   populateGenesis(world);
+  // v0.22.2: the 14 promoted critters (flutter + grub) join genesis alongside
+  // the cohorts — count cohorts alone here (their own test pins the 6 + 8).
+  const members = world.creatures.filter((c) => !isPromotedLineage(c));
   // Total is 8 cohorts × 3–5; the exact number is rng-derived (v0.20: brain
   // N_IN change shifted the stream — pin the range, not the roll).
-  assert.ok(world.creatures.length >= 24 && world.creatures.length <= 40,
-    `8 cohorts of 3–5 (got ${world.creatures.length})`);
+  assert.ok(members.length >= 24 && members.length <= 40,
+    `8 cohorts of 3–5 (got ${members.length})`);
   assert.equal(GENESIS_COHORTS.length, 8);
   for (const cohort of GENESIS_COHORTS) {
-    const members = world.creatures.filter((c) => biomeKeyAt(c.x, 800) === cohort.key);
-    assert.ok(members.length >= 3 && members.length <= 5, `${cohort.key}: ${members.length} creatures`);
-    const sexes = new Set(members.map((c) => c.sex));
+    const cm = members.filter((c) => biomeKeyAt(c.x, 800) === cohort.key);
+    assert.ok(cm.length >= 3 && cm.length <= 5, `${cohort.key}: ${cm.length} creatures`);
+    const sexes = new Set(cm.map((c) => c.sex));
     assert.ok(sexes.has('male') && sexes.has('female'), `${cohort.key} has both sexes`);
   }
 });

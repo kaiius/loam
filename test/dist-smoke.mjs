@@ -31,6 +31,7 @@ function makeElement() {
     classList: { add() {}, remove() {}, toggle() {} },
     appendChild(c) { el.children.push(c); return c; },
     remove() {},
+    get firstChild() { return el.children[0]; }, // real DOM has firstChild
     addEventListener() {},
     querySelector() { return makeElement(); },
     querySelectorAll() { return []; },
