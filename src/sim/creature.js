@@ -590,19 +590,49 @@ export function stepPhysics(c, world, dt) {
     return;
   }
   if (c.grounded) {
-    c.y = plat.y; // stand on the branch
+    // v0.20: never teleport — stand on the platform only if we're actually
+    // at it. (A body the floor clamp caught with a stale platformIndex
+    // rests on the floor instead of popping back up to mid-air.)
+    if (Math.abs(c.y - plat.y) < 40 && c.x >= plat.x1 && c.x <= plat.x2) {
+      c.y = plat.y; // stand on the branch
+    }
     c.vy = 0;
     return;
+  }
+  // v0.20: anti-slip — a body just below its own platform, well inside the
+  // span (it swam out of a pool below the bank, or tunneled a pixel past),
+  // climbs back out onto it. Near the edges we stay hands-off: walking off
+  // a cliff must keep working, so the pop-up keeps clear of the brink.
+  if (plat && !c.grounded) {
+    const r = creatureRadius(c);
+    const dy = c.y - plat.y;
+    if (dy > 0 && dy < 40 && c.x > plat.x1 + r && c.x < plat.x2 - r) {
+      c.y = plat.y;
+      c.vy = 0;
+      c.vx = 0;
+      c.grounded = true;
+      return;
+    }
   }
   // Airborne: gravity integrates — reduced while gliding (descent, never
   // ascent: glideLift ≤ 0.85 by construction). The wings also steer
   // slightly toward the facing direction. c.gliding is only ever true
   // with real wings, so the founder's falls are untouched.
+  integrateGravity(c, world, dt);
+}
+
+// v0.20 "One physics": the airborne gravity branch, extracted from
+// stepPhysics so every body in the world falls under the same law —
+// tanglekins, beached sharks, bears, all of it. Gravity integrates,
+// platforms catch, hard landings cost. Joshua's law: physics works the
+// same for everything in this world.
+export function integrateGravity(c, world, dt) {
   const prevY = c.y;
   const glideLift = c.gliding ? (c.pheno.glideLift || 0) : 0;
-  c.vy = Math.min(MAX_FALL, c.vy + GRAVITY * (1 - glideLift) * dt);
+  const vy0 = Number.isFinite(c.vy) ? c.vy : 0;
+  c.vy = Math.min(MAX_FALL, vy0 + GRAVITY * (1 - glideLift) * dt);
   if (c.gliding) c.vx += c.facing * 30 * dt;
-  c.x += c.vx * dt;
+  c.x += (Number.isFinite(c.vx) ? c.vx : 0) * dt;
   // The world has walls: nobody leaves sideways.
   if (c.x < 0) { c.x = 0; c.vx = Math.abs(c.vx) * 0.3; }
   if (c.x > world.width) { c.x = world.width; c.vx = -Math.abs(c.vx) * 0.3; }
@@ -627,6 +657,10 @@ export function stepPhysics(c, world, dt) {
   // v0.18: the world has a floor — nobody falls through it. (The water
   // branch already clamps; the gravity branch needs it too, now that
   // creatures can exit water over pool regions with no platform below.)
+  // v0.20: the clamp grounds the body but leaves platformIndex alone —
+  // the grounded snap below refuses to teleport, so the body rests on
+  // the floor instead of popping back up to a platform it isn't over
+  // (the bug Joshua watched: fall through, then hover mid-air).
   if (c.y > world.height) {
     c.y = world.height;
     c.vy = 0;
@@ -2011,7 +2045,7 @@ function makeShark(world, x, y) {
     biochem: createBiochem(world.rng),
     x, y, vx: 0, vy: 0,
     facing: x < world.width / 2 ? 1 : -1,
-    wanderT: 0, wanderDir: 1,
+    wanderT: 0, wanderDir: 1, reward: 0,
     submerged: y > 0,
     _water: null,
   };
@@ -2033,7 +2067,7 @@ function makeBear(world, x, y) {
     biochem: createBiochem(world.rng),
     x, y, vx: 0, vy: 0, grounded: true,
     facing: x < world.width / 2 ? 1 : -1,
-    wanderT: 0, wanderDir: 1,
+    wanderT: 0, wanderDir: 1, reward: 0,
   };
 }
 
@@ -2114,10 +2148,23 @@ export function tickPredators(world, dt) {
         }
         p.vx = p.wanderDir * SHARK_SPEED * 0.4;
       }
-      p.x = cx0(p) + p.vx * dt;
-      p.y = cy0(p) + p.vy * dt;
-      if (p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx); }
-      if (p.x > world.width) { p.x = world.width; p.vx = -Math.abs(p.vx); }
+      if (!inWater) {
+        // Beached: one physics for every body. The shark falls under the
+        // same gravity as everything else and lands on whatever is below;
+        // grounded, it rests on the sand while the beaching clock runs.
+        if (!p.grounded) {
+          integrateGravity(p, world, dt);
+        } else {
+          p.vx = 0; p.vy = 0;
+          const pl = world.platforms[p.platformIndex];
+          if (pl) p.y = pl.y;
+        }
+      } else {
+        p.x = cx0(p) + p.vx * dt;
+        p.y = cy0(p) + p.vy * dt;
+        if (p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx); }
+        if (p.x > world.width) { p.x = world.width; p.vx = -Math.abs(p.vx); }
+      }
       // Contact: the kill. Prey dies; the chronicle records it.
       for (const c of world.creatures || []) {
         if (!c.alive) continue;
@@ -2156,14 +2203,40 @@ export function tickPredators(world, dt) {
         p.wanderDir = Math.random() < 0.5 ? -1 : 1;
         p.facing = p.wanderDir;
       }
-      const spd = 30;
-      p.x = cx0(p) + p.wanderDir * spd * dt;
-      if (p.x < 0) { p.x = 0; p.wanderDir = 1; }
-      if (p.x > world.width) { p.x = world.width; p.wanderDir = -1; }
-      let gy = 800;
-      try { gy = groundYAt(p.x, p.y); } catch (e) { gy = 800; }
-      if (Number.isFinite(gy)) p.y = gy;
-      p.vx = 0; p.vy = 0;
+      // v0.20 "One physics": bears are bodies, not pins. The first tick
+      // resolves which platform (if any) is underfoot; grounded bears
+      // amble and turn at the brink, airborne bears fall through
+      // integrateGravity like everything else in this world.
+      if (p.platformIndex === undefined || p.platformIndex === null) {
+        // No platform underfoot yet — stay airborne until the landing loop
+        // (inside integrateGravity) catches a real platform. Re-resolved
+        // each tick until it does.
+        p.grounded = false;
+        for (let i = 0; i < world.platforms.length; i++) {
+          const pl = world.platforms[i];
+          if (p.x >= pl.x1 && p.x <= pl.x2 && Math.abs(pl.y - p.y) < 2) {
+            p.platformIndex = i;
+            p.grounded = true;
+            break;
+          }
+        }
+      }
+      if (p.grounded) {
+        const spd = 30, r = 14;
+        p.x = cx0(p) + p.wanderDir * spd * dt;
+        if (p.x < 0) { p.x = 0; p.wanderDir = 1; p.facing = 1; }
+        if (p.x > world.width) { p.x = world.width; p.wanderDir = -1; p.facing = -1; }
+        const plat = world.platforms[p.platformIndex];
+        if (plat) {
+          // Turn at the brink — bears don't wander off cliffs.
+          if (p.x < plat.x1 + r) { p.x = plat.x1 + r; p.wanderDir = 1; p.facing = 1; }
+          else if (p.x > plat.x2 - r) { p.x = plat.x2 - r; p.wanderDir = -1; p.facing = -1; }
+          p.y = plat.y;
+        }
+        p.vx = 0; p.vy = 0;
+      } else {
+        integrateGravity(p, world, dt);
+      }
       // Thermal: the chemistry degenerates at furInsulation=1.0
       // (driftK = 0.02×(1−1) = 0 — zero ambient coupling, so metabolic
       // heat accumulates and an arctic bear would die in its home biome).

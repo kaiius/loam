@@ -99,6 +99,16 @@ export function createWorld(seed = 1) {
       { x1: 4250, x2: 4400, y: 690, kind: 'floe' },
       { x1: 4450, x2: 4600, y: 690, kind: 'floe' },
       { x1: 4650, x2: 4750, y: 690, kind: 'floe' },
+      // --- v0.20 "One physics" fills (45–46, appended — earlier indices
+      // never shift): the mountains' [760,1040] gap and the archipelago
+      // [3720,3740] seam were holes straight to the world floor. Creatures
+      // fell through the ground, then the stale-platform snap teleported
+      // them back up to hover mid-air — the bug Joshua watched happen.
+      // Ground is continuous now. The archipelago's 200px channel
+      // (3860→4060) stays open water by design (jump, glide, or swim),
+      // and the Azure Deep stays groundless for the same reason.
+      { x1: 760, x2: 1040, y: 800, kind: 'ground' },  // mountains foothill fill
+      { x1: 3720, x2: 3740, y: 780, kind: 'ground' },  // archipelago seam fill
     ],
     plants: [],
     foods: [],

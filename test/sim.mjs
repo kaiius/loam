@@ -20,7 +20,7 @@ import {
   createCulture, foundGrove, foundCraft, adoptTradition, traditionVotes, groveTarget, groveAim,
   pruneExtinct, sampleCulture, ratchetIndex, fidelityOf,
 } from '../src/sim/culture.js';
-import { finalizeEpisode, maybeFoundGrove, maybeFoundCraft, doEat, createCreature, updateCreature, groundCallType, creatureRadius, stepPhysics, gatherSenses, GRAVITY, FALL_HURT_V, JUMP_V_BASE, JUMP_V_GAIN } from '../src/sim/creature.js';
+import { finalizeEpisode, maybeFoundGrove, maybeFoundCraft, doEat, createCreature, updateCreature, groundCallType, creatureRadius, stepPhysics, integrateGravity, tickPredators, spawnPredators, gatherSenses, GRAVITY, FALL_HURT_V, JUMP_V_BASE, JUMP_V_GAIN } from '../src/sim/creature.js';
 import { createBonds, getBond, nudgeBond, tickBonds, pedigreeKin, detectTribes, socialStats } from '../src/sim/social.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant, plantMeiosis, PLANT_GENES } from '../src/sim/plantgenome.js';
 import { createTeacher, tickTeacher, commandTeacher, setTeacherMode, teacherDemo, teacherReward, teacherRewardNearest, emitTeacherCall, TEACHER_MOTIF, TEACHER_PITCH, IMITATION_WINDOW, gatherTeacherSenses, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, foodFlavor } from '../src/sim/teacher.js';
@@ -3689,8 +3689,10 @@ test('v0.17: glide without wings degrades to exactly a jump', () => {
 
 test('v0.17: brachiate without a third grasp pair degrades to moveToward', () => {
   const world = bindWorld(createWorld(301));
-  addFood(world, 900, 0, 'fruit', 1);
-  const c = physCreature(world, 800, 0, { action: 'brachiate', actionTimer: 100 });
+  // v0.20: geographically consistent — both on the jungle floor (platform
+  // 0), east of the pool, so the food keeps platformIndex 0.
+  addFood(world, 1600, 0, 'fruit', 1);
+  const c = physCreature(world, 1500, 0, { action: 'brachiate', actionTimer: 100 });
   assert.equal(c.bodyPlan.graspPairs, 2, 'founder has two grasp pairs');
   const x0 = c.x;
   tickWorld(world, 0.1);
@@ -4315,4 +4317,105 @@ test('v0.20: high-fidelity adoption succeeds; the carrier list grows', () => {
   assert.ok(ok, 'fidelity 1.0 adopts');
   assert.ok(b.traditions.includes(tr.id), 'the adopter carries the tradition');
   assert.ok(tr.carriers.has(b.id), 'the tradition lists the new carrier');
+});
+
+// --- v0.20 "One physics": one gravity for every body -------------------------
+// Joshua's law — physics works the same for everything in this world.
+// Regression tests for the two bugs he watched: creatures falling through
+// the ground (the mountains [760,1040] gap + the stale-platform teleport),
+// and predators exempt from gravity (hovering beached sharks, pinned bears).
+
+test('v0.20: integrateGravity — a body falls and lands on a platform', () => {
+  const world = bindWorld(createWorld(7));
+  const body = { x: 1500, y: 700, vx: 0, vy: 0, grounded: false, pheno: {}, gliding: false, biochem: { health: 1, injury: 0, adrenaline: 0 } };
+  for (let t = 0; t < 120; t++) integrateGravity(body, world, 1 / 30);
+  assert.equal(body.y, 800, 'lands on the jungle floor');
+  assert.ok(body.grounded, 'grounded after landing');
+  assert.equal(body.platformIndex, 0, 'platformIndex is the jungle ground');
+});
+
+test('v0.20: the mountains gap is filled — no fall through the ground', () => {
+  const world = bindWorld(createWorld(7));
+  const body = { x: 900, y: 700, vx: 0, vy: 0, grounded: false, pheno: {}, gliding: false, biochem: { health: 1, injury: 0, adrenaline: 0 } };
+  for (let t = 0; t < 120; t++) integrateGravity(body, world, 1 / 30);
+  assert.equal(body.y, 800, 'lands on the foothill fill, not the world floor');
+  assert.ok(body.platformIndex >= 45, `on a fill platform (got ${body.platformIndex})`);
+});
+
+test('v0.20: floor clamp rests the body — no teleport back up', () => {
+  const world = bindWorld(createWorld(7));
+  // The bug Joshua watched: a stale platformIndex + a fall past every
+  // platform. Old code snapped the body back to the stale platform's
+  // height (hovering mid-air, then "jumping off of it"); now the grounded
+  // snap refuses to teleport, so the body rests on the world floor.
+  const c = createCreature(randomGenome(world.rng), 900, 15, world.rng);
+  c.x = 900; c.y = 1095; c.vx = 0; c.vy = 2000;
+  c.grounded = false; c.platformIndex = 15; // stale: the foothill shelf
+  stepPhysics(c, world, 1 / 30);
+  assert.equal(c.y, world.height, 'clamped to the world floor');
+  assert.ok(c.grounded, 'resting on the floor');
+  stepPhysics(c, world, 1 / 30);
+  assert.equal(c.y, world.height, 'no teleport back to the stale platform');
+  assert.ok(c.x >= 0 && c.x <= world.width, 'still inside the world');
+});
+
+test('v0.20: anti-slip — a body just under its platform climbs back out', () => {
+  const world = bindWorld(createWorld(7));
+  // The pool-edge case: a creature that ends up 9px under the jungle floor
+  // (swam out of the pool below the bank) pops back onto the bank instead
+  // of falling 300px through the earth.
+  const c = createCreature(randomGenome(world.rng), 1402, 0, world.rng);
+  c.x = 1402; c.y = 809; c.vx = 0; c.vy = 0;
+  c.grounded = false; c.platformIndex = 0;
+  stepPhysics(c, world, 1 / 30);
+  assert.ok(c.grounded, 'back on the platform');
+  assert.equal(c.y, 800, 'standing on the jungle floor, not under it');
+});
+
+test('v0.20: anti-slip keeps clear of the brink — cliff falls still work', () => {
+  const world = bindWorld(createWorld(7));
+  // A creature walking off the branch edge must fall, not pop back up.
+  const c = createCreature(randomGenome(world.rng), 1390, 1, world.rng);
+  c.x = 1394; c.y = 650; c.vx = 60; c.vy = 0;
+  c.grounded = false; c.platformIndex = 1; // just walked off the branch edge
+  stepPhysics(c, world, 1 / 30);
+  assert.ok(!c.grounded, 'still falling — the cliff edge is honest');
+  assert.ok(c.y > 650, 'gravity is doing its work');
+});
+
+test('v0.20: beached shark falls under gravity — no more hovering', () => {
+  const world = bindWorld(createWorld(7));
+  spawnPredators(world);
+  const shark = world.predators.find((p) => p.kind === 'shark');
+  assert.ok(shark, 'a shark spawned');
+  // Beach it on dry land, mid-air: jungle, above the ground.
+  shark.x = 1500; shark.y = 700; shark.vx = 0; shark.vy = 0;
+  const h0 = shark.biochem.health;
+  for (let t = 0; t < 120; t++) tickPredators(world, 1 / 30);
+  assert.equal(shark.y, 800, 'fell to the jungle floor');
+  assert.ok(shark.grounded, 'grounded on landing');
+  assert.ok(shark.biochem.health < h0, 'the beaching clock still runs');
+});
+
+test('v0.20: bear ambles grounded — walks the ice, turns at the brink', () => {
+  const world = bindWorld(createWorld(7));
+  spawnPredators(world);
+  const bear = world.predators.find((p) => p.kind === 'bear');
+  assert.ok(bear, 'a bear spawned');
+  for (let t = 0; t < 600; t++) tickPredators(world, 1 / 30);
+  assert.equal(bear.y, 800, 'stays on the arctic ice');
+  assert.ok(bear.grounded, 'grounded, not pinned');
+  assert.equal(bear.platformIndex, 9, 'standing on the arctic ground platform');
+  assert.ok(bear.x >= 0 && bear.x <= 600, `never leaves the ice (x=${bear.x.toFixed(1)})`);
+});
+
+test('v0.20: bear with no ground underfoot falls like everything else', () => {
+  const world = bindWorld(createWorld(7));
+  spawnPredators(world);
+  const bear = world.predators.find((p) => p.kind === 'bear');
+  bear.platformIndex = undefined; // force re-resolution
+  bear.x = 900; bear.y = 700; bear.grounded = false; bear.vx = 0; bear.vy = 0;
+  for (let t = 0; t < 120; t++) tickPredators(world, 1 / 30);
+  assert.equal(bear.y, 800, 'fell onto the foothill fill');
+  assert.ok(bear.grounded, 'landed, grounded');
 });

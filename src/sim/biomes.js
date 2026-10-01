@@ -101,12 +101,14 @@ export function waterRects() {
 
 // Ground level at x, or null for open water (archipelago gaps, deep).
 // Mountains have partial ground — the foothill shelf and the east shelf.
-const ARCHIPELAGO_ISLANDS = [[3600, 3720], [3740, 3860], [4060, 4180]];
+const ARCHIPELAGO_ISLANDS = [[3600, 3860], [4060, 4180]]; // v0.20: the [3720,3740] seam is filled — one island
 export function groundYAt(x) {
   const b = biomeAt(x, 0);
   switch (b) {
     case 0: return 800;                                            // arctic ice
-    case 1: return (x >= 600 && x < 760) || (x >= 1040 && x < 1200) ? 800 : null;
+    // v0.20: the [760,1040] gap is filled ground now — mountains are
+    // continuous foothills, no holes.
+    case 1: return 800;
     case 2: return 800;                                            // jungle floor
     case 3: return 820;                                            // plains
     case 4: return 830;                                            // desert

@@ -74,6 +74,9 @@ test('v0.18: groundYAt — null over open water, islands and seabed elsewhere', 
   assert.equal(groundYAt(300), 800);    // arctic ice
   assert.equal(groundYAt(2100), 820);   // plains
   assert.equal(groundYAt(2700), 830);   // desert
+  // v0.20 "One physics": the mountains gap is filled ground now.
+  assert.equal(groundYAt(900), 800);    // mountains foothill fill
+  assert.equal(groundYAt(3730), 780);   // archipelago seam fill
 });
 
 test('v0.18: floraFor — eight morphs, one per biome', () => {
@@ -88,11 +91,11 @@ test('v0.18: floraFor — eight morphs, one per biome', () => {
   }
 });
 
-// --- worldgen: 45 platforms, soil, links -------------------------------------
+// --- worldgen: 47 platforms, soil, links -------------------------------------
 
-test('v0.18: worldgen builds 45 platforms with biome soil and floes', () => {
+test('v0.18: worldgen builds 47 platforms with biome soil and floes', () => {
   const world = bindWorld(createWorld(42));
-  assert.equal(world.platforms.length, 45);
+  assert.equal(world.platforms.length, 47); // v0.20: +2 ground fills (mountains gap, archipelago seam)
   assert.equal(world.platforms.filter((p) => p.kind === 'floe').length, 3);
   assert.deepEqual(Object.keys(world.soil), ['arctic', 'mountains', 'jungle', 'plains', 'desert', 'shallows', 'archipelago', 'deep']);
   assert.ok(world.teacher, 'teacher avatar spawns');
