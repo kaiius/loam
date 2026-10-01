@@ -13,7 +13,8 @@ import { groundYAt, waterAt } from '../src/sim/biomes.js';
 import { PLANT_MASS, LITTER_FRAC } from '../src/sim/ledger.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
-import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams, speciesOverview, dropWindfall, WINDFALL_P, WINDFALL_ROT } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams, speciesOverview, dropWindfall, WINDFALL_P, WINDFALL_ROT, heatStressMul } from '../src/sim/world.js';
+import { tempAt } from '../src/sim/weather.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
   memoryCapacity, RECALL_BUDGET,
@@ -4759,4 +4760,77 @@ test('v0.20: instFallVocal wires the vestibular sense to the vocal action', () =
   const s = new Array(N_IN).fill(0); s[34] = 1; s[36] = 1; // falling + bias (v0.22: bias moved to 36)
   const { outputs } = decide(brain, s, 0, rng);
   assert.ok(outputs[12] > 0.5, 'a hard fall drives the scream reflex');
+});
+
+// --- v0.25 "Heat": the couplings ------------------------------------------------
+
+test('v0.25: basking pays less under cloud cover', () => {
+  const rng = createRng(99);
+  const g = randomGenome(rng); g.alleles.fur = [0.5, 0.5];
+  const p = phenotype(g);
+  const run = (cloud) => {
+    const b = createBiochem(); b.coreTemp = 0.5;
+    for (let t = 0; t < 60; t++) {
+      tickBiochem(b, p, 1, { ambientTemp: 0.7, heat: 0.3, active: 0, basking: 1, cloud });
+    }
+    return b.coreTemp;
+  };
+  const clear = run(0), overcast = run(1);
+  assert.ok(clear > overcast + 0.05,
+    `clear-sky basking warms more: ${clear.toFixed(3)} vs overcast ${overcast.toFixed(3)}`);
+});
+
+test('v0.25: thermoregulation burns fuel in thermal extremes', () => {
+  const rng = createRng(99);
+  const g = randomGenome(rng); g.alleles.fur = [0.5, 0.5]; // ins 0.15
+  const p = phenotype(g);
+  const run = (amb) => {
+    const b = createBiochem(); b.bloodSugar = 0.8;
+    for (let t = 0; t < 30; t++) {
+      tickBiochem(b, p, 1, { ambientTemp: amb, active: 0.3, sleeping: false });
+    }
+    return b.bloodSugar;
+  };
+  const bsJungle = run(0.55), bsDesert = run(1.0);
+  assert.ok(bsDesert < bsJungle - 0.1,
+    `desert thermoregulation burns more fuel: bloodSugar ${bsDesert.toFixed(3)} vs jungle ${bsJungle.toFixed(3)}`);
+  // Fur traps heat: the furry pay more in warmth.
+  const g2 = randomGenome(createRng(99)); g2.alleles.fur = [1, 1];
+  const p2 = phenotype(g2);
+  const b2 = createBiochem(); b2.bloodSugar = 0.8;
+  for (let t = 0; t < 30; t++) tickBiochem(b2, p2, 1, { ambientTemp: 1.0, active: 0.3, sleeping: false });
+  assert.ok(b2.bloodSugar < bsDesert, `max-fur burns more than mid-fur in the desert: ${b2.bloodSugar.toFixed(3)}`);
+});
+
+test('v0.25 §10 acceptance: max-fur founder in the desert interior dies of heatstroke', () => {
+  const world = bindWorld(createWorld(7));
+  const ambD = tempAt(world, 2700, 800); // desert interior, generated field
+  assert.ok(ambD > 0.9, `desert interior is hot: ${ambD.toFixed(2)}`);
+  const rng = createRng(4242);
+  const g = randomGenome(rng);
+  g.alleles.fur = [1, 1]; // max fur
+  g.alleles.heatTol = [0.5, 0.5];
+  const p = phenotype(g);
+  assert.ok(Math.abs(p.furInsulation - 0.3) < 1e-9, 'max fur = 0.3 insulation');
+  const b = createBiochem();
+  b.coreTemp = 0.6;
+  const hyperThr = 0.75 + (p.heatTol ?? 0.5) * 0.1;
+  let deadAt = -1;
+  for (let t = 0; t < 300; t++) {
+    tickBiochem(b, p, 1, { ambientTemp: ambD, heat: 1, active: 0.3, basking: 0, sailDump: 0 });
+    if (b.health <= 0) { deadAt = t; break; }
+  }
+  assert.ok(deadAt > 0 && deadAt <= 300, `max-fur founder dies in the desert interior (t=${deadAt}s)`);
+  assert.ok(b.coreTemp > hyperThr,
+    `death is heatstroke: coreTemp ${b.coreTemp.toFixed(2)} > hyper threshold ${hyperThr.toFixed(2)}`);
+});
+
+test('v0.25: plant heat stress follows the generated field and heatTol', () => {
+  const world = bindWorld(createWorld(7));
+  assert.equal(heatStressMul(world, 1000, 0.5), 1, 'jungle baseline: no stress');
+  assert.equal(heatStressMul(world, 2700, 1), 1, 'heatTol 1: immune in the desert');
+  const stressed = heatStressMul(world, 2700, 0);
+  assert.ok(stressed > 2, `heat-intolerant desert plant stressed: ×${stressed.toFixed(2)}`);
+  const mid = heatStressMul(world, 2700, 0.5);
+  assert.ok(mid > 1 && mid < stressed, `heatTol 0.5 is partial: ×${mid.toFixed(2)}`);
 });

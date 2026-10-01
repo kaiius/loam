@@ -7,7 +7,7 @@ import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele 
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
 import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
-import { createClimate, initClimateFromPainted, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, WEATHER_COL_W, WEATHER_COLS } from './weather.js';
+import { createClimate, initClimateFromPainted, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, WEATHER_COL_W, WEATHER_COLS } from './weather.js';
 
 // v0.18: the biome map is the world's geography now — re-export its API so
 // world.js stays the sim's facade.
@@ -215,6 +215,10 @@ export function createWorld(seed = 1) {
     terrainElev: (x) => world.climate.terrainElev[Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(x / WEATHER_COL_W)))],
     waterFrac: (x) => world.climate.waterFrac[Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(x / WEATHER_COL_W)))],
   };
+  // v0.25 "Heat": volcanic vents — explicit worldgen heat sources (the
+  // climate's own sub-stream; after the painted-seed draws, so worldgen
+  // order stays load-bearing). No volcanic biome: biomes stay emergent.
+  placeVents(world);
   // Climb links: pairs of platforms whose x-ranges overlap and whose
   // vertical gap is climbable (60–240px). Computed once at worldgen —
   // the canopy's vertical roads.
@@ -1637,6 +1641,12 @@ export function tickWorld(world, dt) {
           } else {
             zoneStress = fruitMul;
           }
+          // v0.25 "Heat": heat stress reads the GENERATED temperature, not
+          // the biome key — a warming jungle stresses its plants before the
+          // Whittaker lookup flips. heatTol is the adaptation: 1 → immune,
+          // 0 → full stress. Desert natives (heatTolBias +0.6) barely feel
+          // it; jungle transplants under a vent do.
+          zoneStress *= heatStressMul(world, p.x, ph.heatTol);
           const densityMul = 1 + (world.creatures.length / 40) * 0.6;
           interval = interval * intervalGene * zoneStress * densityMul;
         }
@@ -2207,6 +2217,18 @@ function biasPlantGenomeFor(genome, flora) {
     if (!al || !bias) continue;
     for (let i = 0; i < 2; i++) al[i] = Math.max(0, Math.min(1, al[i] + bias));
   }
+}
+
+// v0.25 "Heat": plant heat-stress multiplier from the GENERATED temperature
+// field. Below T=0.65 no stress; at T=1.0 a heatTol-0 plant fruits 2.5×
+// slower, a heatTol-1 plant is untouched. Exported for the test pin.
+export function heatStressMul(world, x, heatTol) {
+  if (!world.climate) return 1;
+  const t = tempAt(world, x);
+  const heat01 = t <= 0.65 ? 0 : Math.min(1, (t - 0.65) / 0.35);
+  if (heat01 <= 0) return 1;
+  const tol = heatTol === undefined ? 0.5 : Math.max(0, Math.min(1, heatTol));
+  return 1 + heat01 * (1 - tol) * 1.5;
 }
 
 export function plantBiomeFlora(world, x, platformIndex, biomeKey, herb = false) {

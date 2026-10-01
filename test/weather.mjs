@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import { createWorld, bindWorld, tickWorld } from '../src/sim/world.js';
 import {
   createClimate, initClimateFromPainted, tickClimate, whittakerKey, colAt,
-  tempAt, droughtStressAt, windAt, totalWater, CLIMATE_SEED,
+  tempAt, droughtStressAt, windAt, totalWater, placeVents, diffuseT,
+  VENT_COUNT, CLIMATE_SEED,
   WEATHER_COLS, WEATHER_COL_W,
 } from '../src/sim/weather.js';
 import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX } from '../src/sim/biomes.js';
@@ -198,4 +199,73 @@ test('v0.23: drought withers plants', () => {
   const g0 = world.plants[0].growth;
   for (let t = 0; t < 600; t++) tickWorld(world, 1);
   assert.ok(world.plants[0].growth < g0, `drought withered the plant: ${g0} → ${world.plants[0].growth}`);
+});
+
+// --- v0.25 "Heat": the temperature field lives --------------------------------
+
+test('v0.25: thermal mass — water columns change temperature slower than land', () => {
+  const world = climWorld(7);
+  const cl = world.climate;
+  cl.vents = []; // isolate: no vent heating
+  for (const c of cl.cols) c.T = 0.5;
+  for (let i = 0; i < WEATHER_COLS; i++) cl.baseT[i] = 0.9; // step up everywhere
+  tickClimate(world, 10, world.climateGeo);
+  let landD = 0, landN = 0, waterD = 0, waterN = 0;
+  for (let i = 0; i < WEATHER_COLS; i++) {
+    const d = cl.cols[i].T - 0.5;
+    if (cl.thermalMass[i] > 2) { waterD += d; waterN++; }
+    else { landD += d; landN++; }
+  }
+  assert.ok(landN > 0 && waterN > 0, 'both land and water columns exist');
+  const landMean = landD / landN, waterMean = waterD / waterN;
+  assert.ok(landMean > waterMean * 2,
+    `land warms faster than water: land Δ${landMean.toFixed(3)} vs water Δ${waterMean.toFixed(3)}`);
+});
+
+test('v0.25: volcanic vents are seeded heat sources with distance falloff', () => {
+  const a = climWorld(7), b = climWorld(7);
+  assert.deepEqual(a.climate.vents, b.climate.vents, 'vent placement is deterministic');
+  assert.equal(a.climate.vents.length, VENT_COUNT, `${VENT_COUNT} vents per world`);
+  for (const v of a.climate.vents) {
+    assert.ok(a.climateGeo.waterFrac(v.x) < 0.25, `vent @${v.x.toFixed(0)} sits on land`);
+    assert.ok(v.x >= 60 && v.x <= 1140, `vent @${v.x.toFixed(0)} in the geothermal zone (arctic/mountains)`);
+    assert.ok(v.dT > 0.2 && v.dT < 0.35, `vent dT sane: ${v.dT}`);
+  }
+  // Heating with falloff: flat field, vents on.
+  const world = climWorld(7);
+  const cl = world.climate;
+  for (const c of cl.cols) { c.T = 0.5; c.vapor = 0.3; c.cloud = 0.2; c.soil = 0.4; c.windU = 0; }
+  for (let i = 0; i < WEATHER_COLS; i++) cl.baseT[i] = 0.5;
+  for (let t = 0; t < 600; t++) tickClimate(world, 2, world.climateGeo);
+  const v = cl.vents[0];
+  const tAt = (x) => cl.cols[Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(x / WEATHER_COL_W)))].T;
+  const nearT = tAt(v.x), midT = tAt(v.x + 400), farT = tAt(v.x + 1200);
+  assert.ok(nearT > farT + 0.1, `vent warms its column: near ${nearT.toFixed(2)} vs far ${farT.toFixed(2)}`);
+  assert.ok(nearT >= midT && midT >= farT - 0.03, `falloff with distance: ${nearT.toFixed(2)} ≥ ${midT.toFixed(2)} ≥ ~${farT.toFixed(2)}`);
+  // No volcanic biome exists: the Whittaker lookup has no such key.
+  for (let i = 0; i < WEATHER_COLS; i++) {
+    const k = whittakerKey(cl.cols[i].T, cl.cols[i].soil, null);
+    assert.notEqual(k, 'volcanic', 'there is no volcanic biome');
+  }
+});
+
+test('v0.25: T diffusion is slow, stable, and conserves heat', () => {
+  const world = climWorld(7);
+  const cl = world.climate;
+  for (const c of cl.cols) c.T = 0.5;
+  cl.cols[20].T = 0.9;
+  const before = cl.cols.reduce((s, c) => s + c.T, 0);
+  diffuseT(cl, 10);
+  const after = cl.cols.reduce((s, c) => s + c.T, 0);
+  assert.ok(Math.abs(after - before) < 1e-9, `diffusion conserves heat: ${before} → ${after}`);
+  assert.ok(cl.cols[20].T < 0.9 && cl.cols[20].T > 0.5, 'the spike decays toward its neighbors');
+  assert.ok(cl.cols[19].T > 0.5 && cl.cols[21].T > 0.5, 'neighbors warm');
+  assert.ok(cl.cols[19].T < 0.6 && cl.cols[21].T < 0.6, 'slow: one 10s tick moves little');
+  // Stability: an absurd dt cannot blow the field up.
+  for (const c of cl.cols) c.T = 0.5;
+  cl.cols[20].T = 1.0;
+  diffuseT(cl, 3600);
+  for (const c of cl.cols) {
+    assert.ok(Number.isFinite(c.T) && c.T >= 0 && c.T <= 1, `stable at dt=3600: col T=${c.T}`);
+  }
 });

@@ -94,6 +94,7 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
     ambientTemp: cf(ctx.ambientTemp, 0.5),
     basking: cf01(ctx.basking, 0),
     sailDump: cf01(ctx.sailDump, 0),
+    cloud: cf01(ctx.cloud, 0), // v0.25 "Heat": overcast shades the basker
   };
   // --- chemistry ---------------------------------------------------------
   // Fuel: eating fills the tank, living drains it. A full belly lasts a
@@ -101,7 +102,19 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   // v0.17 "Bauplan": ctx.develop — juveniles growing novel structures burn
   // extra fuel. It enters as a hungerRate term, not a new chemical: drives
   // stay readouts of the seven chemicals.
-  const hungerRate = 0.004 + pheno.hungerRate * 0.014 + (ctx.develop || 0); // per second
+  // v0.25 "Heat": thermoregulation burns fuel — far from thermal neutral
+  // the body works to hold its temperature, billed through hungerRate
+  // (blood sugar), NOT fatigue: a hot vulture eats more corpse, it doesn't
+  // forget how to sleep. (Fatigue billing created a death spiral:
+  // tired → low energy → less sleep → more flapping → metabolic heat →
+  // hyperthermia.) Comfort band [0.35, 0.65]; beyond it the fuel burn
+  // rises linearly. In warmth, fur traps heat and the furry pay more; in
+  // cold, fur IS the adaptation (no surcharge) — selection's handle on fur.
+  const ambT = clamp01(ctx.ambientTemp);
+  const dev = Math.abs(ambT - 0.5);
+  const furTrap = ambT > 0.5 ? 1 + (pheno.furInsulation || 0) / 0.3 : 1;
+  const regFuel = dev > 0.15 ? (dev - 0.15) * 0.02 * furTrap : 0;
+  const hungerRate = 0.004 + pheno.hungerRate * 0.014 + (ctx.develop || 0) + regFuel; // per second
   const exert = ctx.sleeping ? 0.6 : (0.5 + (ctx.active ?? 0.6) * 0.5);
   b.bloodSugar = clamp01(b.bloodSugar + (ctx.ate ?? 0) * 0.9 - hungerRate * dt * exert);
 
@@ -195,10 +208,13 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   const driftK = 0.02 * (1 - (pheno.furInsulation ?? 0));
   const metabolic = 0.00228 + 0.0024 * active01;
   const warmthFrac = clamp01((ambientEff - 0.4) / 0.5); // basking only pays in warmth
+  // v0.25 "Heat": basking value varies with cloud cover — sunbathing under
+  // full overcast pays 30%. The brain can learn to bask when the sky is clear.
+  const sunFrac = 1 - 0.7 * ctx.cloud;
   b.coreTemp = clamp01(b.coreTemp
     + driftK * (ambientEff - b.coreTemp) * dt
     + metabolic * dt
-    + basking01 * 0.008 * warmthFrac * dt
+    + basking01 * 0.008 * warmthFrac * sunFrac * dt
     - sailDump01 * 0.01 * dt);
   // Hypothermia: health drains, fatigue accumulates 2×. Hyperthermia:
   // health drains. Thresholds shift with the thermal-tolerance loci.

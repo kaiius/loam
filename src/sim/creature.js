@@ -1882,6 +1882,9 @@ export function updateCreature(c, world, dt) {
     basking: c._basking || 0,
     sailDump: pheno.sailDump || 0,
     wet01: c.wetness || 0, // v0.23 "Weather": drying wet fur bills fatigue
+    // v0.25 "Heat": cloud cover shades the basker — basking pays less
+    // under overcast (biochem scales the basking term by sunFrac).
+    cloud: world.climate ? cloudAt(world, c.x) : 0,
   });
   // v0.18: flailing (swimming without membranes) costs 3× the oxygen.
   // The chemistry doesn't read a flail flag, so the surcharge is billed

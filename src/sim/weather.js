@@ -65,7 +65,72 @@ export function createClimate(seed) {
                    // capped-soil overflow land here (transfer, never deleted)
     meanCloud: 0,  // updated each tick — the cloud-shading feedback reads this
     tick: 0,
+    // v0.25 "Heat": thermal mass per column (water slow, land fast) — built
+    // lazily in tickClimate from geography, so it never disturbs the rng
+    // sequence. Volcanic vents — explicit worldgen heat sources, NOT a
+    // biome (there is no volcanic biome; the Whittaker lookup reads
+    // whatever T results).
+    thermalMass: null,
+    vents: [], // { x, dT, sigma } — placed by placeVents at worldgen
   };
+}
+
+// v0.25 "Heat": place volcanic vents — explicit, seeded worldgen heat
+// sources with Gaussian distance falloff.
+//
+// RNG hygiene: vents draw from their OWN sub-stream
+// (createRng(world.seed ^ VENT_SEED_XOR)), not the climate's — vent
+// placement must not shift the post-worldgen weather-noise draw sequence
+// (a 4-draw shift once flipped a knife-edge vulture QA pin by changing
+// the cloud/wind realization, not the physics). Deterministic per seed.
+//
+// Placement (a founder-economics decision): vents live in the GEOTHERMAL
+// ZONE — arctic + mountains, x < 1200 (biomeAt(x) = floor(x/600): 0 =
+// arctic, 1 = mountains — the volcanic arc and the geothermal north,
+// physically where vents belong). The lowland founder biomes
+// (jungle/plains/desert) stay vent-free: the v0.22 QA pins establish the
+// plains as the vultures' thermal home (ambient 0.6), and a vent in the
+// middle of a founder platform would rewrite that biome's thermal regime.
+// Land only (waterFrac < 0.25), ≥500px apart, 2 per world.
+export const VENT_COUNT = 2;
+export const VENT_SIGMA = 250; // px — the warm apron around a vent
+export const VENT_MIN_SEP = 500;
+const VENT_ZONE_LO = 60, VENT_ZONE_HI = 1140;
+const VENT_SEED_XOR = 0x9e3779b9;
+
+export function placeVents(world) {
+  const cl = world.climate;
+  const rng = createRng((world.seed >>> 0) ^ VENT_SEED_XOR);
+  const geo = world.climateGeo;
+  cl.vents = [];
+  let guard = 0;
+  while (cl.vents.length < VENT_COUNT && guard++ < 300) {
+    const x = VENT_ZONE_LO + rng.next() * (VENT_ZONE_HI - VENT_ZONE_LO);
+    if (geo && geo.waterFrac && geo.waterFrac(x) >= 0.25) continue;
+    if (cl.vents.some((v) => Math.abs(v.x - x) < VENT_MIN_SEP)) continue;
+    cl.vents.push({ x, dT: 0.22 + rng.next() * 0.08, sigma: VENT_SIGMA });
+  }
+  return cl.vents;
+}
+
+// v0.25 "Heat": slow, stable diffusion of temperature between neighboring
+// columns. Explicit scheme with zero-flux boundaries; k = D*dt is clamped
+// far below the 0.5 stability limit, so it cannot go unstable. Two-sided
+// like the vapor advection: what leaves one column enters the next —
+// diffusion conserves total heat (up to the clamp01 rails, which a sane
+// field never touches).
+export const THERMAL_DIFF_D = 0.004; // /s — slow
+
+export function diffuseT(climate, dt) {
+  const n = WEATHER_COLS;
+  const k = Math.min(0.4, THERMAL_DIFF_D * dt);
+  const d = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    const tL = i > 0 ? climate.cols[i - 1].T : climate.cols[i].T;
+    const tR = i < n - 1 ? climate.cols[i + 1].T : climate.cols[i].T;
+    d[i] = k * (tL + tR - 2 * climate.cols[i].T);
+  }
+  for (let i = 0; i < n; i++) climate.cols[i].T = clamp01(climate.cols[i].T + d[i]);
 }
 
 // Paint the initial field from the painted biome map (world.js passes its
@@ -182,13 +247,43 @@ export function tickClimate(world, dt, geo) {
   // 1. Temperature: diurnal target, dt mean-reversion, √dt kicks.
   // (Paul §5.4: kicks scale with √dt, reversion with dt — stated once,
   // followed everywhere. Keeps 10s physics ticks and per-frame ticks agreeing.)
+  // v0.25 "Heat": thermal mass — water changes temperature slowly, land
+  // fast. The sea is a thermal reservoir; the land tracks the sky. Built
+  // once from geography (deterministic, no rng draws).
+  if (!cl.thermalMass) {
+    cl.thermalMass = [];
+    for (let i = 0; i < WEATHER_COLS; i++) {
+      const wf = geo && geo.waterFrac ? geo.waterFrac((i + 0.5) * WEATHER_COL_W) : 0;
+      cl.thermalMass.push(1 + 4 * wf); // open water: 5× the thermal inertia
+    }
+  }
   for (let i = 0; i < WEATHER_COLS; i++) {
     const c = cl.cols[i];
     const target = clamp01(cl.baseT[i] + diurnal);
-    c.T += (target - c.T) * Math.min(1, dt * 0.02);
+    c.T += (target - c.T) * Math.min(1, dt * 0.02 / cl.thermalMass[i]);
     c.T += rng.range(-1, 1) * 0.006 * sdt;
     c.T = clamp01(c.T);
   }
+
+  // 1b. Volcanic vents: explicit worldgen heat sources, Gaussian distance
+  // falloff. The rate is written so the equilibrium offset at the vent
+  // center is exactly vent.dT (source dT*0.02/s balances reversion 0.02/s)
+  // — physics, not a paint job. No volcanic biome exists: the Whittaker
+  // lookup reads whatever T results, same as any other warm column.
+  if (cl.vents.length) {
+    for (let i = 0; i < WEATHER_COLS; i++) {
+      const cx = (i + 0.5) * WEATHER_COL_W;
+      let src = 0;
+      for (const v of cl.vents) {
+        const dx = cx - v.x;
+        src += v.dT * Math.exp(-(dx * dx) / (2 * v.sigma * v.sigma));
+      }
+      if (src > 0) cl.cols[i].T = clamp01(cl.cols[i].T + src * dt * 0.02);
+    }
+  }
+
+  // 1c. Slow stable diffusion of T between neighbor columns (v0.25).
+  diffuseT(cl, dt);
 
   // 2. Evaporation: open water + transpiring biomass, DONOR-LIMITED from soil.
   // Convective fraction: in the real world ~half of transpired water rises
