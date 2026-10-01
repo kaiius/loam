@@ -847,18 +847,15 @@ export function drawPredator(ctx, pr, t, light) {
     }
   } else {
     // Bear: a grey-brown quadruped — heavy body, snout, round ears,
-    // bushy tail. Reads as dangerous, reads as land.
+    // stub tail. Reads as dangerous, reads as land.
     const k = 0.5 + 0.5 * light;
     const coat = `rgb(${(122 * k) | 0},${(100 * k) | 0},${(76 * k) | 0})`;
     const dark = `rgb(${(88 * k) | 0},${(70 * k) | 0},${(52 * k) | 0})`;
-    // Bushy tail (behind).
-    ctx.strokeStyle = dark;
-    ctx.lineWidth = r * 0.3;
-    ctx.lineCap = 'round';
+    // Stub tail (behind) — a bear carries a stub, not a plume.
+    ctx.fillStyle = dark;
     ctx.beginPath();
-    ctx.moveTo(-r * 1.15, -r * 0.25);
-    ctx.quadraticCurveTo(-r * 1.6, -r * 0.5 + sway, -r * 1.45, -r * 0.85);
-    ctx.stroke();
+    ctx.arc(-r * 1.08, -r * 0.3, r * 0.16, 0, Math.PI * 2);
+    ctx.fill();
     // Body.
     ctx.fillStyle = coat;
     ctx.beginPath();
