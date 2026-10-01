@@ -10,6 +10,7 @@ import { createBrain, decide, learn, senseVector, ACTIONS, N_IN } from '../src/s
 import { createBiochem, tickBiochem, mood, ageStage } from '../src/sim/biochem.js';
 import { createRng } from '../src/sim/rng.js';
 import { groundYAt, waterAt } from '../src/sim/biomes.js';
+import { PLANT_MASS, LITTER_FRAC } from '../src/sim/ledger.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
 import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams, speciesOverview, dropWindfall, WINDFALL_P, WINDFALL_ROT } from '../src/sim/world.js';
@@ -3138,7 +3139,7 @@ test('v0.14: decomposition converts waste to fertility; leaching relaxes it', ()
   const world = bindWorld(createWorld(14103));
   const s = world.soil.jungle;
   s.waste = 10; s.fertility = 0.5;
-  tickSoil(world, 100); // dt=100s: conv = 10 * min(1, 0.03*100) = 10
+  tickSoil(world, 10); // dt=10s: conv = 10 * min(1, 0.03*10) = 3 (v0.24: smaller dt — fast leaching would erase the signal in one 100s tick)
   assert.ok(s.waste < 10, `waste decomposed, now ${s.waste.toFixed(3)}`);
   assert.ok(s.fertility > 0.5, `fertility rose, now ${s.fertility.toFixed(3)}`);
   assert.ok(s.fertility <= SOIL_FERT_MAX, `fertility capped at ${SOIL_FERT_MAX}`);
@@ -3169,11 +3170,17 @@ test('v0.14: the full loop — a meal eventually feeds the plants', () => {
   c._senses = { _food: food };
   doEat(c, world);
   assert.ok(c.gut > 0, 'the meal left waste in the gut');
-  // Let the cycle run: excretion → soil waste → decomposition → fertility.
+  const zone = zoneAt(c.x).key;
+  const growthBefore = world.plants.filter(p => p.zone === zone).reduce((a, p) => a + (p.growth || 0), 0);
+  // Let the cycle run: excretion → soil waste → decomposition → fertility → plant growth.
   for (let i = 0; i < 600; i++) tickWorld(world, 0.5);
-  const s = world.soil[zoneAt(c.x).key];
-  assert.ok(s.waste > 0 || s.fertility > 0.5, `soil received the waste (waste ${s.waste.toFixed(3)}, fertility ${s.fertility.toFixed(3)})`);
-  assert.ok(s.fertility > 0.5, `fertility rose above baseline: ${s.fertility.toFixed(3)}`);
+  const s = world.soil[zone];
+  assert.ok(s.waste > 0 || s.fertility > 0, `soil received the waste (waste ${s.waste.toFixed(3)}, fertility ${s.fertility.toFixed(3)})`);
+  // v0.24: growth is donor-limited — the plants drink the fertility, so the
+  // assertion is that they GREW (the meal fed them), not that fertility
+  // stays above baseline.
+  const growthAfter = world.plants.filter(p => p.zone === zone).reduce((a, p) => a + (p.growth || 0), 0);
+  assert.ok(growthAfter > growthBefore, `plants in the zone grew on the meal: ${growthBefore.toFixed(3)} -> ${growthAfter.toFixed(3)}`);
 });
 
 // ---- v0.14 "Voices": disgust — evolvable waste avoidance ----
@@ -3459,20 +3466,24 @@ test('v0.14.1: scraps are edible but joyless — desperation food', () => {
 test('v0.14.1: plants shed litter — the unused parts feed the ground', () => {
   const world = bindWorld(createWorld(14113));
   populate(world);
-  const p = world.plants[0];
-  const s = world.soil[p.zone];
-  s.waste = 0;
-  shedLitter(world, 100);
-  let expected = 0;
+  // v0.24: litter is growth-coupled and mass-lawful. Bank known litter on
+  // the plants (as tickPlant does when they grow), then shed it.
+  let banked = 0;
   for (const q of world.plants) {
-    const g = (q.pheno && q.pheno.growthRate !== undefined) ? q.pheno.growthRate : 0.5;
-    expected += LITTER_RATE * (0.5 + g) * 100;
+    q._litterAcc = 0.1;
+    banked += 0.1;
   }
-  assert.ok(s.waste > 0, 'litter accumulated in the soil');
-  // All plants in these seeds share the zone only if p.zone matches; check total instead.
-  let total = 0;
-  for (const z of Object.values(world.soil)) total += z.waste;
-  assert.ok(Math.abs(total - expected) < 1e-6, `litter mass is lawful, got ${total} expected ${expected}`);
+  let wasteBefore = 0;
+  for (const z of Object.values(world.soil)) wasteBefore += z.waste;
+  shedLitter(world, 100);
+  let wasteAfter = 0;
+  for (const z of Object.values(world.soil)) wasteAfter += z.waste;
+  const expected = banked * PLANT_MASS;
+  assert.ok(wasteAfter - wasteBefore > 0, 'litter accumulated in the soil');
+  assert.ok(Math.abs((wasteAfter - wasteBefore) - expected) < 1e-9,
+    `litter mass is lawful, got ${wasteAfter - wasteBefore} expected ${expected}`);
+  // The bank is empty after shedding — nothing shed twice.
+  for (const q of world.plants) assert.equal(q._litterAcc || 0, 0, 'litter bank cleared');
 });
 
 test('v0.14.1: rich ground enters the chronicle — the land remembers', () => {

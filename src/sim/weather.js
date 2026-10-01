@@ -61,6 +61,8 @@ export function createClimate(seed) {
     lightning: [], // { x, t } — physical events, chronicle-logged
     runoff: 0,     // labeled boundary sink: rain runoff to the sea
     drainage: 0,   // labeled boundary sink: soil drainage to the water table
+    waterTable: 0, // v0.24: deep groundwater pool — leached fertility and
+                   // capped-soil overflow land here (transfer, never deleted)
     meanCloud: 0,  // updated each tick — the cloud-shading feedback reads this
     tick: 0,
   };
@@ -201,7 +203,7 @@ export function tickClimate(world, dt, geo) {
     const draw = Math.min(c.soil, rate * dt);
     c.soil -= draw;
     c.vapor += draw * (1 - CONV_FRAC) * VAPOR_GAIN;
-    c.cloud = Math.min(1.2, c.cloud + draw * CONV_FRAC);
+    c.cloud += draw * CONV_FRAC; // capped in the 3b normalization pass (never deleted)
   }
 
   // 3. Saturation, condensation, orographic lift, rain.
@@ -218,7 +220,7 @@ export function tickClimate(world, dt, geo) {
       const lift = dElev * Math.abs(c.windU) * LIFT_K * c.vapor * dt;
       const l = Math.min(c.vapor, lift);
       c.vapor -= l;
-      c.cloud = Math.min(1.2, c.cloud + l);
+      c.cloud += l; // capped in the 3b normalization pass (never deleted)
     } else if (dElev < -50 && Math.abs(c.windU) > 1) {
       // Rain shadow: descending air warms and dries — nudge T up, vapor down.
       c.T = clamp01(c.T + dt * 0.0005);
@@ -227,28 +229,50 @@ export function tickClimate(world, dt, geo) {
     if (excess > 0) {
       const cond = excess * Math.min(1, dt * 1.5);
       c.vapor -= cond;
-      c.cloud = Math.min(1.2, c.cloud + cond); // 1:1 — condensation is a transfer, not a sink
+      c.cloud += cond; // 1:1 — condensation is a transfer, not a sink (capped in 3b)
     }
     // Rain: cloud → soil (85%) + runoff to the sea (15%, LABELED sink).
+    // Soil-cap overflow joins the runoff (never deleted — v0.24 cap rule).
     const rain = Math.min(c.cloud, c.cloud * RAIN_RATE * dt);
     c.cloud -= rain;
     c.rain += rain; // per-column accumulator — the emergent-rainfall probe reads this
-    c.soil = Math.min(1, c.soil + rain * RAIN_SOIL);
-    cl.runoff += rain * (1 - RAIN_SOIL);
-    c.vapor = Math.max(0, Math.min(1.15, c.vapor)); // slight supersaturation allowed
-    c.cloud = Math.max(0, Math.min(1.2, c.cloud));
+    const rainAdd = rain * RAIN_SOIL;
+    const rainSpace = Math.max(0, 1 - c.soil);
+    c.soil += Math.min(rainSpace, rainAdd);
+    cl.runoff += rain * (1 - RAIN_SOIL) + Math.max(0, rainAdd - rainSpace);
     cloudSum += Math.min(1, c.cloud);
+  }
+
+  // 3b. Caps never delete (v0.24, Paul's cap rule): supersaturated vapor
+  // condenses to cloud; cloud overflow rains out immediately (85/15).
+  for (let i = 0; i < WEATHER_COLS; i++) {
+    const c = cl.cols[i];
+    if (c.vapor > 1.15) { c.cloud += c.vapor - 1.15; c.vapor = 1.15; }
+    if (c.cloud > 1.2) {
+      const ex = c.cloud - 1.2; c.cloud = 1.2;
+      c.rain += ex;
+      const add = ex * RAIN_SOIL;
+      const space = Math.max(0, 1 - c.soil);
+      c.soil += Math.min(space, add);
+      cl.runoff += ex * (1 - RAIN_SOIL) + Math.max(0, add - space);
+    }
+    if (c.vapor < 0) c.vapor = 0;
+    if (c.cloud < 0) c.cloud = 0;
   }
 
   // 4. Advection: donor-limited, written as a two-sided flux — what leaves one
   // cell enters the next (Paul §5.3, verbatim shape). Mass cannot leak between
-  // the read and the write.
+  // the read and the write. v0.24: the flux MAGNITUDE is always positive and
+  // donor-limited; the wind direction only picks the recipient neighbor.
+  // (The old sign-carrying formula went backwards on westward wind and drove
+  // the upwind column's vapor negative — the ledger caught the phantom mass
+  // the 3b clamp then fabricated.)
   const flux = new Array(WEATHER_COLS).fill(0);
   for (let i = 0; i < WEATHER_COLS; i++) {
     const c = cl.cols[i];
     const j = i + Math.sign(c.windU);
     if (j < 0 || j >= WEATHER_COLS || c.windU === 0) continue;
-    const f = Math.sign(c.windU) * Math.abs(c.windU) * ADVECT_K * dt * c.vapor;
+    const f = Math.abs(c.windU) * ADVECT_K * dt * c.vapor;
     flux[i] = Math.min(f, c.vapor); // donor-limited
   }
   for (let i = 0; i < WEATHER_COLS; i++) {

@@ -29,7 +29,7 @@
 // minerals are observer-only: inspectable, collectable as samples, and
 // otherwise inert. The deposit is real state (it depletes), not decoration.
 
-import { addFood, zoneAt } from './world.js';
+import { addFood, zoneAt, ledgerIn, ledgerOut } from './world.js';
 
 export const OBSERVER_VERSION = 'v0.17.1 "Touch"';
 
@@ -254,6 +254,10 @@ export function pickFruit(world, food) {
   const i = world.foods.indexOf(food);
   if (i < 0) return null;
   world.foods.splice(i, 1);
+  // v0.24: the observer's hand is outside the sim's pools — the lifted
+  // mass leaves as a LABELED boundary flow, and returns the same way on
+  // placeFood. The books stay balanced in interactive sessions too.
+  ledgerOut(world, 'observer', food.amount || 0);
   return {
     foodKind: food.foodKind, nutrition: food.nutrition,
     bitterness: food.bitterness, amount: food.amount,
@@ -268,6 +272,7 @@ export function placeFood(world, x, platformIndex, held) {
   const plat = world.platforms[platformIndex];
   if (!plat) return null;
   x = Math.max(plat.x1 + 10, Math.min(plat.x2 - 10, x));
+  ledgerIn(world, 'observer', held.amount || 1); // v0.24: the hand gives back what it took
   addFood(world, x, platformIndex, held.foodKind || 'fruit', held.amount || 1, 0, {
     plantId: 0, bitterness: held.bitterness || 0, nutrition: held.nutrition ?? 1,
   });
@@ -276,10 +281,12 @@ export function placeFood(world, x, platformIndex, held) {
 
 // Provision fresh food out of the observer's hand — a whole fruit, the way
 // the starter fruit is provisioned at worldgen (addFood defaults).
+// v0.24: pure creation — LABELED as an observer boundary input.
 export function spawnFood(world, x, platformIndex, foodKind = 'fruit') {
   const plat = world.platforms[platformIndex];
   if (!plat) return null;
   x = Math.max(plat.x1 + 10, Math.min(plat.x2 - 10, x));
+  ledgerIn(world, 'observer', 1);
   addFood(world, x, platformIndex, foodKind, 1, 0, { plantId: 0, bitterness: 0, nutrition: 1 });
   return world.foods[world.foods.length - 1];
 }
@@ -307,6 +314,9 @@ export function nudgeCreature(world, c, dir = 0) {
 export function digMineral(world, m) {
   if (!m || m.amount <= 0) return null;
   m.amount -= 1;
+  // v0.24: the sample leaves the deposit for the observer's hand — labeled
+  // boundary outflow (the hand is outside the sim's pools).
+  ledgerOut(world, 'observer', m.weight ?? 0.5);
   const sample = { mineralKey: m.mineralKey, mineralName: m.mineralName, color: m.color };
   world.events.push({ type: 'digMineral', mineral: m, t: world.time });
   return sample;

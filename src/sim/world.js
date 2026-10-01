@@ -23,6 +23,12 @@ import { tickMicrobes, decompMultiplier, sterilizeZone, bacteriaOf, BACT_FOUNDER
 // ledger API so world.js stays the sim's facade.
 export { tickMicrobes, decompMultiplier, sterilizeZone, bacteriaOf };
 
+// v0.24 "Mass conservation": the global ledger — re-exported so the sim's
+// facade stays world.js (creature.js, teacher.js book their flows here).
+import { initLedger, ledgerIn, ledgerOut, ledgerSeal, ledgerDrift, ledgerPools, ledgerTotal,
+         bodyMassOf, eggMassForGenome, PLANT_MASS, MINERAL_FRAC, FRUIT_MINERAL, LITTER_FRAC } from './ledger.js';
+export { ledgerIn, ledgerOut, ledgerSeal, ledgerDrift, ledgerPools, ledgerTotal, bodyMassOf, eggMassForGenome };
+
 export const DAY_LENGTH = 300; // seconds per full day/night cycle
 
 export function createWorld(seed = 1) {
@@ -214,6 +220,7 @@ export function createWorld(seed = 1) {
   // the canopy's vertical roads.
   world.climbLinks = computeClimbLinks(world.platforms);
   world.teacher = createTeacher(world, 1500, 0); // jungle floor — the ancestral ground
+  initLedger(world); // v0.24: the mass ledger starts with the world
   return world;
 }
 
@@ -377,12 +384,24 @@ function groundBelow(world, x, y) {
 // v0.20 "Falling": an expired canopy fruit falls to the understory instead
 // of vanishing. Leaves still compost in place (the detritus layer); fruit
 // becomes floor food — the below is a place with an economy, not a plane.
+// v0.24: mass-honest. The coin-fail case composts the fruit in place (it
+// rots where it hangs — it does NOT vanish); over-water drops compost to
+// the lakebed soil (all 8 biomes carry soil entries); over-cap drops
+// force-rot to the zone's waste (Paul's force-rot-on-cap rule). Nothing
+// is ever deleted.
 export function dropWindfall(world, f, rng) {
-  if (!f || f.foodKind === 'leaf') return;
-  if (!rng.chance(WINDFALL_P)) return; // the coin says it rots where it hangs
+  if (!f) return;
+  const compost = (amt) => {
+    if (!(amt > 0)) return;
+    const s = world.soil && world.soil[f.zone || biomeKeyAt(f.x)];
+    if (s) s.waste += amt;
+    else ledgerOut(world, 'lost', amt); // no soil entry: labeled, never silent
+  };
+  if (f.foodKind === 'leaf') { compost(f.amount); return; } // the detritus layer
+  if (!rng.chance(WINDFALL_P)) { compost(f.amount); return; } // rots where it hangs
   const gi = groundBelow(world, f.x, f.y || 0);
-  if (gi < 0) return; // over open water: plip, gone
-  if (world.foods.length > 80) return; // the floor can't stockpile either
+  if (gi < 0) { compost(f.amount); return; } // over open water: sinks to the lakebed
+  if (world.foods.length > 80) { compost(f.amount); return; } // force-rot: the floor can't stockpile
   const jx = f.x + (rng ? rng.range(-24, 24) : 0);
   addFood(world, jx, gi, f.foodKind, f.amount, WINDFALL_ROT, {
     plantId: f.plantId, bitterness: f.bitterness || 0,
@@ -402,12 +421,18 @@ export function disperseSeed(world, c, food) {
   if (!parent || !parent.genome) return;
   const pYield = parent.pheno ? parent.pheno.yield : 0.5;
   if (!world.rng.chance(0.15 + 0.3 * pYield)) return;
-  // Cap the flora: oldest seedlings are culled first.
+  // Cap the flora: oldest seedlings are culled first — and their tissue
+  // composts to the zone's soil (v0.24, Paul's seed-cap splice fix: culling
+  // is a transfer, not a deletion).
   if (world.plants.length >= 60) {
     const seedlings = world.plants.filter((p) => p.growth < 1);
     if (seedlings.length > 0) {
       const oldest = seedlings[0];
       world.plants.splice(world.plants.indexOf(oldest), 1);
+      const s = world.soil && world.soil[oldest.zone];
+      const culled = (Math.max(0, oldest.growth || 0) + (oldest._litterAcc || 0)) * PLANT_MASS;
+      if (s) s.waste += culled;
+      else ledgerOut(world, 'lost', culled); // no soil entry: labeled, never silent
     } else return;
   }
   const plat = world.platforms[c.platformIndex];
@@ -418,6 +443,9 @@ export function disperseSeed(world, c, food) {
   else addPlant(world, x, c.platformIndex, childGenome);
   const seedling = world.plants[world.plants.length - 1];
   seedling.growth = 0.05; // a true seedling — must mature before fruiting
+  // v0.24: the seedling's initial tissue is the parent's investment —
+  // a labeled parental input, not mass from nothing.
+  ledgerIn(world, 'parental', 0.05 * PLANT_MASS);
   world.events.push({ type: 'seedDispersed', plant: seedling, parentId: parent.id, t: world.time });
 }
 
@@ -525,6 +553,12 @@ export function hybridViability(dist) {
 }
 export function layEgg(world, x, platformIndex, genome, parents = null, gen = 0, traditionIds = [], gestMult = 1, parentDist = 0) {
   const plat = world.platforms[platformIndex];
+  // v0.24: the egg carries a fixed mass (from the child's genome — babies
+  // are small), provisioned by the mother at laying: a LABELED boundary
+  // input. Hatching is then an exact transfer (egg → body), never a
+  // creation event (Paul's hatch trap, closed).
+  const mass = eggMassForGenome(genome);
+  ledgerIn(world, 'parental', mass);
   world.eggs.push({
     kind: 'egg', id: oid(), x, y: plat.y, platformIndex, genome, parents,
     vx: 0, vy: 0, // v0.17.2: eggs obey gravity when lifted and released
@@ -532,6 +566,7 @@ export function layEgg(world, x, platformIndex, genome, parents = null, gen = 0,
     gen, traditionIds, // v0.7: pedigree depth + vertical cultural inheritance
     timer: (18 + world.rng.range(0, 10)) * gestMult, wobble: 0, // v2 (L): gestation scales
     parentDist, // v0.14: parental genome distance — the hybrid penalty input
+    mass, // v0.24: the mass the hatch transfer moves
   });
 }
 
@@ -657,10 +692,44 @@ export function recordLineage(world, c) {
 // v0.18 §13.4: corpses — the door to each other, left ajar. Base rot time
 // for a corpse; cold preserves (arctic rot time triples at full cold).
 export const CORPSE_ROT = 150;
+// v0.24: everything a body carried returns to the world at death — gut
+// contents spill to the zone's soil (decomposition's honest start), held
+// tools drop where the body fell. A transfer, never a deletion.
+export function releaseBodyMass(world, c) {
+  const s = world.soil && world.soil[biomeKeyAt(c.x)];
+  if (s && (c.gut || 0) > 0) s.waste += c.gut;
+  c.gut = 0;
+  if (c.held) {
+    const held = c.held;
+    c.held = null;
+    const plat = world.platforms[c.platformIndex];
+    if (plat) {
+      const dropX = Math.max(plat.x1, Math.min(plat.x2, c.x));
+      if (held.material === 'timber' || held.material === 'driftwood') {
+        const st = addStick(world, dropX, c.platformIndex);
+        if (st) {
+          st.material = held.material; st.weight = held.weight;
+          st.hardness = held.hardness; st.sharpness = held.sharpness;
+          st.flammability = held.flammability; st.born = world.time;
+        }
+      } else {
+        const p = addPebble(world, dropX, c.platformIndex);
+        if (p) {
+          p.material = held.material; p.weight = held.weight;
+          p.hardness = held.hardness;
+        }
+      }
+    } else if (s) {
+      s.waste += held.weight || 0; // no ground to drop on: ground down, not gone
+    }
+  }
+}
+
 export function noteDeath(world, c, cause) {
   world.events.push({ type: 'death', creature: c, t: world.time, cause });
   const rec = world.lineage.get(c.id);
   if (rec) { rec.diedAt = world.time; rec.cause = cause; }
+  releaseBodyMass(world, c); // v0.24: gut spills, held tools drop — nothing vanishes with the body
   // v0.18 §13.4: the dead leave a corpse at the death position — edible via
   // eat (scavenging is possible from v0.18; predation is not scripted).
   // Corpses decay; ambient cold slows decay (the Arctic keeps its dead).
@@ -668,9 +737,12 @@ export function noteDeath(world, c, cause) {
   // of tickWorld — one corpse per death, not two. TODO(creature-agent):
   // doEat's meatEfficiency branch should include 'corpse' (creature.js) so
   // scavenging rewards carnivores; until then corpses eat at fruitEfficiency.
+  // v0.24: the corpse weighs what the body weighed (bodyMassOf — a transfer
+  // from the bodies pool to the food pool, not a creation). At founder
+  // values this is exactly 1.2, so the scavenging economy is unchanged.
   const plat = world.platforms[c.platformIndex];
   const cold = ambientCold(c.x, plat ? plat.y : 800);
-  addFood(world, c.x, c.platformIndex, 'corpse', 1.2, CORPSE_ROT * (1 + 2 * cold), { nutrition: 1 });
+  addFood(world, c.x, c.platformIndex, 'corpse', bodyMassOf(c), CORPSE_ROT * (1 + 2 * cold), { nutrition: 1 });
 }
 // Two creatures share a hash only if every allele matches to 3 decimals.
 export function genomeHash(genome) {
@@ -985,13 +1057,14 @@ export const EXCRETE_RATE = 0.6; // per-second proportional gut clearance
 // 0.5, typical ground 0.75–1.25, rich ground caps at 1.5.
 export const SOIL_DECAY = 0.1; // per-second proportional waste→fertility
 export const SOIL_CONV_EFF = 0.02; // fertility gained per unit waste decomposed
-export const SOIL_LEACH = 0.004; // per-second relaxation of fertility to 0.5
+export const SOIL_LEACH = 0.04; // per-second relaxation of fertility to 0.5 (v0.24: raised 5x — donor-limited growth was out-drawing weathering, collapsing jungle/plains fertility to zero; the faster weathering holds the founder economy)
 export const SOIL_FERT_MAX = 1.5;
 export const WASTE_ODOR_SCALE = 4; // soil-waste units that read as full stink
 export const CONTAM_ILLNESS = 0.15; // illness per unit bite at full contamination
 // v0.14.1 "Detritus": nothing leaves the loop. Rot, scraps, shed leaves all
 // compost into the zone soil — death feeds the ground that feeds the plants.
 export const SCRAP_FRACTION = 0.12; // of each bite falls as litter
+export const TISSUE_FRACTION = 0.10; // v0.24: of each bite becomes body tissue (capped at adult mass)
 export const SCRAP_ROT = 45; // seconds before a scrap composts
 export const SCRAP_NUTRITION = 0.35; // scraps are poor food
 export const LITTER_RATE = 0.004; // soil-waste per second per plant at growthRate 0.5
@@ -1030,11 +1103,35 @@ export function tickSoil(world, dt) {
     // zone's bacteria set (v0.22 "Web of Life": the decomposer layer is
     // living; at founder biomass the multiplier is exactly 1.0, so all
     // pre-v0.22 soil behavior is preserved).
+    // v0.24: the conversion is lossy (SOIL_CONV_EFF) — the remainder is
+    // respired as CO2, a LABELED boundary loss (Paul's 70/30 compost split,
+    // generalized). Nothing vanishes unlabeled.
     const conv = Math.min(s.waste, s.waste * SOIL_DECAY * decompMultiplier(world, b.key) * dt);
     s.waste -= conv;
-    s.fertility = Math.min(SOIL_FERT_MAX, s.fertility + conv * SOIL_CONV_EFF);
-    // Leaching: unused fertility washes out toward the baseline.
-    s.fertility += (0.5 - s.fertility) * Math.min(1, SOIL_LEACH * dt);
+    const fertAdd = conv * SOIL_CONV_EFF;
+    const fertSpace = Math.max(0, SOIL_FERT_MAX - s.fertility);
+    s.fertility += Math.min(fertSpace, fertAdd);
+    // Fertility-cap overflow runs off to the water table (Paul's cap rule:
+    // caps merge, never delete).
+    const fertOver = fertAdd - Math.min(fertSpace, fertAdd);
+    if (fertOver > 0) {
+      if (world.climate) world.climate.waterTable += fertOver;
+      else s.fertility += fertOver; // minimal test worlds: retain, don't delete
+    }
+    ledgerOut(world, 'respired', conv * (1 - SOIL_CONV_EFF));
+    // Leaching, mass-conserving (v0.24): the old line relaxed fertility
+    // toward 0.5 by creating/destroying it. Now the two halves are honest —
+    // downward relaxation washes excess to the water table (transfer);
+    // upward relaxation is rock weathering, a LABELED boundary input.
+    const relax = (0.5 - s.fertility) * Math.min(1, SOIL_LEACH * dt);
+    if (relax > 0) {
+      s.fertility += relax;
+      ledgerIn(world, 'weathering', relax);
+    } else if (relax < 0) {
+      s.fertility += relax;
+      if (world.climate) world.climate.waterTable -= relax;
+      else ledgerOut(world, 'leached', -relax); // minimal test worlds: labeled loss
+    }
     // v0.14.1: the land remembers — first crossing into rich ground is
     // history, not just chemistry. Noted once per zone per enrichment.
     if (s.fertility >= 1.0 && !s.richNoted) {
@@ -1055,22 +1152,33 @@ export function compostRot(world) {
     const f = world.foods[i];
     if (f.rotsAt > 0 && world.time >= f.rotsAt) {
       const s = world.soil && world.soil[biomeKeyAt(f.x)];
-      if (s) s.waste += f.amount * (f.nutrition || 1);
+      // v0.24: the FULL amount composts — nutrition is an energy quality,
+      // not a mass discount. Composting amount×nutrition deleted the
+      // (1−nutrition) share (−2.5 drift in the rot isolation probe).
+      if (s) s.waste += f.amount;
+      else ledgerOut(world, 'lost', f.amount); // no soil entry: labeled, never silent
       world.foods.splice(i, 1);
     }
   }
 }
 
-// v0.14.1: leaf litter — the unused parts of plants. Every plant sheds mass
-// into its zone's soil as it grows; fast growers shed more. Shed leaves are
-// not an item (no render, no sense surface); they go straight to the ground.
+// v0.14.1: leaf litter — the unused parts of plants.
+// v0.24: litter is coupled to growth (a fraction of tissue actually grown
+// this tick sheds as litter) instead of being created from nothing. No
+// growth → no litter. Shed leaves are not an item (no render, no sense
+// surface); they go straight to the ground.
 export function shedLitter(world, dt) {
   if (!world.soil) return;
   for (const p of world.plants) {
+    const acc = p._litterAcc || 0;
+    if (acc <= 0) continue;
     const s = world.soil[p.zone];
-    if (!s) continue;
-    const gr = (p.pheno && p.pheno.growthRate !== undefined) ? p.pheno.growthRate : 0.5;
-    s.waste += LITTER_RATE * (0.5 + gr) * dt;
+    if (s) {
+      s.waste += acc * PLANT_MASS;
+      p._litterAcc = 0;
+    }
+    // No soil entry for this zone: the litter stays banked on the plant —
+    // never deleted.
   }
 }
 
@@ -1323,6 +1431,9 @@ function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg
     parents: egg.parents,
     generation: egg.gen || 0,
   });
+  // v0.24: exact mass transfer — the hatchling's body mass IS the egg mass.
+  // Tissue grows from food afterward (doEat), capped at the adult mass.
+  c.bodyMass = egg.mass;
   c.name = uniqueName(world, c.name);
   // v0.14: postzygotic barrier. A hatchling of divergent parents carries
   // the cost in its body — shorter life, less time to breed. The record
@@ -1357,6 +1468,9 @@ function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg
   // reward bootstraps the seekFood/eat learning loop. One bite (not a full
   // fruit) + rots after 90s: it feeds the baby's first meal, not the
   // population — a full fruit per birth was a runaway feedback loop.
+  // v0.24: the cache is a LABELED boundary subsidy (was created from
+  // nothing). Founder-tuned, still one bite.
+  ledgerIn(world, 'provisioning', 0.35);
   addFood(world, egg.x + world.rng.range(-14, 14), egg.platformIndex, 'fruit', 0.35, 90);
   const i = world.eggs.indexOf(egg);
   if (i >= 0) world.eggs.splice(i, 1);
@@ -1399,7 +1513,12 @@ export function tickPollination(world, dt) {
       }
     }
     c.pollenFrom = best.id;
-    // Nectar: a sip, through the same _ate path as eating.
+    // Nectar: a sip — the flower's sugar is photosynthate, sunlight's
+    // labeled boundary input (v0.24). The sugar's MASS enters the gut
+    // (a ledger pool); the _ate is the energy from digesting it, tracked
+    // separately from mass. Gut → soil via excrete closes the loop.
+    ledgerIn(world, 'sunlight', 0.12 * dt);
+    c.gut = (c.gut || 0) + 0.12 * dt;
     c._ate = (c._ate || 0) + 0.12 * dt;
   }
   // Pollen washes off / goes stale.
@@ -1422,12 +1541,52 @@ export function tickWorld(world, dt) {
     // v0.14: the waste cycle closes the loop — soil fertility (fed by
     // excretion, built by decomposition) scales growth. Fertile ground
     // grows faster; exhausted ground stalls.
-    p.growth = Math.min(1, p.growth + (dt / 150) * (0.5 + (p.pheno ? p.pheno.growthRate : 0.5)) * soilGrowthMul(world, p.zone));
+    // v0.24: growth is donor-limited and double-entry. The plant synthesizes
+    // tissue from soil minerals (fertility first, then waste — Paul's order)
+    // plus sunlight's labeled boundary input (the carbon/water share).
+    // Total tissue = retained growth + shed litter: litter is grown tissue,
+    // honestly sourced — not created from nothing. The rate formula is
+    // unchanged; the donor limit only binds on exhausted ground, where
+    // growth honestly stalls. The headroom cap binds BEFORE the draw, so
+    // overflow is never taken.
+    const rawDg = (dt / 150) * (0.5 + (p.pheno ? p.pheno.growthRate : 0.5)) * soilGrowthMul(world, p.zone);
+    let dg = Math.min(Math.max(0, 1 - p.growth), rawDg);
+    if (dg > 0) {
+      let tissue = dg * (1 + LITTER_FRAC);
+      const need = tissue * MINERAL_FRAC;
+      let draw = 0;
+      const gs = world.soil && world.soil[p.zone];
+      if (gs) {
+        const avail = (gs.fertility || 0) + (gs.waste || 0);
+        if (Math.min(need, avail) < need) {
+          // Exhausted ground: the whole synthesis scales down — retained
+          // growth and litter together, honestly.
+          dg *= Math.min(need, avail) / need;
+          tissue = dg * (1 + LITTER_FRAC);
+        }
+        draw = tissue * MINERAL_FRAC;
+        let d = draw;
+        const fromFert = Math.min(gs.fertility || 0, d);
+        gs.fertility -= fromFert; d -= fromFert;
+        gs.waste = Math.max(0, (gs.waste || 0) - d);
+      }
+      p.growth += dg;
+      p._litterAcc = (p._litterAcc || 0) + dg * LITTER_FRAC; // shed with growth
+      ledgerIn(world, 'sunlight', tissue * PLANT_MASS - draw);
+    }
     // v0.23 "Weather": drought withers like cold. Soil moisture below 0.12
     // stresses the plant; prolonged drought kills it back to a sprout.
     if (world.climate) {
       const ds = droughtStressAt(world, p.x);
-      if (ds > 0) p.growth = Math.max(0, p.growth - ds * dt * 0.015);
+      if (ds > 0) {
+        const loss = Math.min(p.growth, ds * dt * 0.015);
+        p.growth -= loss;
+        // v0.24: withered tissue returns to the soil (Paul's wither rule) —
+        // rot, not deletion.
+        const ws = world.soil && world.soil[p.zone];
+        if (ws) ws.waste += loss * PLANT_MASS;
+        else ledgerOut(world, 'withered', loss * PLANT_MASS);
+      }
     }
     p.sway += dt;
     if (p.growth >= 1) {
@@ -1500,6 +1659,21 @@ export function tickWorld(world, dt) {
         const nutrition = p.kind === 'herb'
           ? 0.3 * (0.5 + (ph.potency !== undefined ? ph.potency : 0.5))
           : 0.5 + (ph.fruitSize !== undefined ? ph.fruitSize : 0.5);
+        // v0.24: fruiting draws soil minerals (donor-limited, fertility first);
+        // the bulk of each fruit is water + carbon — sunlight's labeled
+        // boundary input. Shortfall on exhausted ground is labeled, not
+        // hidden: the book always balances.
+        const fruitNeed = fruits * FRUIT_MINERAL;
+        let fruitDraw = 0;
+        const fs = world.soil && world.soil[p.zone];
+        if (fs) {
+          fruitDraw = Math.min(fruitNeed, (fs.fertility || 0) + (fs.waste || 0));
+          let fd = fruitDraw;
+          const fromFert = Math.min(fs.fertility || 0, fd);
+          fs.fertility -= fromFert; fd -= fromFert;
+          fs.waste = Math.max(0, (fs.waste || 0) - fd);
+        }
+        ledgerIn(world, 'sunlight', fruits * 1 - fruitDraw);
         for (let f = 0; f < fruits; f++) {
           addFood(world, p.x + rng.range(-30, 30), p.platformIndex, dropKind, 1, 0, {
             plantId: p.id, bitterness: ph.bitterness || 0, nutrition,
@@ -1639,13 +1813,15 @@ export function tickWorld(world, dt) {
       rotted.push(s);
       return false;
     });
-    // Rotten sticks become litter — soil waste in their zone, the decay
-    // chain's honest end. Nothing accumulates forever.
+    // Rotten sticks become litter — their full weight goes to the zone's
+    // soil waste, the decay chain's honest end (v0.24: no cap — the 1-cap
+    // was silently deleting mass; wasteOdorOf clamps internally for smell).
+    // Nothing accumulates forever.
     if (world.soil && rotted.length > 0) {
       for (const s of rotted) {
         const zone = zoneAt(s.x);
         const soil = zone && world.soil[zone.key];
-        if (soil) soil.waste = Math.min(1, (soil.waste || 0) + 0.04);
+        if (soil) soil.waste = (soil.waste || 0) + (s.weight ?? 0.7);
       }
     }
   }
@@ -1914,6 +2090,7 @@ export function populate(world) {
   // founder trait means for the divergence metric (Eliza's S).
   for (const c of founders) world.seenGenomes.add(genomeHash(c.genome));
   recordFounderMeans(world);
+  ledgerSeal(world); // v0.24: the world is stocked — seal the mass baseline
   return world;
 }
 
@@ -2211,5 +2388,6 @@ export function populateGenesis(world) {
   // (flowers), grubs on the forest floor (detritus).
   spawnPromotedCohorts(world);
   recordFounderMeans(world); // the divergence baseline across all cohorts
+  ledgerSeal(world); // v0.24: the world is stocked — seal the mass baseline
   return world;
 }

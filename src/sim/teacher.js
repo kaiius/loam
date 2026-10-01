@@ -25,7 +25,7 @@
 //                 demo the motif where there are listeners, wait, reward
 //                 the good imitators, rest, repeat.
 
-import { zoneAt, ZONES, callsHeardBy } from './world.js';
+import { zoneAt, ZONES, callsHeardBy, ledgerOut } from './world.js';
 import { pushUtterance } from './language.js';
 
 // The lesson: a four-note motif at the teacher's signature pitch.
@@ -556,6 +556,10 @@ export function teacherEat(world, teacher) {
   if (!best) return null;
   const flavor = foodFlavor(best, world);
   best.amount -= 1;
+  // v0.24: the teacher is an observer artifact — its body is outside the
+  // sim's books. The eaten fruit mass leaves as LABELED metabolism, never
+  // silently.
+  ledgerOut(world, 'metabolism', 1);
   if (best.amount <= 0.01) {
     const i = world.foods.indexOf(best);
     if (i >= 0) world.foods.splice(i, 1);

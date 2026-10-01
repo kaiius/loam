@@ -7,7 +7,7 @@ import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY, foundCraft, CRAFT_USES, CRAFT_WINDOW, CRAFT_RADIUS } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
-import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, mineralType, addPebble, addStick } from './world.js';
+import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, TISSUE_FRACTION, mineralType, addPebble, addStick, ledgerOut, bodyMassOf, releaseBodyMass } from './world.js';
 import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, pushContextWindow, hearerSalientContext, lexiconDistance } from './language.js';
 import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA } from './evodevo.js';
 // v0.18 "Realms": the biome map — region layout, temperature fields,
@@ -168,6 +168,12 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     // craftLog records successful tool uses for tradition invention.
     held: null,
     craftLog: [],
+    // v0.24 "Mass": the body's mass pool. Fixed at the adult mass here;
+    // hatchEgg overrides it to the egg mass (exact transfer). Tissue grows
+    // from food in doEat (capped at the adult mass); age-stage drives
+    // size/radius, never mass. Without this, an age-scaled bodyMassOf
+    // created mass from nothing on every life-stage transition.
+    bodyMass: 4.8 * (pheno.size ?? 0.3) * 1.0,
   };
 }
 
@@ -867,10 +873,24 @@ export function doEat(c, world) {
   c.gut = (c.gut || 0) + bite * WASTE_FRACTION;
   // v0.14.1: messy eaters — a fraction of every bite falls as scraps.
   // Poor food for the desperate, compost for the soil if ignored.
+  // v0.24: the bite is double-entry. Scraps that form are a food-pool
+  // transfer; scraps that don't (too small, or the 90-cap binds) and the
+  // rest of the bite are burned as energy — LABELED metabolism output.
+  // Tissue: a share of the bite becomes body mass (capped at the adult
+  // mass) — a hatchling honestly grows from its meals. Adults (tissueRoom
+  // 0) are untouched, so founder economics are exactly preserved.
+  const adultMass = 4.8 * ((c.pheno && c.pheno.size !== undefined) ? c.pheno.size : 0.3) * 1.0;
+  if (typeof c.bodyMass !== 'number' || c.bodyMass <= 0) c.bodyMass = adultMass;
+  const tissue = Math.min(bite * TISSUE_FRACTION, Math.max(0, adultMass - c.bodyMass));
+  c.bodyMass += tissue;
   const scrapAmt = bite * SCRAP_FRACTION;
+  let metab = bite * (1 - WASTE_FRACTION - SCRAP_FRACTION) - tissue;
   if (scrapAmt > 0.005 && world.foods.length < 90) {
     addFood(world, c.x + world.rng.range(-8, 8), c.platformIndex, 'scrap', scrapAmt, SCRAP_ROT, { nutrition: SCRAP_NUTRITION });
+  } else {
+    metab += scrapAmt;
   }
+  ledgerOut(world, 'metabolism', metab);
   // v0.8: medicinal leaves. Bitter and barely nutritious, but they purge
   // illness — self-medication. The illness reward term (below) makes recovery
   // reinforcing, so the brain learns: sick → seek leaf → feel better.
@@ -1509,7 +1529,10 @@ function executeAction(c, world, dt, s) {
           };
           if (kind === 'pebble') {
             world.pebbles = world.pebbles.filter((p) => p !== obj);
-            c.held = { material: 'stone', wear: 0, ...propsOf('stone', { weight: 0.9, hardness: 0.8, sharpness: 0.2, flammability: 0 }) };
+            // v0.24: the grasp preserves the pebble's own weight — a dropped
+            // mineral sample (weight ≠ 0.9) comes back up at the weight it
+            // went down at, not at stone's. Exact transfer, both directions.
+            c.held = { material: obj.material || 'stone', wear: 0, ...propsOf('stone', { weight: 0.9, hardness: 0.8, sharpness: 0.2, flammability: 0 }), weight: obj.weight ?? 0.9 };
           } else if (kind === 'stick') {
             world.sticks = world.sticks.filter((s) => s !== obj);
             c.held = {
@@ -1551,7 +1574,13 @@ function executeAction(c, world, dt, s) {
           if (held.wear >= 1) {
             // Breakage — never trash: degrades into a lesser sample,
             // still held. The tool's life is a slope, not a cliff.
+            // v0.24: the worn-off fragments fall to the ground — soil
+            // waste in the wielder's zone, not vanished mass.
+            const lost = held.weight * 0.4;
             held.weight *= 0.6; held.hardness *= 0.8; held.wear = 0;
+            const s = world.soil && world.soil[biomeKeyAt(c.x)];
+            if (s) s.waste += lost;
+            else ledgerOut(world, 'toolWear', lost);
             world.events.push({ type: 'toolBroke', creature: c, t: world.time });
           }
           logCraftUse(c, world); // invention + witness adoption
@@ -2299,8 +2328,8 @@ export function tickPredators(world, dt) {
       } else {
         p.wanderT -= dt;
         if (p.wanderT <= 0) {
-          p.wanderT = 2 + Math.random() * 3;
-          p.wanderDir = Math.random() < 0.5 ? -1 : 1;
+          p.wanderT = 2 + world.rng.range(0, 3);
+          p.wanderDir = world.rng.chance(0.5) ? -1 : 1;
         }
         p.vx = p.wanderDir * SHARK_SPEED * 0.4;
       }
@@ -2351,8 +2380,12 @@ export function tickPredators(world, dt) {
           c.alive = false;
           c.biochem.health = 0;
           world.events.push({ type: 'killed', predator: p, creature: c, t: world.time });
+          // v0.24: mass-honest kill — the carcass weighs what the body
+          // weighed (not a fixed 1); gut spills and held tools drop via
+          // releaseBodyMass, like every other death.
+          releaseBodyMass(world, c);
           // The carcass feeds the sea: a corpse food item.
-          addFood(world, c.x, c.platformIndex, 'corpse', 1, 0, { nutrition: CORPSE_NUTRITION });
+          addFood(world, c.x, c.platformIndex, 'corpse', bodyMassOf(c), 0, { nutrition: CORPSE_NUTRITION });
         }
       }
       // Physiology: the full chemistry context, sharks included.
@@ -2378,8 +2411,8 @@ export function tickPredators(world, dt) {
       // Bears amble on the ground (simple wander; gravity keeps them down).
       p.wanderT -= dt;
       if (p.wanderT <= 0) {
-        p.wanderT = 3 + Math.random() * 4;
-        p.wanderDir = Math.random() < 0.5 ? -1 : 1;
+        p.wanderT = 3 + world.rng.range(0, 4);
+        p.wanderDir = world.rng.chance(0.5) ? -1 : 1;
         p.facing = p.wanderDir;
       }
       // v0.20 "One physics": bears are bodies, not pins. The first tick

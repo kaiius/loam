@@ -167,7 +167,7 @@ test('v0.22: founder biomass — multiplier exactly 1.0, old soil behavior prese
   // The v0.14 soil contract still holds: waste → fertility, leaching relaxes.
   const s = world.soil.jungle;
   s.waste = 10; s.fertility = 0.5;
-  tickSoil(world, 100);
+  tickSoil(world, 10); // v0.24: smaller dt — fast leaching would erase the signal in one 100s tick
   assert.ok(s.waste < 10 && s.fertility > 0.5, 'decomposition converts waste to fertility');
 });
 
