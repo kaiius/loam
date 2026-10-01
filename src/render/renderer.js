@@ -1,7 +1,7 @@
 // Canvas renderer: sky, parallax hills, platforms, plants, food, eggs,
 // toys, critters, creatures. Camera fits the whole terrarium.
 
-import { drawCreature, drawTeacher, drawBiomeBands, drawWater, drawPredator } from './painter.js';
+import { drawCreature, drawTeacher, drawBiomeBands, drawWater, drawWaters, drawPredator } from './painter.js';
 import { creatureRadius } from '../sim/creature.js';
 import { ageStage } from '../sim/biochem.js';
 import { timeOfDay, ZONES } from '../sim/world.js';
@@ -211,7 +211,7 @@ export function render(r, world, ui, t) {
   const waters = (B && typeof B.waterRects === 'function') ? B.waterRects() : [];
   if (B && typeof B.biomeKeyAt === 'function') {
     drawBiomeBands(ctx, world, B, light);
-    for (const wr of waters) drawWater(ctx, wr, world.height, light);
+    drawWaters(ctx, B, world.height, light); // v0.20: one flowing sea, not three rects
   } else {
     // v0.11 biome tints: the zones are sim state (they set fruiting rates),
     // so painting them is honest. Subtle vertical washes + a name label.

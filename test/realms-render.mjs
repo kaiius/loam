@@ -10,7 +10,8 @@ import { SvgCtx } from './svg-shim.mjs';
 import * as wmod from '../src/sim/world.js';
 import { createWorld, bindWorld, tickWorld, addPlant, addFood } from '../src/sim/world.js';
 import { render, biomesReady } from '../src/render/renderer.js';
-import { BIOME_KEYS, biomeGroundInfo, drawWater, drawPredator } from '../src/render/painter.js';
+import { BIOME_KEYS, biomeGroundInfo, drawWater, drawWaters, drawPredator, smoothGroundAt, seaSurfaceYAt, FLOW_TRANS } from '../src/render/painter.js';
+import * as BIO from '../src/sim/biomes.js';
 import { describeEntity } from '../src/sim/observer.js';
 
 const populateWorld = wmod.populateGenesis || wmod.populate;
@@ -139,4 +140,53 @@ test('headless realms frame: no crash, no NaN, water + biomes flow', async () =>
   const seen = new Set();
   for (let x = 0; x < B.WORLD_W; x += 100) seen.add(B.biomeKeyAt(x, B.WORLD_H * 0.5));
   for (const k of BIOME_KEYS) assert.ok(seen.has(k), `biome ${k} sampled from biomeKeyAt`);
+});
+
+test('v0.20 flow: smoothGroundAt eases small steps, blends palettes, keeps cliffs', () => {
+  // deep interior: untouched sim answer
+  const mid = smoothGroundAt(BIO, 300);
+  assert.deepEqual(mid, { top: 800, rgb: [216, 230, 242] });
+  // arctic(800, pale) -> mountains(800, dark) at x=600: same top, blended color
+  const at = smoothGroundAt(BIO, 600);
+  assert.equal(at.top, 800);
+  assert.deepEqual(at.rgb, [145, 154, 165]); // midpoint of [216,230,242] and [74,78,88]
+  // jungle(800) -> plains(820) at x=1800: 20px step eases into a slope
+  const j = smoothGroundAt(BIO, 1800);
+  assert.equal(j.top, 810); // midpoint of the eased slope
+  assert.deepEqual(j.rgb, [106, 148, 83]); // jungle [86,128,74] <-> plains [126,168,92]
+  // desert(830) -> shallows(950) at x=3000: a 120px cliff keeps its face
+  assert.equal(smoothGroundAt(BIO, 2999).top, 830);
+  assert.equal(smoothGroundAt(BIO, 3001).top, 950);
+  // ...but the palette still cross-fades across the cliff band
+  const west = smoothGroundAt(BIO, 2960).rgb, east = smoothGroundAt(BIO, 3040).rgb;
+  assert.ok(west[0] > east[0], `sand fades eastward (${west} -> ${east})`);
+  // open water: nothing to paint
+  assert.equal(smoothGroundAt(BIO, 3900), null); // archipelago channel
+  // outside any transition band: the plain sim answer
+  assert.deepEqual(smoothGroundAt(BIO, 1500), { top: 800, rgb: [86, 128, 74] });
+});
+
+test('v0.20 flow: seaSurfaceYAt is one continuous surface', () => {
+  assert.equal(seaSurfaceYAt(3000), 800);
+  assert.equal(seaSurfaceYAt(3600), 800);
+  assert.equal(seaSurfaceYAt(4200), 750); // eased midpoint of the deep drop
+  assert.equal(seaSurfaceYAt(4500), 700);
+  assert.equal(seaSurfaceYAt(2999), null);
+  assert.equal(seaSurfaceYAt(4800), null);
+  // monotonic eastward, no jumps bigger than the sampling step allows
+  // (smoothstep's steepest 20px step drops ~12.5px at the midpoint)
+  let prev = seaSurfaceYAt(3000);
+  for (let x = 3020; x < 4800; x += 20) {
+    const s = seaSurfaceYAt(x);
+    assert.ok(s <= prev && prev - s <= 14, `smooth descent at x=${x} (${prev} -> ${s})`);
+    prev = s;
+  }
+});
+
+test('v0.20 flow: drawWaters paints ponds + one sea without crashing', () => {
+  const ctx = new SvgCtx(1440, 810);
+  drawWaters(ctx, BIO, 1100, 1.0);
+  const svg = ctx.toSVG();
+  assert.ok(svg.length > 500, 'water was painted');
+  assert.ok(!svg.includes('NaN'), 'no NaN in the water layer');
 });

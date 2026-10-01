@@ -686,6 +686,62 @@ function groundRGB(c, light) {
   return `rgb(${(c[0] * k) | 0},${(c[1] * k) | 0},${(c[2] * k) | 0})`;
 }
 
+// v0.20 "Flow": the world reads as one continuous place, not eight
+// dioramas. Within FLOW_TRANS px of a biome border, the ground paint
+// cross-fades palette and eases small steps into slopes — the eight
+// biomes stay discrete selection regimes in the sim (soil, divergence,
+// flora all key on biome), but the paint flows. Cliffs stay cliffs:
+// only steps < 40px ease; the 120px coastline at x=3000 keeps its face.
+// Pure function of the sim's biomes module — testable without a canvas.
+export const FLOW_TRANS = 90;
+export function smoothGroundAt(B, x) {
+  // -> { top, rgb:[r,g,b] } | null (open water: nothing to paint)
+  let top = null, key = null;
+  try { top = B.groundYAt(x); key = B.biomeKeyAt(x, 550); } catch (e) { top = null; }
+  if (top === null || top === undefined || !isFinite(top)) return null;
+  const info = biomeGroundInfo(key);
+  if (!info || !info.ground) return null;
+  const plain = { top, rgb: info.ground };
+  const border = Math.round(x / 600) * 600;
+  if (border <= 0 || border >= 4800 || Math.abs(x - border) >= FLOW_TRANS / 2) return plain;
+  const xa = border - FLOW_TRANS / 2 - 1, xb = border + FLOW_TRANS / 2 + 1;
+  let ta = null, ka = null, tb = null, kb = null;
+  try { ta = B.groundYAt(xa); ka = B.biomeKeyAt(xa, 550); } catch (e) { /* keep null */ }
+  try { tb = B.groundYAt(xb); kb = B.biomeKeyAt(xb, 550); } catch (e) { /* keep null */ }
+  const ia = biomeGroundInfo(ka), ib = biomeGroundInfo(kb);
+  const num = (v) => v !== null && v !== undefined && isFinite(v);
+  if (!num(ta) || !num(tb) || !ia || !ia.ground || !ib || !ib.ground) return plain;
+  const t = (x - (border - FLOW_TRANS / 2)) / FLOW_TRANS;
+  const s = t * t * (3 - 2 * t); // smoothstep west→east
+  const step = Math.abs(tb - ta);
+  return {
+    top: step < 40 ? ta + (tb - ta) * s : top,
+    rgb: [0, 1, 2].map((i) => Math.round(ia.ground[i] + (ib.ground[i] - ia.ground[i]) * s)),
+  };
+}
+
+// The connected sea (shallows→archipelago→deep) is one body: its painted
+// surface eases down where the deep drops at x=4200 instead of drawing
+// the sim's honest 100px rect step as a water cliff. The sim's waterAt
+// rects are untouched — this is paint, not physics.
+export function seaSurfaceYAt(x) {
+  if (x < 3000 || x >= 4800) return null;
+  if (x < 4080) return 800;
+  if (x >= 4320) return 700;
+  const t = (x - 4080) / 240, s = t * t * (3 - 2 * t);
+  return 800 - 100 * s;
+}
+
+function parseRGBA(s) {
+  const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(s || '');
+  if (!m) return null;
+  return [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]];
+}
+
+function rgbaStr(c) {
+  return `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${c[3]})`;
+}
+
 // Ambient biome bands: a subtle wash over each biome's x-range, an opaque
 // ground band below the sim's own groundYAt(x) (null = open water), arctic
 // glare streaks, and a dark abyss gradient where the deep has no ground.
@@ -707,13 +763,15 @@ export function drawBiomeBands(ctx, world, B, light) {
   if (runKey) runs.push({ key: runKey, x0: runX0, x1: W });
   ctx.save();
   ctx.textAlign = 'center';
-  ctx.font = '600 22px system-ui, sans-serif';
+  const TH = FLOW_TRANS / 2; // tint cross-fade half-width at each border
   for (const r of runs) {
     const info = biomeGroundInfo(r.key);
     if (!info) continue;
     const w = r.x1 - r.x0;
+    // The wash stops short of each border; the gradient below blends it.
     ctx.fillStyle = info.tint;
-    ctx.fillRect(r.x0, 0, w, H);
+    ctx.fillRect(r.x0 + (r.x0 > 0 ? TH : 0), 0,
+      w - (r.x0 > 0 ? TH : 0) - (r.x1 < W ? TH : 0), H);
     if (r.key === 'deep') {
       // No ground in the deep — the abyss darkens with depth.
       const g = ctx.createLinearGradient(0, 640, 0, H);
@@ -738,21 +796,35 @@ export function drawBiomeBands(ctx, world, B, light) {
         ctx.stroke();
       }
     }
-    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    // v0.20: zone names whisper now — small and faint. The world is one
+    // place; the labels are orientation, not theme-park signage.
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.font = '600 13px system-ui, sans-serif';
     ctx.fillText(info.name, (r.x0 + r.x1) / 2, H - 24);
   }
+  // Cross-fade the tint wash across each border — no hard vertical seams.
+  for (let bi = 1; bi < runs.length; bi++) {
+    const ia = biomeGroundInfo(runs[bi - 1].key), ib = biomeGroundInfo(runs[bi].key);
+    if (!ia || !ib) continue;
+    const ca = parseRGBA(ia.tint), cb = parseRGBA(ib.tint);
+    if (!ca || !cb) continue;
+    const bx = runs[bi].x0;
+    const g = ctx.createLinearGradient(bx - TH, 0, bx + TH, 0);
+    g.addColorStop(0, rgbaStr(ca));
+    g.addColorStop(1, rgbaStr(cb));
+    ctx.fillStyle = g;
+    ctx.fillRect(bx - TH, 0, 2 * TH, H);
+  }
   ctx.restore();
-  // Ground: honest per-x groundYAt — the sim's own answer, including the
-  // nulls (open water between islands, the deep, mountain mid-air).
+  // Ground: the sim's own groundYAt, eased across borders by
+  // smoothGroundAt — small steps become slopes, palettes cross-fade,
+  // cliffs keep their faces. Still the sim's answer, never invented.
   const gstep = 30;
   for (let x = 0; x < W; x += gstep) {
-    let top = null, key = null;
-    try { top = B.groundYAt(x); key = B.biomeKeyAt(x, H * 0.5); } catch (e) { top = null; }
-    if (top === null || top === undefined || !isFinite(top)) continue;
-    const info = biomeGroundInfo(key);
-    if (!info || !info.ground) continue;
-    ctx.fillStyle = groundRGB(info.ground, light);
-    ctx.fillRect(x, top, gstep + 1, H - top);
+    const sg = smoothGroundAt(B, x);
+    if (!sg) continue;
+    ctx.fillStyle = groundRGB(sg.rgb, light);
+    ctx.fillRect(x, sg.top, gstep + 1, H - sg.top);
   }
 }
 
@@ -768,6 +840,39 @@ export function drawWater(ctx, wr, worldH, light) {
   ctx.fillRect(x0, wr.surfaceY, w, worldH - wr.surfaceY);
   ctx.fillStyle = salt ? 'rgba(150,210,245,0.85)' : 'rgba(170,230,220,0.85)';
   ctx.fillRect(x0, wr.surfaceY - 2, w, 4);
+}
+
+// v0.20 "Flow": all of the sim's waters, painted as the world reads.
+// Inland ponds (jungle pools, desert oasis) keep their rects; the
+// connected sea — shallows, archipelago channels, deep — is drawn as ONE
+// body with the smoothed surface from seaSurfaceYAt, so the eye travels
+// east over water without tripping on the rect seams.
+export function drawWaters(ctx, B, worldH, light) {
+  let rects = [];
+  try { rects = B.waterRects(); } catch (e) { rects = []; }
+  const isSea = (wr) => !!wr.salt && wr.x0 >= 3000;
+  for (const wr of rects) if (!isSea(wr)) drawWater(ctx, wr, worldH, light);
+  const sea = rects.filter(isSea);
+  if (!sea.length) return;
+  const x0 = Math.min(...sea.map((w) => w.x0));
+  const x1 = Math.max(...sea.map((w) => w.x1));
+  const k = 0.6 + 0.4 * light;
+  const step = 20;
+  const surf = (x) => seaSurfaceYAt(x);
+  ctx.beginPath();
+  ctx.moveTo(x0, surf(x0));
+  for (let x = x0 + step; x <= x1; x += step) ctx.lineTo(x, surf(x));
+  ctx.lineTo(x1, worldH);
+  ctx.lineTo(x0, worldH);
+  ctx.closePath();
+  ctx.fillStyle = `rgba(${(36 * k) | 0},${(108 * k) | 0},${(168 * k) | 0},0.42)`;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(150,210,245,0.85)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x0, surf(x0));
+  for (let x = x0 + step; x <= x1; x += step) ctx.lineTo(x, surf(x));
+  ctx.stroke();
 }
 
 // ---------------------------------------------------------------------------

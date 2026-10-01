@@ -9,6 +9,7 @@ import { budPotentials, expressBuds, developmentalGrowth01, BUD_SITES, BUD_TYPES
 import { createBrain, decide, learn, senseVector, ACTIONS } from '../src/sim/brain.js';
 import { createBiochem, tickBiochem, mood, ageStage } from '../src/sim/biochem.js';
 import { createRng } from '../src/sim/rng.js';
+import { groundYAt, waterAt } from '../src/sim/biomes.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
 import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams } from '../src/sim/world.js';
@@ -4395,6 +4396,59 @@ test('v0.20: beached shark falls under gravity — no more hovering', () => {
   assert.equal(shark.y, 800, 'fell to the jungle floor');
   assert.ok(shark.grounded, 'grounded on landing');
   assert.ok(shark.biochem.health < h0, 'the beaching clock still runs');
+});
+
+test('v0.20: shark cannot swim under the desert — the shore is solid', () => {
+  const world = bindWorld(createWorld(7));
+  spawnPredators(world);
+  const shark = world.predators.find((p) => p.kind === 'shark');
+  assert.ok(shark, 'a shark spawned');
+  // In the shallows but BELOW desert ground level (830): the old code
+  // swam straight west under the desert and died underground.
+  shark.x = 3050; shark.y = 870; shark.vx = 0; shark.vy = 0;
+  shark.wanderDir = -1; shark.wanderT = 999; // hold a westward course
+  let minX = Infinity, enteredEarth = false;
+  for (let t = 0; t < 300; t++) {
+    tickPredators(world, 1 / 30);
+    if (shark.x < minX) minX = shark.x;
+    const gy = groundYAt(shark.x);
+    if (gy !== null && shark.y > gy) enteredEarth = true;
+  }
+  assert.ok(minX >= 3000, `never crosses the shoreline west (minX=${minX.toFixed(1)})`);
+  assert.ok(!enteredEarth, 'never inside the earth');
+});
+
+test('v0.20: shark cannot dive through the seabed', () => {
+  const world = bindWorld(createWorld(7));
+  spawnPredators(world);
+  const shark = world.predators.find((p) => p.kind === 'shark');
+  shark.x = 3300; shark.y = 900; shark.vx = 0;
+  shark.wanderDir = 1; shark.wanderT = 999;
+  let maxY = -Infinity, enteredEarth = false;
+  for (let t = 0; t < 300; t++) {
+    shark.vy = 200; // hold a hard dive (the water damping alone would stop it)
+    tickPredators(world, 1 / 30);
+    if (shark.y > maxY) maxY = shark.y;
+    const gy = groundYAt(shark.x);
+    if (gy !== null && shark.y > gy) enteredEarth = true;
+  }
+  assert.ok(maxY <= 950, `never below the shallows seabed (maxY=${maxY.toFixed(1)})`);
+  assert.ok(!enteredEarth, 'never inside the earth');
+});
+
+test('v0.20: shark may still beach honestly onto the sand', () => {
+  const world = bindWorld(createWorld(7));
+  spawnPredators(world);
+  const shark = world.predators.find((p) => p.kind === 'shark');
+  // Just under the surface but ABOVE desert ground level: swimming west
+  // exits the water into air — an honest stranding, not a wall.
+  shark.x = 3050; shark.y = 810; shark.vx = 0; shark.vy = 0;
+  shark.wanderDir = -1; shark.wanderT = 999;
+  for (let t = 0; t < 150; t++) tickPredators(world, 1 / 30);
+  assert.ok(shark.x < 3000, `crossed onto the beach (x=${shark.x.toFixed(1)})`);
+  assert.ok(shark.grounded, 'landed on the sand under the same gravity');
+  const gy = groundYAt(shark.x);
+  assert.ok(!(gy !== null && shark.y > gy), 'rests on the ground, not under it');
 });
 
 test('v0.20: bear ambles grounded — walks the ice, turns at the brink', () => {

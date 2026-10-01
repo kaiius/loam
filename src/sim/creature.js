@@ -2160,8 +2160,31 @@ export function tickPredators(world, dt) {
           if (pl) p.y = pl.y;
         }
       } else {
-        p.x = cx0(p) + p.vx * dt;
-        p.y = cy0(p) + p.vy * dt;
+        // v0.20: earth is solid for sharks too — one physics. A swimming
+        // shark may not enter the earth: not the shore cliff at the
+        // shallows' west edge (the old bug swam sharks UNDER the desert),
+        // not the seabed, not the archipelago islands. Blocked on an
+        // axis, the shark turns away; the water simply ends at the shore.
+        // (Beaching itself onto the sand above the waterline is still
+        // allowed — that's an honest stranding, and the clock kills it.)
+        let nx = p.x + p.vx * dt;
+        let ny = p.y + p.vy * dt;
+        let gyDest = null, gyHere = null;
+        try { gyDest = groundYAt(nx); } catch (e) { gyDest = null; }
+        try { gyHere = groundYAt(p.x); } catch (e) { gyHere = null; }
+        const earthAt = (gy) => gy !== null && gy !== undefined && Number.isFinite(gy);
+        if (earthAt(gyDest) && ny > gyDest) {
+          nx = p.x; // hold x, turn around
+          p.vx = -p.vx;
+          p.wanderDir = -p.wanderDir;
+          p.wanderT = Math.max(p.wanderT, 1.5);
+        }
+        if (earthAt(gyHere) && ny > gyHere) {
+          ny = p.y; // don't dive through the seabed
+          if (p.vy > 0) p.vy = -p.vy * 0.5;
+        }
+        p.x = nx;
+        p.y = ny;
         if (p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx); }
         if (p.x > world.width) { p.x = world.width; p.vx = -Math.abs(p.vx); }
       }
