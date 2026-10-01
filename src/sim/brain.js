@@ -46,9 +46,12 @@ export const ACTIONS = [
   'grasp', // pick up the nearest manipulable object within reach (v0.20 Hands)
   'carry', // wield what is held — the strike-with-object lives here (v0.20 Hands)
   'drop', // release the held object with the carrier's velocity (v0.20 Hands)
+  'bite', // strike the nearest creature in range — the attack verb, ordinary
+  // machinery (v0.22 Web of Life). Damage = f(mouthSize × mass) vs
+  // spikeArmor; fatigue-billed; spikes retaliate. No prey-finding cheats.
 ];
 
-export const N_IN = 36; // 35 senses + bias... see senseVector
+export const N_IN = 37; // 36 senses + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -61,7 +64,8 @@ const MIN_ASSOC = 16; // pruning never goes below this
 //           isAdult, illness, homeDist, kinNear, bondNear,
 //           climbUp, climbDown, groomNear, jumpNear, callHeard, callPitch,
 //           wasteOdor, airborne, farLedge, submerged, waterNear,
-//           thirst, cold, heat, buriedNear, objectNear, heldWeight, bias]
+//           thirst, cold, heat, buriedNear, objectNear, heldWeight, falling,
+//           creatureSize, bias]
 // v0.12 rule kept: never renumber. New senses append before the bias.
 export function senseVector(s) {
   return [
@@ -75,6 +79,7 @@ export function senseVector(s) {
     s.thirst || 0, s.cold || 0, s.heat || 0, s.buriedNear || 0,
     s.objectNear || 0, s.heldWeight || 0, // v0.20: the hands senses
     s.falling || 0, // v0.20 "Falling": the vestibular sense — appended, never renumbered
+    s.creatureSize || 0, // v0.22 "Web of Life": relative mass of nearest creature, no identity
     1,
   ];
 }

@@ -1,6 +1,6 @@
 # Genome v2 — the tanglekin genome
 
-*43 → 227 loci (the v2 core was 178 loci / 47 genes across 9 families; v0.13–v0.20
+*43 → 228 loci (the v2 core was 178 loci / 47 genes across 9 families; v0.13–v0.22
 appended the rest). Every gene is wired into the sim — no dead genes.
 Structure = Paul (Wildcode v0.12), depth = Emberhollow (diploid meiosis,
 epigenetics, chemistry-under-drives).*
@@ -13,8 +13,9 @@ epigenetics, chemistry-under-drives).*
 - v0.13–v0.20 additions (appended per the never-renumber invariant; the test
   suite asserts the live total): v0.13 plant-genome support, v0.14 voice genes
   ×7 + instWasteFlee, v0.16 language-substrate ×6, v0.17 evo-devo ×25,
-  v0.18 realms ×6, v0.20 hands instincts ×3, v0.20 "Falling" instFallVocal —
-  **227 loci total** as of the Falling build (`GENES.length` in genome.js).
+  v0.18 realms ×6, v0.20 hands instincts ×3, v0.20 "Falling" instFallVocal,
+  v0.22 "Web of Life" instBite —
+  **228 loci total** as of the Web of Life build (`GENES.length` in genome.js).
 - Inheritance: true diploid — parental genomes fuse, chromosomes align and
   cross over (duplications/deletions/mutations), then one genome is randomly
   destroyed (the Creatures/norn scheme). 8 chromosomes, thematic; linked genes
@@ -275,3 +276,44 @@ Viability probe (8 founders, 20000 ticks = 2000 sim-seconds, seeds 7/21/99):
 Before the fix: 0 matings on seeds 7/21, 1 on seed 99 — all extinct by
 ~15000 ticks. After: self-sustaining populations at carrying capacity on all
 three seeds. Suite stays 100/100; `headless.mjs` and `dist-smoke.mjs` pass.
+
+---
+
+## v0.22 "Web of Life": the roster additions (Joshua 2026-10-01)
+
+**No new loci.** The vulture, the detritivore beetle, and the bacteria add
+founder VALUES, not genes — 228 loci unchanged. A species here is a founder
+genome: same loci, pinned sub-streams, overridden values
+(`src/sim/species.js`). The test suite (`test/species.mjs`, 17 tests) asserts
+founder-exactness per entry.
+
+- **Vulture ("soarer"), the 11th founder.** Obligate scavenger: dorsal
+  membranes grown (flies day one), eyeSize 0.95 → 533px corpse detection,
+  diet carnivore (meatEfficiency 1.0 on corpses), instBite 0.1 (tears, can't
+  kill), instFoodDistSeek 0.9 (corpses are food, foodDist covers them),
+  instAirborneGlide 0.85 + energyDrain 0.2 (cheap soaring). Desert/plains
+  niche pinned: heatTol 0.8, immunity 0.8 (the carrion contract — real
+  vultures shrug off anthrax), instThirstDrink 0.85 + instWaterDrink 0.7
+  (a carnivore gets no hydration from fruit, so the dormant drink instincts
+  must be live). Starter sets: plains ×2, desert ×1. QA gates: scavenger
+  gate (corpse clearance with vs without vultures, ratio < 0.6) and 5k-tick
+  persistence on carrion alone (plains; the desert at ambient 1.0 is
+  intentional selection pressure — even the native scurrier cooks there).
+- **Midden beetle ("beetle-detritivore"), the 12th entry.** Same 228 loci as
+  the pollinator beetle, midden values: diet omnivore, instWasteFlee 0.15
+  (tolerant), immunity 0.7, mouthSize 0.18, spikes kept. The pollinator stays
+  the flower specialist (herbivore, instWasteFlee 0.71, instFoodDistSeek 0.8).
+- **Detritivory** (`doEat`, `src/sim/creature.js`): when no food item is in
+  reach and soil waste ≥ 0.5, any creature grazes soil waste through the
+  `eat` verb (DETRITUS_NUTRITION 0.25, via fruitEfficiency; the mass leaves
+  the soil — conserved). Opportunistic for all; the midden beetle's niche is
+  founder-exact, not scripted.
+- **Bacterial decomposer layer** (`src/sim/microbes.js`): each zone carries
+  bacterial biomass (founder 1.0, max 3.0). Monod growth on waste,
+  temperature-scaled maintenance (arctic slow, desert fast), slow spore
+  immigration (sterilized soil recolonizes — no spontaneous generation).
+  Decomposition = SOIL_DECAY × multiplier, where the multiplier is EXACTLY
+  1.0 at founder biomass (all pre-v0.22 soil behavior preserved) and 0.05
+  sterilized (20× slower — the sterilization probe's number, in the ledger
+  via `sterilizeZone`). Blooms (> 2.0) and crashes (< 0.25) are ledger
+  events. Zone-level, not agents: the population is the honest unit.

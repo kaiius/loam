@@ -66,6 +66,10 @@ export const PLANT_KINDS = new Set(['fruit', 'tuber', 'kelp', 'moss', 'seed',
   'propagule', 'cactusfruit', 'berry', 'snowcache', 'sandcache']);
 export const PREY_NUTRITION = 0.15; // bug/minnow/grub/morsel — small mouthfuls
 export const CORPSE_NUTRITION = 0.4; // corpse — rotten, but food
+// v0.22 "Web of Life": detritivory — grazing the soil's waste directly.
+// Poor food (already half-decomposed); the midden beetle's trade.
+export const DETRITUS_NUTRITION = 0.25;
+export const DETRITUS_WASTE_MIN = 0.5; // soil waste must reach this to be grazeable
 
 const NAMES = [
   'Pip', 'Moss', 'Wren', 'Pebble', 'Fig', 'Nix', 'Bramble', 'Tansy',
@@ -813,7 +817,24 @@ function stepTowardPlatform(c, world, targetPi, dt) {
 
 export function doEat(c, world) {
   const s = c._senses;
-  const food = s._food && Math.abs(s._food.x - c.x) < EAT_RANGE ? s._food : null;
+  let food = s._food && Math.abs(s._food.x - c.x) < EAT_RANGE ? s._food : null;
+  // v0.22 "Web of Life": detritivory — no food item in reach, but the
+  // ground is rich with waste. Dung-eaters graze the soil itself through
+  // the same `eat` verb and the same hunger instinct: poor food, eaten
+  // joylessly. The eaten mass leaves the soil — conserved, not deleted.
+  // Opportunistic (any hungry creature does it); the midden beetle's
+  // NICHE is founder-exact (low instWasteFlee, high immunity, small bites).
+  let detritusSoil = null;
+  if (!food && !world.noFouling && world.soil) {
+    const soil = world.soil[biomeKeyAt(c.x)];
+    if (soil && soil.waste >= DETRITUS_WASTE_MIN) {
+      detritusSoil = soil;
+      food = {
+        foodKind: 'detritus', amount: Math.min(soil.waste, c.pheno.biteSize * 2),
+        nutrition: DETRITUS_NUTRITION, bitterness: 0, plantId: 0, x: c.x,
+      };
+    }
+  }
   if (!food) return false;
   // v0.18 "Realms": explicit diet branches. Meat kinds (meat, bug, minnow,
   // corpse, grub, morsel) burn through meatEfficiency — small prey and
@@ -824,11 +845,12 @@ export function doEat(c, world) {
   const kind = food.foodKind;
   const isMeat = MEAT_KINDS.has(kind);
   const isPlant = PLANT_KINDS.has(kind);
-  if (kind !== 'leaf' && kind !== 'scrap' && !isMeat && !isPlant) return false;
+  if (kind !== 'leaf' && kind !== 'scrap' && kind !== 'detritus' && !isMeat && !isPlant) return false;
   // v0.6 morphology: bite size from mouthSize gene; diet efficiencies.
   // v0.7: meat efficiency — carcasses feed carnivores at full value.
   const bite = Math.min(food.amount, c.pheno.biteSize);
   food.amount -= bite;
+  if (detritusSoil) detritusSoil.waste = Math.max(0, detritusSoil.waste - bite);
   // v0.14: the waste cycle — part of every bite passes through the gut.
   // Nutrition feeds blood sugar; the rest is excreted into the soil.
   c.gut = (c.gut || 0) + bite * WASTE_FRACTION;
@@ -874,9 +896,11 @@ export function doEat(c, world) {
     const nutrition = (food.nutrition || 1) * palatability;
     c._ate = (c._ate || 0) + bite * 1.1 * eff * nutrition;
     // v0.14.1: scraps are desperation food — eaten, but joylessly.
+    // v0.22: detritus is poorer still — the midden's wage.
     const isScrap = kind === 'scrap';
-    c.actionLabel = isScrap ? 'picking at scraps' : `eating ${kind === 'fruit' ? 'fruit' : kind}`;
-    c.reward += (isScrap ? 0.25 : 0.6) * palatability; // bitter meals reinforce less
+    const isDetritus = kind === 'detritus';
+    c.actionLabel = isDetritus ? 'grazing detritus' : (isScrap ? 'picking at scraps' : `eating ${kind === 'fruit' ? 'fruit' : kind}`);
+    c.reward += (isDetritus ? 0.2 : isScrap ? 0.25 : 0.6) * palatability; // bitter meals reinforce less
     // v0.13: seed dispersal — the eaten fruit's plant may ride along.
     disperseSeed(world, c, food);
   }

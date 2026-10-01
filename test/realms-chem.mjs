@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   GENES, CHEM5, CHEM7, SENSE32, SENSE24, ACT20, ACT13,
   PLANT_REALMS_LOCI, REALMS18_KEYS, EVO17_KEYS, HANDS20_KEYS, FALLING20_KEYS,
+  WEB22_KEYS,
   randomGenome, phenotype,
 } from '../src/sim/genome.js';
 import { createBrain, senseVector, ACTIONS, N_IN } from '../src/sim/brain.js';
@@ -175,16 +176,17 @@ test('v0.18: the four realms instinct genes — indices and founders', () => {
   assert.deepEqual(PLANT_REALMS_LOCI.map((g) => g.key), ['heatTol', 'saltTol']);
 });
 
-test('v0.18: index contract — N_IN 36, N_OUT 23, append-only', () => {
-  assert.equal(N_IN, 36, '35 senses + bias'); // v0.20: +objectNear, +heldWeight, +falling
-  assert.equal(N_OUT, 23, '20 old actions + grasp/carry/drop'); // v0.20
+test('v0.18: index contract — N_IN 37, N_OUT 24, append-only', () => {
+  assert.equal(N_IN, 37, '36 senses + bias'); // v0.22: +creatureSize
+  assert.equal(N_OUT, 24, '23 old actions + bite'); // v0.22
   assert.equal(ACTIONS[17], 'drink');
   assert.equal(ACTIONS[18], 'bask');
   assert.equal(ACTIONS[19], 'dig');
   assert.equal(ACTIONS[20], 'grasp'); // v0.20
   assert.equal(ACTIONS[21], 'carry'); // v0.20
   assert.equal(ACTIONS[22], 'drop'); // v0.20
-  assert.equal(SENSE32.length, 35); // v0.20: 34 + the falling sense
+  assert.equal(ACTIONS[23], 'bite'); // v0.22 "Web of Life": appended, never renumbered
+  assert.equal(SENSE32.length, 36); // v0.22: 35 + the creatureSize sense
   assert.deepEqual(SENSE32.slice(0, 24), SENSE24, 'the old 24 untouched');
   assert.equal(SENSE32[28], 'thirst');
   assert.equal(SENSE32[29], 'cold');
@@ -193,22 +195,25 @@ test('v0.18: index contract — N_IN 36, N_OUT 23, append-only', () => {
   assert.equal(SENSE32[32], 'objectNear'); // v0.20
   assert.equal(SENSE32[33], 'heldWeight'); // v0.20
   assert.equal(SENSE32[34], 'falling'); // v0.20 "Falling": appended, never renumbered
-  assert.equal(ACT20.length, 23); // v0.20
+  assert.equal(SENSE32[35], 'creatureSize'); // v0.22 "Web of Life": appended, never renumbered
+  assert.equal(ACT20.length, 24); // v0.22
   assert.deepEqual(ACT20.slice(0, 13), ACT13, 'the old 13 untouched');
   assert.equal(ACT20[17], 'drink');
   assert.equal(ACT20[18], 'bask');
   assert.equal(ACT20[19], 'dig');
+  assert.equal(ACT20[23], 'bite'); // v0.22 "Web of Life": appended, never renumbered
   assert.equal(ACT20[20], 'grasp'); // v0.20
   assert.equal(ACT20[21], 'carry'); // v0.20
   assert.equal(ACT20[22], 'drop'); // v0.20
   const v = senseVector({ thirst: 0.7, cold: 0.1, heat: 0, buriedNear: 0.4 });
-  assert.equal(v.length, 36, '35 senses + bias'); // v0.20: +falling
+  assert.equal(v.length, 37, '36 senses + bias'); // v0.22: +creatureSize
   assert.equal(v[28], 0.7, 'thirst rides at index 28');
   assert.equal(v[29], 0.1, 'cold rides at index 29');
   assert.equal(v[30], 0, 'heat rides at index 30');
   assert.equal(v[31], 0.4, 'buriedNear rides at index 31');
   assert.equal(v[34], 0, 'falling rides at index 34'); // v0.20 "Falling"
-  assert.equal(v[35], 1, 'bias still last'); // v0.20: was 32
+  assert.equal(v[35], 0, 'creatureSize rides at index 35'); // v0.22 "Web of Life"
+  assert.equal(v[36], 1, 'bias still last'); // v0.22: was 35
 });
 
 test('v0.18: founder main-stream bit-identity with pinSub + a pinned allele', () => {
@@ -216,6 +221,7 @@ test('v0.18: founder main-stream bit-identity with pinSub + a pinned allele', ()
   const g2 = randomGenome(createRng(7), { pinSub: 1234, overrides: { legPower: 0.4 } });
   const subKeys = new Set([...EVO17_KEYS, ...REALMS18_KEYS, ...HANDS20_KEYS,
     ...FALLING20_KEYS, // v0.20 "Falling": rides the hands sub-stream pass
+    ...WEB22_KEYS, // v0.22 "Web of Life": instBite rides its own sub-stream pass
     ...GENES.filter((g) => g.key.startsWith('lex')).map((g) => g.key)]);
   for (const gene of GENES) {
     if (gene.key === 'legPower' || subKeys.has(gene.key)) continue;

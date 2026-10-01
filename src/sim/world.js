@@ -15,6 +15,11 @@ import { createCulture, sampleCulture, pruneExtinct, adoptTradition, fidelityOf 
 import { createBonds, tickBonds, detectTribes, nudgeBond } from './social.js';
 import { createTeacher, tickTeacher, teacherDemo } from './teacher.js';
 import { sizePitchFactor, hearThresh, baseLoud, pushUtterance, acousticDistance, lexiconDistance, wordName, LEX_CONTEXTS, pushContextWindow } from './language.js';
+import { tickMicrobes, decompMultiplier, sterilizeZone, bacteriaOf, BACT_FOUNDER } from './microbes.js';
+
+// v0.22 "Web of Life": the decomposer layer is living — re-export its
+// ledger API so world.js stays the sim's facade.
+export { tickMicrobes, decompMultiplier, sterilizeZone, bacteriaOf };
 
 export const DAY_LENGTH = 300; // seconds per full day/night cycle
 
@@ -158,15 +163,17 @@ export function createWorld(seed = 1) {
     // v0.14 "Voices": the waste cycle — digestion's byproduct returns to
     // the soil. soil[biome] = { waste, fertility }. v0.18: keyed by the 8
     // biome keys — the detritus loop closes locally per biome.
+    // v0.22 "Web of Life": each zone also carries bacterial biomass — the
+    // living decomposer layer (see microbes.js).
     soil: {
-      arctic: { waste: 0, fertility: 0.5 },
-      mountains: { waste: 0, fertility: 0.5 },
-      jungle: { waste: 0, fertility: 0.5 },
-      plains: { waste: 0, fertility: 0.5 },
-      desert: { waste: 0, fertility: 0.5 },
-      shallows: { waste: 0, fertility: 0.5 },
-      archipelago: { waste: 0, fertility: 0.5 },
-      deep: { waste: 0, fertility: 0.5 },
+      arctic: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
+      mountains: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
+      jungle: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
+      plains: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
+      desert: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
+      shallows: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
+      archipelago: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
+      deep: { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER },
     },
   };
   // Climb links: pairs of platforms whose x-ranges overlap and whose
@@ -989,8 +996,11 @@ export function tickSoil(world, dt) {
   for (const b of BIOMES) {
     const s = world.soil[b.key];
     if (!s) continue;
-    // Decomposition: raw waste becomes fertility.
-    const conv = Math.min(s.waste, s.waste * SOIL_DECAY * dt);
+    // Decomposition: raw waste becomes fertility — at the rate the
+    // zone's bacteria set (v0.22 "Web of Life": the decomposer layer is
+    // living; at founder biomass the multiplier is exactly 1.0, so all
+    // pre-v0.22 soil behavior is preserved).
+    const conv = Math.min(s.waste, s.waste * SOIL_DECAY * decompMultiplier(world, b.key) * dt);
     s.waste -= conv;
     s.fertility = Math.min(SOIL_FERT_MAX, s.fertility + conv * SOIL_CONV_EFF);
     // Leaching: unused fertility washes out toward the baseline.
@@ -1420,7 +1430,10 @@ export function tickWorld(world, dt) {
   // once per tick, after the plants have eaten from it.
   // v0.14.1: leaf litter sheds before decomposition runs, so shed mass
   // composts the same tick it falls.
+  // v0.22: the bacterial population ticks first — it sets the
+  // decomposition rate tickSoil then uses.
   shedLitter(world, dt);
+  tickMicrobes(world, dt);
   tickSoil(world, dt);
 
   // v0.14.1: rot composts — see compostRot. (Only nest-cache fruit, scraps,
