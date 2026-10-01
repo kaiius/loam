@@ -12,7 +12,13 @@ import { createRenderer, render } from './render/renderer.js';
 import { createUI } from './ui/ui.js';
 
 const canvas = document.getElementById('game');
-const world = bindWorld(createWorld((Date.now() % 100000) | 0));
+// v0.24: deterministic seed override for the dist smoke test. The browser
+// keeps its random world per load; only dist-smoke.mjs sets
+// window.__CANOPY_SEED before the bundle runs, so the suite is deterministic.
+const bootSeed = (typeof window !== 'undefined' && typeof window.__CANOPY_SEED === 'number')
+  ? (window.__CANOPY_SEED | 0)
+  : ((Date.now() % 100000) | 0);
+const world = bindWorld(createWorld(bootSeed));
 populateWorld(world);
 
 const renderer = createRenderer(canvas);

@@ -29,8 +29,8 @@ function makeElement() {
     children: [],
     dataset: {},
     classList: { add() {}, remove() {}, toggle() {} },
-    appendChild(c) { el.children.push(c); return c; },
-    remove() {},
+    appendChild(c) { el.children.push(c); c.parentNode = el; return c; },
+    remove() { const p = el.parentNode; if (p) { const i = p.children.indexOf(el); if (i >= 0) p.children.splice(i, 1); el.parentNode = null; } },
     get firstChild() { return el.children[0]; }, // real DOM has firstChild
     addEventListener() {},
     querySelector() { return makeElement(); },
@@ -60,6 +60,9 @@ global.document = {
   getElementById: () => canvasEl,
 };
 global.performance = { now: () => Date.now() };
+// v0.24: pin the world seed so the suite is deterministic (main.js honors
+// window.__CANOPY_SEED; the browser boot keeps its Date.now() seed).
+global.window.__CANOPY_SEED = 1;
 let rafCb = null;
 global.requestAnimationFrame = (cb) => { rafCb = cb; return 1; };
 

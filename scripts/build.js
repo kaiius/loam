@@ -11,6 +11,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MODULES = [
   'src/sim/rng.js',
   'src/sim/biomes.js', // v0.18 "Realms": pure geography — before creature.js/world.js/renderer.js (TDZ)
+  'src/sim/weather.js', // v0.23 "Weather": climate field — before creature.js/world.js (TDZ)
   'src/sim/genome.js',
   'src/sim/evodevo.js', // v0.17 "Bauplan": the developmental program
   'src/sim/plantgenome.js',
