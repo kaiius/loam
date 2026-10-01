@@ -162,6 +162,14 @@ export function describeEntity(world, obj) {
         note: 'The world as material: creatures shove pebbles by collision; heavy stones resist. Not decoration.',
       };
     }
+    case 'stick': {
+      return {
+        title: 'Stick', subtitle: `fallen branch #${obj.id}`,
+        rows: [['Kind', '🪵 Graspable timber'], ['Weight', Number(obj.weight ?? 0.7).toFixed(2)], ['Hardness', Number(obj.hardness ?? 0.4).toFixed(2)], ['Zone', observerZoneName(world, obj.x)]],
+        bars: [],
+        note: 'A tanglekin with graspPairs ≥ 1 can pick this up (grasp), wield it (carry), and drop it. Timber is light but soft — a poor hammer, an honest start.',
+      };
+    }
     case 'toy': {
       return {
         title: obj.kind === 'beacon' ? 'Exam beacon' : 'Ball',

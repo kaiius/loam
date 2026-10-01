@@ -43,9 +43,12 @@ export const ACTIONS = [
   'drink', // drink adjacent water — restores hydration (v0.18 Realms)
   'bask', // stationary sunning — restores coreTemp in warmth (v0.18 Realms)
   'dig', // dig at the ground — unearths buried food (v0.18 Realms)
+  'grasp', // pick up the nearest manipulable object within reach (v0.20 Hands)
+  'carry', // wield what is held — the strike-with-object lives here (v0.20 Hands)
+  'drop', // release the held object with the carrier's velocity (v0.20 Hands)
 ];
 
-export const N_IN = 33; // 32 senses + bias... see senseVector
+export const N_IN = 35; // 34 senses + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -58,7 +61,7 @@ const MIN_ASSOC = 16; // pruning never goes below this
 //           isAdult, illness, homeDist, kinNear, bondNear,
 //           climbUp, climbDown, groomNear, jumpNear, callHeard, callPitch,
 //           wasteOdor, airborne, farLedge, submerged, waterNear,
-//           thirst, cold, heat, buriedNear, bias]
+//           thirst, cold, heat, buriedNear, objectNear, heldWeight, bias]
 // v0.12 rule kept: never renumber. New senses append before the bias.
 export function senseVector(s) {
   return [
@@ -69,7 +72,9 @@ export function senseVector(s) {
     s.climbUp || 0, s.climbDown || 0, s.groomNear || 0, s.jumpNear || 0,
     s.callHeard || 0, s.callPitch || 0, s.wasteOdor || 0,
     s.airborne || 0, s.farLedge || 0, s.submerged || 0, s.waterNear || 0,
-    s.thirst || 0, s.cold || 0, s.heat || 0, s.buriedNear || 0, 1,
+    s.thirst || 0, s.cold || 0, s.heat || 0, s.buriedNear || 0,
+    s.objectNear || 0, s.heldWeight || 0, // v0.20: the hands senses
+    1,
   ];
 }
 
@@ -152,6 +157,9 @@ export function createBrain(pheno, rng) {
   biasM[17] = 0.05; // drink — water is worth a nudge
   biasM[18] = 0.02; // bask — a whisper of sun-seeking
   biasM[19] = 0.02; // dig — scratching at dirt starts as a whisper
+  biasM[20] = 0.02; // grasp — hands are curious (v0.20 Hands)
+  biasM[21] = 0; // carry — wielding unheld nothing is silence
+  biasM[22] = 0.02; // drop — the put-down whisper (v0.20 Hands)
 
   return {
     nAssoc,

@@ -5,9 +5,9 @@ import { phenotype, markLocus } from './genome.js';
 import { createBiochem, tickBiochem, ageStage, stageSize, isDead, mood, coldSense, heatSense } from './biochem.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
-import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY } from './culture.js';
+import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY, foundCraft, CRAFT_USES, CRAFT_WINDOW, CRAFT_RADIUS } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
-import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION } from './world.js';
+import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, mineralType, addPebble, addStick } from './world.js';
 import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, pushContextWindow, hearerSalientContext, lexiconDistance } from './language.js';
 import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA } from './evodevo.js';
 // v0.18 "Realms": the biome map — region layout, temperature fields,
@@ -151,7 +151,35 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     gut: 0,
     flinchT: 0, // seconds since last injury — drives the flinch flash
     clashCooldown: 0, // per-creature refractory so spikes can't machine-gun
+    // v0.20 "Hands": the hand. held is null or { material, weight,
+    // hardness, sharpness, flammability, wear } — properties only, never
+    // item types (termite logic: the engine never knows a 'hammer').
+    // craftLog records successful tool uses for tradition invention.
+    held: null,
+    craftLog: [],
   };
+}
+
+// v0.20 "Hands": nearest manipulable object within grasp reach — shared
+// by the objectNear sense and the grasp action. Returns { obj, kind, dist }
+// or null. Pebbles and sticks are grasped whole; mineral deposits yield a
+// sample (amount -= 1, mirroring the observer's digMineral) while the
+// deposit stays. Same platform only; reach is groomReach (arm reach).
+function nearestGraspable(c, world) {
+  const reach = c.pheno.groomReach || 40;
+  let best = null;
+  const consider = (obj, kind, x) => {
+    if (obj.platformIndex !== c.platformIndex) return;
+    const d = Math.abs(x - c.x);
+    if (d > reach) return;
+    if (!best || d < best.dist) best = { obj, kind, dist: d };
+  };
+  for (const p of world.pebbles || []) consider(p, 'pebble', p.x);
+  for (const s of world.sticks || []) consider(s, 'stick', s.x);
+  for (const m of world.minerals || []) {
+    if (m.amount > 0) consider(m, 'mineral', m.x);
+  }
+  return best;
 }
 
 export function creatureRadius(c) {
@@ -416,6 +444,16 @@ export function gatherSenses(c, world) {
     }
     if (bd <= BURIED_NEAR_RANGE) buriedNear = 1 - bd / BURIED_NEAR_RANGE;
   }
+  // v0.20 "Hands": objectNear (sense 32) — the grasp verb's reader. Nearest
+  // manipulable object within arm reach (graspPairs reach, same platform):
+  // pebbles, sticks, or a mineral deposit with samples left. heldWeight
+  // (sense 33) — 0 empty-handed, else the carried object's weight.
+  let objectNear = 0;
+  {
+    const grasp = nearestGraspable(c, world);
+    if (grasp) objectNear = 1 - Math.min(1, grasp.dist / (c.pheno.groomReach || 40));
+  }
+  const heldWeight = c.held ? clamp01(c.held.weight || 0) : 0;
   const senses = {
     _range: range, // px base for dist normalization (used by contagion/mating checks)
     hunger: b.hunger,
@@ -438,6 +476,7 @@ export function gatherSenses(c, world) {
     cold: coldSense(b, c.pheno),
     heat: heatSense(b, c.pheno),
     buriedNear,
+    objectNear, heldWeight, // v0.20: the hands senses
     _heardCall: heard.call || null, // v0.16: the full acoustic event for the lexicon
     wasteOdor: wasteOdorOf(world, c.x), // v0.14: disgust — the smell of fouled ground
     _alarmHeard: heard.alarm, // v0.14: alarm calls reassure — fear drains slightly
@@ -801,6 +840,66 @@ export function maybeFoundGrove(c, world) {
   const t = foundGrove(cu, c, cx, GROVE_RADIUS, now, c.generation, world.rng);
   if (t) world.events.push({ type: 'traditionFounded', name: t.name, creature: c, t: now });
   return t;
+}
+
+// v0.20 "Hands": nearest other creature within arm reach — the strike's
+// target. Mirrors the spatial query in gatherSenses.
+function nearestCreatureInReach(c, world) {
+  const reach = c.pheno.groomReach || 40;
+  const spatial = world._spatial && world._spatial.get(c.platformIndex);
+  if (spatial) {
+    const hit = nearestSpatial(spatial, c.x, reach, c.id);
+    return hit ? hit.obj : null;
+  }
+  const hit = nearest(world.creatures, c.x, c.platformIndex, reach, c.id);
+  return hit ? hit.obj : null;
+}
+
+// v0.20 "Hands": craft-tradition invention — the grove machinery's twin.
+// Successful tool uses clustered in space+time, same material + pattern,
+// gate on curiosity. Tool culture founds exactly the way food culture
+// does; both share the honest MAX_TRADITIONS pool (no sub-cap).
+export function maybeFoundCraft(c, world) {
+  const now = world.time;
+  const recent = (c.craftLog || []).filter((e) =>
+    now - e.t < CRAFT_WINDOW && e.material === (c.held && c.held.material) && e.pattern === 'strike');
+  if (recent.length < CRAFT_USES) return null;
+  let cx = 0;
+  for (const e of recent) cx += e.x;
+  cx /= recent.length;
+  for (const e of recent) {
+    if (Math.abs(e.x - cx) > CRAFT_RADIUS) return null;
+  }
+  if (!world.rng.chance(0.04 + 0.16 * (c.pheno.curiosity ?? 0.5))) return null;
+  const t = mineralType(c.held.material);
+  const tr = foundCraft(world.culture, c, c.held.material, t ? t.name : c.held.material, 'strike', now, c.generation, world.rng);
+  if (tr) {
+    world.events.push({ type: 'traditionFounded', name: tr.name, creature: c, t: now });
+    c.craftLog = [];
+  }
+  return tr;
+}
+
+// v0.20 "Hands": log a successful tool use; check invention; let witnesses
+// adopt the carrier's craft traditions. A young creature that watches a
+// carrier strike with a stone adopts the craft tradition — the horizontal
+// channel, no teacher required (decision 2026-09-30: accident → tradition
+// primary, teacher last resort).
+function logCraftUse(c, world) {
+  if (!c.held) return;
+  c.craftLog.push({ x: c.x, t: world.time, material: c.held.material, pattern: 'strike' });
+  maybeFoundCraft(c, world);
+  for (const w of world.creatures) {
+    if (!w.alive || w === c) continue;
+    if (w.platformIndex !== c.platformIndex) continue;
+    if (Math.abs(w.x - c.x) > OBSERVE_RANGE) continue;
+    for (const tid of c.traditions || []) {
+      const tr = getTradition(world.culture, tid);
+      if (tr && tr.kind === 'craft' && adoptTradition(world.culture, w, tr, 0.35, world.rng)) {
+        world.events.push({ type: 'traditionAdopted', creature: w, tradition: tr, t: world.time });
+      }
+    }
+  }
 }
 
 // v0.14 "Voices": ground the call type in the caller's real state — never
@@ -1271,6 +1370,114 @@ function executeAction(c, world, dt, s) {
       }
       break;
     }
+    case 'grasp': {
+      // v0.20 "Hands": pick up the nearest manipulable object within reach.
+      // Requires graspPairs >= 1 — anatomy gates the verb, not behavior:
+      // no hands, no hands. Already holding → nothing (put it down first).
+      // Pebbles/sticks leave the world; mineral samples decrement the
+      // deposit. The held object is properties only — the hand never knows
+      // a tool type (termite logic, design §9.6).
+      c.actionLabel = 'grasping';
+      c._active = 0.3;
+      if (!c.held && (c.pheno.graspPairs || 0) >= 1) {
+        const grasp = nearestGraspable(c, world);
+        if (grasp) {
+          const { obj, kind } = grasp;
+          const propsOf = (key, fallback) => {
+            const t = mineralType(key);
+            return t ? { weight: t.weight, hardness: t.hardness, sharpness: t.sharpness, flammability: t.flammability }
+              : fallback;
+          };
+          if (kind === 'pebble') {
+            world.pebbles = world.pebbles.filter((p) => p !== obj);
+            c.held = { material: 'stone', wear: 0, ...propsOf('stone', { weight: 0.9, hardness: 0.8, sharpness: 0.2, flammability: 0 }) };
+          } else if (kind === 'stick') {
+            world.sticks = world.sticks.filter((s) => s !== obj);
+            c.held = {
+              material: obj.material || 'timber', wear: 0,
+              weight: obj.weight ?? 0.7, hardness: obj.hardness ?? 0.4,
+              sharpness: obj.sharpness ?? 0.1, flammability: obj.flammability ?? 0.9,
+            };
+          } else if (kind === 'mineral' && obj.amount > 0) {
+            obj.amount -= 1;
+            c.held = { material: obj.mineralKey, wear: 0, ...propsOf(obj.mineralKey, { weight: 0.5, hardness: 0.5, sharpness: 0.3, flammability: 0 }) };
+          }
+          if (c.held) c.reward += 0.1; // the hand learns it took something
+        }
+      }
+      c.actionTimer = 0;
+      break;
+    }
+    case 'carry': {
+      // v0.20 "Hands": the wield verb — 'carry' executed under threat while
+      // holding IS the strike-with-object (design §1.5: no fourth verb).
+      // Empty-handed: a bare shove, honest and weak. Holding with a
+      // creature in reach: impulse + injury scaled by weight × hardness,
+      // wear on the tool (nothing is free forever). Consequences teach:
+      // the threat leaves → fear drains → relief. The design names no
+      // 'hammer' and no useTool — a strike is just carry + physics.
+      c.actionLabel = c.held ? 'wielding' : 'reaching';
+      c._active = 0.5;
+      const target = nearestCreatureInReach(c, world);
+      if (target) {
+        const dir = Math.sign(target.x - c.x) || c.facing;
+        if (c.held) {
+          const held = c.held;
+          const force = 1 + held.weight * held.hardness * 2;
+          target.vx = (target.vx || 0) + dir * 40 * force;
+          target.vy = (target.vy || 0) - 30 * force;
+          target.biochem.injury = clamp01(target.biochem.injury + 0.02 + 0.10 * held.weight * held.hardness);
+          target.flinchT = 0;
+          held.wear = (held.wear || 0) + 0.08 * (0.3 / Math.max(0.1, held.hardness));
+          if (held.wear >= 1) {
+            // Breakage — never trash: degrades into a lesser sample,
+            // still held. The tool's life is a slope, not a cliff.
+            held.weight *= 0.6; held.hardness *= 0.8; held.wear = 0;
+            world.events.push({ type: 'toolBroke', creature: c, t: world.time });
+          }
+          logCraftUse(c, world); // invention + witness adoption
+        } else {
+          // Bare shove: impulse only, no injury (design §1.5 — "a weak
+          // shove at most"). The hammer must out-damage the hand honestly.
+          target.vx = (target.vx || 0) + dir * 40;
+          target.flinchT = 0;
+        }
+        c.actionTimer = 0;
+      }
+      break;
+    }
+    case 'drop': {
+      // v0.20 "Hands": release the held object with the carrier's velocity.
+      // It lands as a pebble (stone/mineral) or stick (timber) carrying its
+      // material properties — conservation of matter. Samples don't rejoin
+      // a deposit; dropped sticks get a fresh rot clock.
+      c.actionLabel = 'dropping';
+      if (c.held) {
+        const held = c.held;
+        const dropX = c.x + (c.facing || 1) * 20;
+        if (held.material === 'timber' || held.material === 'driftwood') {
+          const s = addStick(world, dropX, c.platformIndex);
+          if (s) {
+            s.vx = c.vx || 0; s.vy = (c.vy || 0) - 60;
+            s.born = world.time;
+            s.material = held.material; s.weight = held.weight;
+            s.hardness = held.hardness; s.sharpness = held.sharpness;
+            s.flammability = held.flammability;
+          }
+        } else {
+          const p = addPebble(world, dropX, c.platformIndex);
+          if (p) {
+            p.vx = c.vx || 0; p.vy = (c.vy || 0) - 60;
+            p.material = held.material; p.hardness = held.hardness;
+            p.weight = held.weight;
+          }
+        }
+        c.held = null;
+        c._active = 0.2;
+      }
+      c.actionTimer = 0;
+      break;
+    }
     case 'wander':
     default:
       c.actionLabel = 'wandering';
@@ -1443,7 +1650,10 @@ export function updateCreature(c, world, dt) {
     grooming: wasGrooming,
     groomed: wasGroomed,
     ate,
-    active: c._active || 0,
+    // v0.20 "Hands": carrying is heavy — all exertion while holding costs
+    // ×(1 + weight) through the bloodSugar channel (design §4). The
+    // exertion term stays linear; a heavy stone just moves you up the line.
+    active: Math.min(2, (c._active || 0) * (c.held ? 1 + (c.held.weight || 0) : 1)),
     threat,
     homesick: homeDist * (pheno.instHomeSeek !== undefined ? pheno.instHomeSeek : 0.5),
     develop: (devStage === 'baby' || devStage === 'child') ? (pheno.developDrain || 0) : 0,

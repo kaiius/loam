@@ -281,6 +281,12 @@ export function render(r, world, ui, t) {
     if (ui.selected === pb) drawInspectRing(ctx, pb.x, pb.y - pb.r * 0.45, pb.r + 8, pb.r + 6, t);
   }
 
+  // v0.20 "Hands": sticks — fallen branches, graspable timber.
+  for (const st of world.sticks || []) {
+    drawStick(ctx, st);
+    if (ui.selected === st) drawInspectRing(ctx, st.x, st.y - 6, 20, 14, t);
+  }
+
   // v0.17.1 "Touch": mineral deposits — crystals and clay seams, drawn from
   // the deposit's own color. Depleted deposits draw hollow (honest).
   for (const m of world.minerals || []) {
@@ -788,6 +794,26 @@ function drawPebble(ctx, pb) {
   ctx.beginPath();
   ctx.ellipse(-pb.r * 0.2, -pb.r * 0.18, pb.r * 0.55, pb.r * 0.34, -0.3, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+}
+
+// v0.20 "Hands": sticks — a fallen branch, drawn as a tapered timber segment.
+// Deterministic angle from the stick id; the butt end is thicker.
+function drawStick(ctx, st) {
+  ctx.save();
+  ctx.translate(st.x, st.y - 6);
+  ctx.rotate(Math.sin(st.id * 5.3) * 0.5 - 0.2);
+  const len = st.len || 34;
+  ctx.fillStyle = '#6b4a2f';
+  ctx.beginPath();
+  ctx.moveTo(-len / 2, -3);
+  ctx.lineTo(len / 2, -1.5);
+  ctx.lineTo(len / 2, 1.5);
+  ctx.lineTo(-len / 2, 3);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#7d5a3a';
+  ctx.fillRect(-len / 2, -3, 4, 6); // cut end
   ctx.restore();
 }
 

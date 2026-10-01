@@ -107,7 +107,8 @@ export function createWorld(seed = 1) {
     eggs: [],
     creatures: [],
     pebbles: [], // v0.9: pushable stones — the world as material
-    minerals: [], // v0.17.1 "Touch": static mineral deposits — observer-only until the technology release
+    minerals: [], // v0.17.1 "Touch": static mineral deposits — creature-usable as of v0.20
+    sticks: [], // v0.20 "Hands": fallen branches — loose graspable objects, timber by material
     events: [], // { type, creature?, t } — consumed by UI
     culture: createCulture(), // v0.7: the tradition registry — inheritance that isn't DNA
     lineage: new Map(), // v0.10: every creature ever born — { id: { id, name, parents, generation, bornAt, traits } }. Dead ancestors stay resolvable for the lineage view.
@@ -371,15 +372,19 @@ export function addPebble(world, x, platformIndex) {
 // in the world, labeled as such, rather than vanishing.
 // CREATURES CANNOT USE MINERALS YET — see src/sim/observer.js.
 export const MINERAL_TYPES = [
-  { key: 'flint', name: 'Flint', color: '#4a4a52', hardness: 0.9, blurb: 'Sharp-edged stone. Future toolheads will want this.' },
-  { key: 'quartz', name: 'Quartz', color: '#cfd8e6', hardness: 0.7, blurb: 'Glassy crystal. Catches the light; good for nothing yet.' },
-  { key: 'clay', name: 'Clay', color: '#a5715c', hardness: 0.3, blurb: 'Soft earth. Malleable — future hands could shape it.' },
+  // v0.20 "Hands": materials gain the full property set — hardness,
+  // weight, sharpness, flammability (v0.21's fuel, laid down inert here),
+  // malleability (clay — shaping waits for pottery, v+1). Materials don't
+  // evolve; only their use does. A tool is never a coded item — it is a
+  // carried object whose properties change what the carrier's verbs do.
+  { key: 'flint', name: 'Flint', color: '#4a4a52', hardness: 0.9, weight: 0.5, sharpness: 0.9, flammability: 0.0, malleability: 0.0, blurb: 'Sharp-edged stone. The blade material — hands will want this.' },
+  { key: 'quartz', name: 'Quartz', color: '#cfd8e6', hardness: 0.7, weight: 0.4, sharpness: 0.6, flammability: 0.0, malleability: 0.0, blurb: 'Glassy crystal. Catches the light — and holds an edge.' },
+  { key: 'clay', name: 'Clay', color: '#a5715c', hardness: 0.3, weight: 0.5, sharpness: 0.0, flammability: 0.0, malleability: 1.0, blurb: 'Soft earth. Malleable — shaping waits for fire (pottery, v+1).' },
   // v0.18 §12.2: per-biome resource sets — timber stands, building stone,
-  // driftwood currents. Same deposit entity shape as v0.17.1 minerals;
-  // observer-only until the technology release, same as the rest.
-  { key: 'timber', name: 'Timber', color: '#6b4a2f', hardness: 0.4, blurb: 'Fallen wood. The shipwright\u2019s material, if anyone ever becomes one.' },
-  { key: 'stone', name: 'Stone', color: '#8a8a8a', hardness: 0.8, blurb: 'Building stone. Shelter waits inside the heavy stuff.' },
-  { key: 'driftwood', name: 'Driftwood', color: '#9c7a54', hardness: 0.35, blurb: 'Sea-smoothed wood. It floats — that is the whole affordance.' },
+  // driftwood currents. Creature-usable as of v0.20.
+  { key: 'timber', name: 'Timber', color: '#6b4a2f', hardness: 0.4, weight: 0.7, sharpness: 0.1, flammability: 0.9, malleability: 0.0, blurb: 'Fallen wood. Haft material — and fuel, when fire comes.' },
+  { key: 'stone', name: 'Stone', color: '#8a8a8a', hardness: 0.8, weight: 0.9, sharpness: 0.2, flammability: 0.0, malleability: 0.0, blurb: 'Building stone. Shelter waits inside the heavy stuff — and hammers.' },
+  { key: 'driftwood', name: 'Driftwood', color: '#9c7a54', hardness: 0.35, weight: 0.3, sharpness: 0.0, flammability: 0.7, malleability: 0.0, blurb: 'Sea-smoothed wood. It floats — that is the whole affordance.' },
 ];
 
 export function mineralType(key) {
@@ -394,10 +399,38 @@ export function addMineral(world, x, platformIndex, typeKey) {
     kind: 'mineral', id: oid(), x, platformIndex, y: plat.y,
     mineralKey: type.key, mineralName: type.name,
     color: type.color, hardness: type.hardness, blurb: type.blurb,
+    // v0.20 "Hands": the full property set rides the deposit — a grasped
+    // sample inherits these. flammability is inert until v0.21 lights it.
+    weight: type.weight, sharpness: type.sharpness,
+    flammability: type.flammability, malleability: type.malleability,
     amount: 4, // samples per deposit
   };
   world.minerals.push(m);
   return m;
+}
+
+// v0.20 "Hands": sticks — fallen branches on the forest floor. Loose
+// objects like pebbles (graspable whole), timber by material. Spawned by
+// worldgen at fixed positions (determinism: no rng, like minerals);
+// they rot back to litter after STICK_ROT_S if unused — nothing
+// accumulates forever. (The dead-tree decay chain hooks in when plant
+// mortality exists; until then, worldgen is the source.)
+export const STICK_ROT_S = 5400; // 90 sim-minutes of lying around
+export function addStick(world, x, platformIndex) {
+  const plat = world.platforms[platformIndex];
+  if (!plat) return null;
+  const t = mineralType('timber');
+  const s = {
+    kind: 'stick', id: oid(), x, platformIndex, y: plat.y,
+    vx: 0, vy: 0, r: 12,
+    material: 'timber',
+    hardness: t.hardness, weight: t.weight, sharpness: t.sharpness,
+    flammability: t.flammability,
+    born: world.time,
+    dragged: false, // the observer's hand, like pebbles
+  };
+  world.sticks.push(s);
+  return s;
 }
 
 // v0.14: postzygotic barrier — hybrid viability falls as the parents'
@@ -1329,6 +1362,39 @@ export function tickWorld(world, dt) {
     if (p.x < plat.x1 + p.r) { p.x = plat.x1 + p.r; p.vx = Math.abs(p.vx) * 0.4; }
     if (p.x > plat.x2 - p.r) { p.x = plat.x2 - p.r; p.vx = -Math.abs(p.vx) * 0.4; }
   }
+  // v0.20 "Hands": sticks — same light-body physics as pebbles (friction,
+  // bounds, one-way creature coupling via the shared kick loop below), plus
+  // rot: an unused stick becomes litter after STICK_ROT_S. Carried sticks
+  // leave the array (they're in a hand, not on the ground); dropped ones
+  // come back with a fresh born stamp.
+  for (const s of world.sticks) {
+    if (s.dragged) continue;
+    stepLightBody(s, dt);
+    const plat = world.platforms[s.platformIndex];
+    s.x += s.vx * dt;
+    s.vx *= 1 - Math.min(1, 3 * dt);
+    if (Math.abs(s.vx) < 2) s.vx = 0;
+    if (s.x < plat.x1 + s.r) { s.x = plat.x1 + s.r; s.vx = Math.abs(s.vx) * 0.4; }
+    if (s.x > plat.x2 - s.r) { s.x = plat.x2 - s.r; s.vx = -Math.abs(s.vx) * 0.4; }
+  }
+  const before = world.sticks.length;
+  if (before > 0) {
+    const rotted = [];
+    world.sticks = world.sticks.filter((s) => {
+      if (world.time - s.born < STICK_ROT_S) return true;
+      rotted.push(s);
+      return false;
+    });
+    // Rotten sticks become litter — soil waste in their zone, the decay
+    // chain's honest end. Nothing accumulates forever.
+    if (world.soil && rotted.length > 0) {
+      for (const s of rotted) {
+        const zone = zoneAt(s.x);
+        const soil = zone && world.soil[zone.key];
+        if (soil) soil.waste = Math.min(1, (soil.waste || 0) + 0.04);
+      }
+    }
+  }
   for (const c of world.creatures) {
     if (!c.alive) continue;
     const cr = creatureRadius(c);
@@ -1343,6 +1409,17 @@ export function tickWorld(world, dt) {
         const heaviness = p.r / 17;
         p.vx += dir * kick * dt / heaviness;
         p.x += dir * overlap;
+      }
+    }
+    // v0.20 "Hands": sticks kick like pebbles — same one-way coupling.
+    for (const s of world.sticks) {
+      if (s.platformIndex !== c.platformIndex) continue;
+      const dx = s.x - c.x;
+      const overlap = cr + s.r - Math.abs(dx);
+      if (overlap > 0) {
+        const dir = dx === 0 ? c.facing : Math.sign(dx);
+        s.vx += dir * kick * dt / (s.r / 17);
+        s.x += dir * overlap;
       }
     }
   }
@@ -1518,6 +1595,11 @@ export function populate(world) {
   addMineral(world, mx(800), 0, 'clay');    // jungle floor, middle
   addMineral(world, mx(1300), 0, 'flint');  // jungle floor, east side
   addMineral(world, mx(600), 7, 'quartz');  // upper branch — the climb is the price
+  // v0.20 "Hands": fallen branches on the jungle floor — graspable timber.
+  // Fixed positions (determinism, like minerals). They rot if unused.
+  addStick(world, mx(450), 0);
+  addStick(world, mx(950), 0);
+  addStick(world, mx(1150), 0);
   // Four founder tanglekins with fresh random genomes, born in the lower
   // branches. (v0.5: was two. Two founders made every lineage a coin flip —
   // four founders (two breeding pairs) give the population the demographic

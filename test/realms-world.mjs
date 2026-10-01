@@ -120,7 +120,10 @@ test('v0.18: platformIndexAt finds the jungle floor', () => {
 test('v0.18: populateGenesis spawns 8 cohorts, 3–5 creatures each, both sexes', () => {
   const world = bindWorld(createWorld(42));
   populateGenesis(world);
-  assert.equal(world.creatures.length, 30);
+  // Total is 8 cohorts × 3–5; the exact number is rng-derived (v0.20: brain
+  // N_IN change shifted the stream — pin the range, not the roll).
+  assert.ok(world.creatures.length >= 24 && world.creatures.length <= 40,
+    `8 cohorts of 3–5 (got ${world.creatures.length})`);
   assert.equal(GENESIS_COHORTS.length, 8);
   for (const cohort of GENESIS_COHORTS) {
     const members = world.creatures.filter((c) => biomeKeyAt(c.x, 800) === cohort.key);

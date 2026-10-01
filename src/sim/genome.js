@@ -117,6 +117,9 @@ export const CHEM7 = [...CHEM5, 'oxygen', 'hydration'];
 // v0.18 "Realms": thirst 28 (1 − hydration — the felt sense of the new
 // chemical), cold 29, heat 30 (body-state readers, not drives), buriedNear
 // 31 (scent of buried food — the dig verb's reader).
+// v0.20 "Hands": objectNear 32 (a manipulable object within grasp reach —
+// the grasp verb's reader), heldWeight 33 (0 empty-handed, else the
+// carried object's weight — the put-down reflex's reader).
 export const SENSE32 = [
   'hunger', 'tiredness', 'boredom', 'loneliness', 'fear', 'light',
   'foodDist', 'foodDir', 'creatureDist', 'creatureDir', 'toyDist', 'toyDir',
@@ -126,6 +129,7 @@ export const SENSE32 = [
   'wasteOdor', // v0.14: disgust — the smell of fouled ground
   'airborne', 'farLedge', 'submerged', 'waterNear', // v0.17: the body-plan senses
   'thirst', 'cold', 'heat', 'buriedNear', // v0.18: the realms senses
+  'objectNear', 'heldWeight', // v0.20: the hands senses
 ];
 // The pre-v0.17 vocabulary — family-C genes name senses against these
 // indices, which are never renumbered.
@@ -135,6 +139,7 @@ export const ACT20 = [
   'mate', 'wander', 'seekHome', 'climb', 'groom', 'jump', 'vocal',
   'glide', 'brachiate', 'swim', 'dive', // v0.17: the dormant verbs
   'drink', 'bask', 'dig', // v0.18: water, warmth, earth — wired by the realms pass
+  'grasp', 'carry', 'drop', // v0.20: the hands verbs (name ACT20 is historical)
 ];
 // The pre-v0.17 vocabulary — family-E genes name actions against these
 // indices, which are never renumbered.
@@ -384,6 +389,30 @@ export const PLANT_REALMS_LOCI = [
 // (below) — new loci must never shift the main RNG sequence.
 export const REALMS18_KEYS = new Set(GENES.slice(REALMS18_START).map((g) => g.key));
 
+// === GENOME v0.20 "Hands": the manipulation instincts (append-only) =======
+// Three instinct genes (Paul's v0.5 rule: every new action needs one),
+// all founder 0 — the dormant-action pattern. Founder 0 wires at
+// (0 − 0.5) × 2.4 = −1.2: the pathway exists but is inhibited; the verbs
+// sleep until selection wakes them.
+//   instObjectGrasp: objectNear(32) → grasp(20) — pick up what's in reach
+//   instCarryDrop: heldWeight(33) → drop(22) — the put-down reflex;
+//     carrying forever is never selected for
+//   instThreatStrike: fear(4) → carry(21) — threat sense → strike-with-
+//     object. The 'carry' action executed under threat while holding IS
+//     the strike (termite logic: no fourth verb); the hammer discovers
+//     itself when a threatened carrier wields.
+// Dexterity rides existing loci (graspPairs, groomReach, armLength) —
+// no new dexterity gene. Like v0.16/v0.17/v0.18, these loci draw from
+// their own sub-stream in randomGenome.
+const HANDS20_START = GENES.length;
+GENES.push(
+  { key: 'instObjectGrasp', kind: 'float', sense: 32, action: 20, founder: 0 },
+  { key: 'instCarryDrop', kind: 'float', sense: 33, action: 22, founder: 0 },
+  { key: 'instThreatStrike', kind: 'float', sense: 4, action: 21, founder: 0 },
+);
+// === end GENOME v0.20 creature loci =======================================
+export const HANDS20_KEYS = new Set(GENES.slice(HANDS20_START).map((g) => g.key));
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
@@ -435,6 +464,8 @@ export const CHROMOSOMES = [
    'instWasteFlee', // v0.14: disgust — waste-odor → flee
    // v0.18 "Realms": the water/heat/earth instincts ride the instinct chromosome
    'instWaterDrink', 'instThirstDrink', 'instColdBask', 'instDig',
+   // v0.20 "Hands": the manipulation instincts — grasp, wield, put down
+   'instObjectGrasp', 'instCarryDrop', 'instThreatStrike',
    ..._chrS],
   // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
   [..._chrD, ..._chrC],
@@ -511,6 +542,7 @@ function hashPin(pin, salt) {
 const PIN_SALT_LANG = 0x16; // v0.16 language pass
 const PIN_SALT_EVO = 0x17; // v0.17 evo-devo pass
 const PIN_SALT_REALMS = 0x18; // v0.18 realms pass
+const PIN_SALT_HANDS = 0x20; // v0.20 hands pass
 export function randomGenome(rng, opts = {}) {
   // opts.pinSub (number): when set, the language (v0.16), evo-devo (v0.17)
   // and realms (v0.18) sub-stream passes seed from hash(pin, passSalt)
@@ -546,14 +578,15 @@ export function randomGenome(rng, opts = {}) {
   // instead of the content hashes.
   const isNew17 = (k) => EVO17_KEYS.has(k);
   const isNew18 = (k) => REALMS18_KEYS.has(k);
+  const isNew20 = (k) => HANDS20_KEYS.has(k);
   for (const gene of GENES) {
-    if (gene.key.startsWith('lex') || isNew17(gene.key) || isNew18(gene.key)) continue;
+    if (gene.key.startsWith('lex') || isNew17(gene.key) || isNew18(gene.key) || isNew20(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
     marks[gene.key] = 1.0;
   }
   let h = 0x1a6c0de;
   for (const gene of GENES) {
-    if (gene.key.startsWith('lex') || isNew17(gene.key) || isNew18(gene.key)) continue;
+    if (gene.key.startsWith('lex') || isNew17(gene.key) || isNew18(gene.key) || isNew20(gene.key)) continue;
     for (const a of alleles[gene.key]) h = (Math.imul(h, 31) + Math.floor(a * 1e9)) | 0;
   }
   const langRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_LANG) : h >>> 0);
@@ -564,7 +597,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h2 = 0x5eed17;
   for (const gene of GENES) {
-    if (isNew17(gene.key) || isNew18(gene.key)) continue;
+    if (isNew17(gene.key) || isNew18(gene.key) || isNew20(gene.key)) continue;
     for (const a of alleles[gene.key]) h2 = (Math.imul(h2, 31) + Math.floor(a * 1e9)) | 0;
   }
   const evoRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_EVO) : h2 >>> 0);
@@ -575,13 +608,26 @@ export function randomGenome(rng, opts = {}) {
   }
   let h3 = 0x18ea1d;
   for (const gene of GENES) {
-    if (isNew18(gene.key)) continue;
+    if (isNew18(gene.key) || isNew20(gene.key)) continue;
     for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
   }
   const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
   for (const gene of GENES) {
     if (!isNew18(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, realmsRng), randomAllele(gene, realmsRng)];
+    marks[gene.key] = 1.0;
+  }
+  // v0.20 "Hands": the manipulation instincts draw from their own
+  // sub-stream — new loci never shift the main RNG sequence.
+  let h4 = 0x20a05;
+  for (const gene of GENES) {
+    if (isNew20(gene.key)) continue;
+    for (const a of alleles[gene.key]) h4 = (Math.imul(h4, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const handsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_HANDS) : h4 >>> 0);
+  for (const gene of GENES) {
+    if (!isNew20(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, handsRng), randomAllele(gene, handsRng)];
     marks[gene.key] = 1.0;
   }
   // v0.18: allele overrides — applied after the draws, so a sweep can pin

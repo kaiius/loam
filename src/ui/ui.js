@@ -351,8 +351,8 @@ export function createUI(canvas, renderer, world) {
     if (hit && hit.type !== 'none') {
       // v0.17.1 "Touch": plants are rooted and mineral deposits are static —
       // they can be inspected but not dragged. Everything else (creatures,
-      // eggs, toys, loose food, pebbles) the hand can move.
-      const draggable = ['creature', 'teacher', 'egg', 'toy', 'food', 'pebble'].includes(hit.type);
+      // eggs, toys, loose food, pebbles, sticks) the hand can move.
+      const draggable = ['creature', 'teacher', 'egg', 'toy', 'food', 'pebble', 'stick'].includes(hit.type);
       ui.dragging = { hit, moved: false, sx: e.clientX, sy: e.clientY, draggable };
       if (hit.obj.dragged !== undefined) hit.obj.dragged = true;
       // v0.14: grabbing the teacher is tactile contact — it feels the hand.
@@ -623,13 +623,16 @@ function hitTest(world, x, y) {
   for (const t of world.toys) {
     if (Math.hypot(x - t.x, y - (t.y - t.r)) < t.r + 12) return { type: 'toy', obj: t };
   }
-  // v0.17.1 "Touch": everything is inspectable — minerals, pebbles, loose
-  // food, then plants (fruit hit-tests before the tree it hangs in).
+  // v0.17.1 "Touch": everything is inspectable — minerals, pebbles, sticks,
+  // loose food, then plants (fruit hit-tests before the tree it hangs in).
   for (const m of world.minerals || []) {
     if (Math.hypot(x - m.x, y - (m.y - 18)) < 30) return { type: 'mineral', obj: m };
   }
   for (const pb of world.pebbles || []) {
     if (Math.hypot(x - pb.x, y - (pb.y - pb.r * 0.45)) < pb.r + 12) return { type: 'pebble', obj: pb };
+  }
+  for (const st of world.sticks || []) {
+    if (Math.hypot(x - st.x, y - (st.y - 6)) < 22) return { type: 'stick', obj: st };
   }
   for (const f of world.foods) {
     if (Math.hypot(x - f.x, y - (f.y - 12)) < 20) return { type: 'food', obj: f };
@@ -840,7 +843,7 @@ function refreshPanel(panel, ui) {
       <div class="hint2">Keep it safe. It wobbles when hatching is near.</div>`;
     panel.querySelector('#p-close').onclick = () => { ui.setSelected(null); refreshPanel(panel, ui); };
   } else if (sel.kind === 'plant' || sel.kind === 'herb' || sel.kind === 'food' ||
-             sel.kind === 'mineral' || sel.kind === 'pebble' || sel.kind === 'toy' ||
+             sel.kind === 'mineral' || sel.kind === 'pebble' || sel.kind === 'stick' || sel.kind === 'toy' ||
              sel.kind === 'shark' || sel.kind === 'bear') { // v0.18: predators are inspectable too
     // v0.17.1 "Touch": the inspector — every entity gets its honest details,
     // rendered from describeEntity (which only reports what the engine models).

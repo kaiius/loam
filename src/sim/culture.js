@@ -31,6 +31,11 @@ export const GROVE_MEALS = 3; // meals clustered in space+time to invent
 export const GROVE_WINDOW = 180; // seconds the meals must fall inside
 export const GROVE_RADIUS = 150; // px clustering radius for invention
 export const GROVE_NEARBY = 200; // px: don't found a duplicate grove here
+// v0.20 "Hands": craft-tradition invention thresholds — successful tool
+// uses clustered in space+time, mirroring the grove machinery.
+export const CRAFT_USES = 3; // successful uses clustered to invent
+export const CRAFT_WINDOW = 240; // seconds the uses must fall inside
+export const CRAFT_RADIUS = 150; // px clustering radius for invention
 export const TRADITION_VOTE_BUDGET = 0.3; // shared vote budget (cf recall 0.2)
 
 const GROVE_NAMES = ['Grove', 'Run', 'Patch', 'Hollow', 'Thicket', 'Meadow'];
@@ -65,6 +70,36 @@ export function liveTraditions(c, culture) {
 function traditionName(kind, inventorName, rng) {
   if (kind === 'grove') return `${inventorName}'s ${rng.pick(GROVE_NAMES)}`;
   return `${inventorName}'s Way`;
+}
+
+// v0.20 "Hands": invent a craft tradition — a tool-use variant with a
+// material and a verb pattern, e.g. { material: 'stone', pattern: 'strike' }.
+// Clustered successful uses found it (cf. maybeFoundGrove); it shares the
+// MAX_TRADITIONS pool honestly with grove traditions — no sub-cap, no
+// protection for food culture (Joshua's decision, 2026-09-30). If tool
+// culture starves food culture, that is a finding.
+export function foundCraft(culture, inventor, material, materialName, pattern, tick, gen, rng) {
+  if (culture.traditions.length >= MAX_TRADITIONS) return null;
+  for (const t of culture.traditions) {
+    if (t.kind === 'craft' && t.material === material && t.pattern === pattern) return null;
+  }
+  const t = {
+    id: culture.nextId++,
+    kind: 'craft',
+    name: `${inventor.name}'s ${materialName} Way`,
+    material,
+    pattern, // verb pattern, e.g. 'strike' — the engine never names tools
+    inventor: inventor.name,
+    birthTick: tick,
+    birthGen: gen,
+    carriers: new Set([inventor.id]),
+    uses: 0, // times a carrier acted on it
+  };
+  culture.traditions.push(t);
+  culture.founded++;
+  if (!inventor.traditions) inventor.traditions = [];
+  if (!inventor.traditions.includes(t.id)) inventor.traditions.push(t.id);
+  return t;
 }
 
 // Invent a grove tradition at x. Returns the tradition or null (cap reached).
@@ -120,10 +155,17 @@ export function groveAim(c, trad) {
 export function traditionVotes(c, culture, senses) {
   const votes = new Array(ACTIONS.length).fill(0);
   const SEEK = ACTIONS.indexOf('seekFood');
+  const GRASP = ACTIONS.indexOf('grasp'); // v0.20: -1 until Hands wires it
   let total = 0;
   for (const t of liveTraditions(c, culture)) {
     if (t.kind === 'grove' && senses.hunger > 0.35) {
       votes[SEEK] += 0.3;
+      total += 0.3;
+    }
+    // v0.20 "Hands": a craft tradition votes for the grasp instinct when
+    // objects are near — culture teaches the hands what to reach for.
+    if (t.kind === 'craft' && GRASP >= 0 && (senses.objectNear || 0) > 0) {
+      votes[GRASP] += 0.3;
       total += 0.3;
     }
   }
