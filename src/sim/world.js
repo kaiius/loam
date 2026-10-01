@@ -1150,6 +1150,101 @@ export function computeSpecies(world) {
   return snap;
 }
 
+// ---- v0.20 "Species": the living taxonomy ----
+// speciesOverview() turns the clustering snapshots into panel-ready data:
+// one entry per living species with population, range, mean traits, and
+// divergences from the population mean (the "adaptations" view). Pure read
+// of world state — no sim writes, safe to call on every UI refresh.
+export const SPECIES_NEW_WINDOW = 1800; // sim-seconds a species counts as "new"
+export const TRAIT_LABELS = {
+  size: 'Body size', legLength: 'Leg length', spikes: 'Spikes', fur: 'Fur thickness',
+  eyeSize: 'Eye size', mouthSize: 'Mouth size', immunity: 'Immunity',
+  learningRate: 'Learning rate', boldness: 'Boldness', lifespan: 'Lifespan',
+};
+export function speciesOverview(world) {
+  const adults = [];
+  const byId = new Map();
+  let unclustered = 0;
+  const isAdult = (c) => { const st = ageStage(c.biochem, c.pheno); return st === 'adult' || st === 'senior'; };
+  for (const c of world.creatures) {
+    if (!c.alive) continue;
+    if (isAdult(c)) adults.push(c);
+    const sid = c.speciesId;
+    if (sid == null) { unclustered++; continue; }
+    if (!byId.has(sid)) byId.set(sid, []);
+    byId.get(sid).push(c);
+  }
+  // Global adult means — the baseline divergences are measured against.
+  const gMeans = {};
+  for (const k of LINEAGE_TRAITS) {
+    let s = 0, n = 0;
+    for (const c of adults) { const v = c.pheno[k]; if (typeof v === 'number') { s += v; n++; } }
+    gMeans[k] = n ? s / n : 0;
+  }
+  // History: first-seen tick + parent species from split events.
+  const firstSeen = new Map(), parentOf = new Map();
+  for (const e of world.speciesLog || []) {
+    if (e.kind === 'split') {
+      for (const id of e.to || []) if (!parentOf.has(id)) parentOf.set(id, e.from);
+    } else if (e.kind === 'snapshot') {
+      for (const cl of e.clusters || []) if (!firstSeen.has(cl.id)) firstSeen.set(cl.id, e.t);
+    }
+  }
+  const biomeName = (k) => { const b = BIOMES.find((x) => x.key === k); return b ? b.name : k; };
+  const species = [];
+  for (const [id, members] of byId) {
+    const ad = members.filter(isAdult);
+    const basis = ad.length ? ad : members; // trait means over adults when any exist
+    const means = {};
+    for (const k of LINEAGE_TRAITS) {
+      let s = 0, n = 0;
+      for (const c of basis) { const v = c.pheno[k]; if (typeof v === 'number') { s += v; n++; } }
+      means[k] = n ? s / n : 0;
+    }
+    const diets = {};
+    let pitch = 0, pn = 0;
+    const zones = {};
+    let genMin = Infinity, genMax = -Infinity;
+    for (const c of members) {
+      if (typeof c.voicePitch === 'number') { pitch += c.voicePitch; pn++; }
+      const zk = biomeKeyAt(c.x);
+      zones[zk] = (zones[zk] || 0) + 1;
+      const d = c.pheno.diet; if (d) diets[d] = (diets[d] || 0) + 1;
+      const g = c.generation || 0; if (g < genMin) genMin = g; if (g > genMax) genMax = g;
+    }
+    const divergences = [];
+    for (const k of LINEAGE_TRAITS) {
+      const gm = gMeans[k];
+      if (gm !== 0) {
+        const rel = (means[k] - gm) / Math.abs(gm);
+        if (Math.abs(rel) >= 0.15) divergences.push({ trait: k, label: TRAIT_LABELS[k] || k, rel, speciesMean: means[k], globalMean: gm });
+      }
+    }
+    divergences.sort((a, b) => Math.abs(b.rel) - Math.abs(a.rel));
+    const home = Object.keys(zones).sort((a, b) => zones[b] - zones[a])[0] || '?';
+    const diet = Object.keys(diets).sort((a, b) => diets[b] - diets[a])[0] || '?';
+    const fs = firstSeen.has(id) ? firstSeen.get(id) : null;
+    species.push({
+      id, size: members.length, adults: ad.length, juveniles: members.length - ad.length,
+      homeBiome: home, homeBiomeName: biomeName(home), biomes: zones,
+      meanPitch: pn ? pitch / pn : 0.5, meanTraits: means, diet, divergences,
+      genMin: genMin === Infinity ? 0 : genMin, genMax: genMax < 0 ? 0 : genMax,
+      firstSeen: fs, parentId: parentOf.has(id) ? parentOf.get(id) : null,
+      isNew: fs != null && (world.time - fs) < SPECIES_NEW_WINDOW,
+      members: members.slice(0, 12).map((c) => ({ id: c.id, name: c.name })),
+      memberTotal: members.length,
+    });
+  }
+  species.sort((a, b) => b.size - a.size);
+  let sharks = 0, bears = 0;
+  for (const p of world.predators || []) {
+    if (!p.alive && p.alive !== undefined) continue;
+    if (p.kind === 'shark') sharks++;
+    else if (p.kind === 'bear') bears++;
+  }
+  return { t: world.time, species, unclustered, globalMeans: gMeans, predators: { sharks, bears } };
+}
+
 function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg.platformIndex, world.rng, {
     parents: egg.parents,
     generation: egg.gen || 0,

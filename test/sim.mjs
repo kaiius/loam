@@ -12,7 +12,7 @@ import { createRng } from '../src/sim/rng.js';
 import { groundYAt, waterAt } from '../src/sim/biomes.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
-import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams, speciesOverview } from '../src/sim/world.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
   memoryCapacity, RECALL_BUDGET,
@@ -2652,6 +2652,84 @@ test('v0.14: a lineage split fires a speciation event', () => {
   assert.deepEqual(evs[evs.length - 1].sizes.sort(), [4, 4]);
   const splits = world.speciesLog.filter((e) => e.kind === 'split');
   assert.ok(splits.length >= 1, 'split recorded in the species log');
+});
+
+// ================= v0.20 "Species" =================
+
+test('v0.20: speciesOverview reports one entry per living species', () => {
+  const world = bindWorld(createWorld(1425));
+  populate(world);
+  const founderIds = new Set(world.creatures.map((c) => c.id));
+  world.creatures = world.creatures.filter((c) => !founderIds.has(c.id));
+  const rng = createRng(79);
+  const mkGroup = (val, n) => {
+    for (let i = 0; i < n; i++) {
+      const g = randomGenome(rng);
+      for (const gene of GENES) if (gene.kind === 'float') g.alleles[gene.key] = [val, val];
+      const c = createCreature(g, 400 + world.rng.range(-50, 50), 1, rng);
+      c.biochem.age = c.pheno.lifespanSec * 0.5;
+      world.creatures.push(c);
+    }
+  };
+  mkGroup(0.1, 4);
+  mkGroup(0.9, 4);
+  // One newborn: juveniles are never clustered → counted as unclustered.
+  const juv = createCreature(randomGenome(rng), 400, 1, rng);
+  world.creatures.push(juv);
+  world.predators = [{ kind: 'shark', alive: true }, { kind: 'bear', alive: true }];
+  computeSpecies(world);
+  const ov = speciesOverview(world);
+  assert.equal(ov.species.length, 2, `two living species, got ${ov.species.length}`);
+  for (const s of ov.species) {
+    assert.equal(s.size, 4);
+    assert.equal(s.adults, 4);
+    assert.equal(s.juveniles, 0);
+    assert.ok(s.homeBiomeName && s.homeBiomeName !== '?', 'home biome named');
+    assert.ok(typeof s.meanPitch === 'number', 'mean pitch present');
+    assert.ok(Array.isArray(s.divergences), 'divergences array present');
+    assert.equal(s.members.length, 4, 'member roster present');
+    assert.ok(typeof s.members[0].name === 'string', 'members named');
+    assert.ok(s.genMax >= s.genMin, 'generation range sane');
+  }
+  // Extreme groups must diverge from the population mean on something.
+  assert.ok(ov.species[0].divergences.length > 0, 'extreme group flags divergences');
+  for (const d of ov.species[0].divergences) {
+    assert.ok(Math.abs(d.rel) >= 0.15, 'divergence threshold honored');
+    assert.ok(d.label && d.label.length > 0, 'divergence labeled');
+    assert.ok(typeof d.speciesMean === 'number' && typeof d.globalMean === 'number');
+  }
+  for (const k of LINEAGE_TRAITS) assert.ok(typeof ov.globalMeans[k] === 'number', `global mean for ${k}`);
+  assert.ok(ov.unclustered >= 1, 'newborn counted as unclustered');
+  assert.deepEqual(ov.predators, { sharks: 1, bears: 1 }, 'predator census');
+});
+
+test('v0.20: speciesOverview tracks splits, parents, and newness', () => {
+  const world = bindWorld(createWorld(1426));
+  populate(world);
+  const founderIds = new Set(world.creatures.map((c) => c.id));
+  world.creatures = world.creatures.filter((c) => !founderIds.has(c.id));
+  const rng = createRng(80);
+  const group = [];
+  for (let i = 0; i < 8; i++) {
+    const g = randomGenome(rng);
+    for (const gene of GENES) if (gene.kind === 'float') g.alleles[gene.key] = [0.3, 0.3];
+    const c = createCreature(g, 400, 1, rng);
+    c.biochem.age = c.pheno.lifespanSec * 0.5;
+    world.creatures.push(c);
+    group.push(c);
+  }
+  computeSpecies(world); // one species
+  for (let i = 0; i < 4; i++) {
+    for (const gene of GENES) if (gene.kind === 'float') group[i].genome.alleles[gene.key] = [0.95, 0.95];
+  }
+  computeSpecies(world); // split
+  const ov = speciesOverview(world);
+  assert.equal(ov.species.length, 2, 'two species after the split');
+  const kids = ov.species.filter((s) => s.parentId != null);
+  assert.ok(kids.length >= 1, 'split children know their parent species');
+  assert.ok(ov.species.some((s) => s.isNew), 'fresh split counts as new');
+  // firstSeen is honest: null when the log has no record, a tick otherwise.
+  for (const s of ov.species) assert.ok(s.firstSeen == null || typeof s.firstSeen === 'number');
 });
 
 test('v0.14: randSparse never hangs at maximal wiring density', () => {

@@ -4,7 +4,7 @@
 import { screenToWorld, zoomAt, panBy, recenterCamera, followPoint } from '../render/renderer.js';
 import { petCreature, scoldCreature, creatureRadius } from '../sim/creature.js';
 import { ageStage, mood } from '../sim/biochem.js';
-import { layEgg, DAY_LENGTH, LINEAGE_TRAITS, zoneAt, CALL_REF_D } from '../sim/world.js';
+import { layEgg, DAY_LENGTH, LINEAGE_TRAITS, zoneAt, CALL_REF_D, speciesOverview } from '../sim/world.js';
 import { strongestBond } from '../sim/social.js';
 import { randomGenome } from '../sim/genome.js';
 import { commandTeacher, setTeacherMode, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, TEACHER_MOTIF } from '../sim/teacher.js';
@@ -34,12 +34,17 @@ export function createUI(canvas, renderer, world) {
     treeOpen: false,
     evoOpen: false,
     chronOpen: false,
+    tonguesOpen: false,
+    speciesOpen: false, // v0.20 "Species": the living taxonomy panel
+    speciesSel: null, // species id the panel shows in detail (null = list)
     evoFocusT: null, // chronicle jump: time marker on the evolution tracker
     treeFocus: null, // creature id the family tree centers on
     treeView: { x: 0, y: 0, w: 760, h: 480 }, // pan/zoom viewport
     treePan: null,
     _treeAt: 0,
     _evoAt: 0,
+    _tongueAt: 0, // (was never initialized — the notebook refresh never fired)
+    _speciesAt: 0, // v0.20 "Species": throttled panel refresh
   };
 
   const root = document.createElement('div');
@@ -59,6 +64,7 @@ export function createUI(canvas, renderer, world) {
       <button id="evoBtn" title="Evolution tracker">📈 Evo</button>
       <button id="chronBtn" title="Chronicle — the world's story">📜 Chronicle</button>
       <button id="tongueBtn" title="Tongues — the emerging lexicon">📖 Tongues</button>
+      <button id="speciesBtn" title="Species — the living taxonomy">🧬 Species</button>
       <button id="soundBtn" title="Toggle sound">🔊</button>
       <button id="teacherBtn" title="Find the Teacher">🧑‍🏫</button>
     </div>
@@ -67,6 +73,7 @@ export function createUI(canvas, renderer, world) {
     <div id="evopanel" class="bigpanel hidden"></div>
     <div id="chronpanel" class="bigpanel hidden"></div>
     <div id="tonguepanel" class="bigpanel hidden"></div>
+    <div id="speciespanel" class="bigpanel hidden"></div>
     <div id="toasts"></div>
     <div id="hint">Click anything to inspect it · drag creatures & toys · double-click to pet · 🍎+ places fruit · drag background to pan · scroll to zoom · 🧑‍🏫 finds the Teacher</div>
     <div id="camctl">
@@ -83,6 +90,7 @@ export function createUI(canvas, renderer, world) {
   const evoPanel = root.querySelector('#evopanel');
   const chronPanel = root.querySelector('#chronpanel');
   const tonguePanel = root.querySelector('#tonguepanel');
+  const speciesPanel = root.querySelector('#speciespanel');
   const clockEl = root.querySelector('#clock');
   const censusEl = root.querySelector('#census');
   const toastsEl = root.querySelector('#toasts');
@@ -156,17 +164,20 @@ export function createUI(canvas, renderer, world) {
   const evoBtn = root.querySelector('#evoBtn');
   const chronBtn = root.querySelector('#chronBtn');
   const tongueBtn = root.querySelector('#tongueBtn');
+  const speciesBtn = root.querySelector('#speciesBtn');
   const soundBtn = root.querySelector('#soundBtn');
   const closeBigPanels = () => {
-    ui.treeOpen = ui.evoOpen = ui.chronOpen = ui.tonguesOpen = false;
+    ui.treeOpen = ui.evoOpen = ui.chronOpen = ui.tonguesOpen = ui.speciesOpen = false;
     treePanel.classList.add('hidden');
     evoPanel.classList.add('hidden');
     chronPanel.classList.add('hidden');
     tonguePanel.classList.add('hidden');
+    speciesPanel.classList.add('hidden');
     treeBtn.classList.remove('active');
     evoBtn.classList.remove('active');
     chronBtn.classList.remove('active');
     tongueBtn.classList.remove('active');
+    speciesBtn.classList.remove('active');
   };
   treeBtn.addEventListener('click', () => {
     ui.treeOpen = !ui.treeOpen;
@@ -207,6 +218,40 @@ export function createUI(canvas, renderer, world) {
     if (!e.target || !e.target.closest) return;
     if (e.target.id === 'g-close' || (e.target.closest && e.target.closest('#g-close'))) {
       ui.tonguesOpen = false; tonguePanel.classList.add('hidden'); tongueBtn.classList.remove('active');
+    }
+  });
+  // ---- v0.20 "Species": the living taxonomy — clickable species list,
+  // detail view per species, new species appear on their own.
+  speciesBtn.addEventListener('click', () => {
+    ui.speciesOpen = !ui.speciesOpen;
+    if (ui.speciesOpen) {
+      closeBigPanels(); ui.speciesOpen = true;
+      renderSpecies(speciesPanel, ui);
+      speciesBtn.classList.add('active');
+    } else closeBigPanels();
+  });
+  speciesPanel.addEventListener('click', (e) => {
+    if (!e.target || !e.target.closest) return;
+    if (e.target.id === 's-close' || e.target.closest('#s-close')) {
+      ui.speciesOpen = false; ui.speciesSel = null;
+      speciesPanel.classList.add('hidden'); speciesBtn.classList.remove('active');
+      return;
+    }
+    if (e.target.closest('[data-s-back]')) {
+      ui.speciesSel = null;
+      renderSpecies(speciesPanel, ui);
+      return;
+    }
+    const sp = e.target.closest('[data-species]');
+    if (sp) {
+      ui.speciesSel = Number(sp.dataset.species);
+      renderSpecies(speciesPanel, ui);
+      return;
+    }
+    const mem = e.target.closest('[data-cid]');
+    if (mem) {
+      const c = ui.world.creatures.find((o) => String(o.id) === mem.dataset.cid);
+      if (c) { ui.setSelected(c); refreshPanel(panel, ui); }
     }
   });
   // ---- v0.16: audible calls. AudioContext starts on first user gesture
@@ -587,6 +632,12 @@ export function createUI(canvas, renderer, world) {
       ui._tongueAt = now;
       renderTongues(tonguePanel, ui);
     }
+    // v0.20 "Species": the living taxonomy refresh — new species walk in
+    // on their own, extinct ones leave.
+    if (ui.speciesOpen && now - ui._speciesAt > 1500) {
+      ui._speciesAt = now;
+      renderSpecies(speciesPanel, ui);
+    }
   };
 
   return ui;
@@ -731,7 +782,7 @@ function refreshPanel(panel, ui) {
       <div class="badges">${stage} · ${c.sex} · ${MOOD_EMOJI[m] || ''} ${m}</div>
       <div class="zone">📍 ${zoneAt(c.x).name}</div>
       ${c.homeX !== undefined ? `<div class="zone">🏠 Home: ${zoneAt(c.homeX).name}</div>` : ''}
-      ${c.speciesId ? `<div class="zone">🧬 Species #${c.speciesId}${c.hybrid ? ` · ⚠️ hybrid (viability ${c.hybrid.viability.toFixed(2)})` : ''}</div>` : ''}
+      ${c.speciesId ? `<div class="zone"><button id="p-species" class="linkbtn">🧬 Species #${c.speciesId}</button>${c.hybrid ? ` · ⚠️ hybrid (viability ${c.hybrid.viability.toFixed(2)})` : ''}</div>` : ''}
       <div class="zone">🎵 Voice pitch: ${(c.voicePitch ?? 0.5).toFixed(2)}${(c.heardPitches || []).length ? ` · ${c.heardPitches.length} pitches learned` : ''}</div>
       ${tribeHtml(ui, c)}
       ${bondHtml(ui, c)}
@@ -763,6 +814,15 @@ function refreshPanel(panel, ui) {
       refreshPanel(panel, ui);
     };
     panel.querySelector('#p-follow').onclick = () => { ui.follow = !ui.follow; refreshPanel(panel, ui); };
+    // v0.20 "Species": the inspector's species line opens the taxonomy
+    // panel focused on that species.
+    const spBtn = panel.querySelector('#p-species');
+    if (spBtn) spBtn.onclick = () => {
+      ui.speciesSel = c.speciesId;
+      closeBigPanels(); ui.speciesOpen = true;
+      renderSpecies(speciesPanel, ui);
+      speciesBtn.classList.add('active');
+    };
     panel.querySelectorAll('.l-kid').forEach((btn) => {
       btn.onclick = () => {
         const kid = ui.world.creatures.find((o) => String(o.id) === btn.dataset.kid);
@@ -1365,4 +1425,86 @@ function renderTongues(tonguePanel, ui) {
   else html += tonguePopulationHtml(world);
   html += tongueUtterHtml(world);
   tonguePanel.innerHTML = html;
+}
+
+// ---- v0.20 "Species": the living taxonomy ----
+// A clickable census of every living species: the list on open, a detail
+// view per species (population, range, voice, traits, divergences from the
+// population mean, history, members). New species appear on their own via
+// the throttled refresh; extinct ones simply leave the list.
+function pitchLabel(p) {
+  return p < 0.33 ? 'deep' : p < 0.66 ? 'mid-range' : 'high';
+}
+function speciesRowHtml(s) {
+  return `<div class="ch-entry srow" data-species="${s.id}">
+    <div class="ch-icon">🧬</div>
+    <div class="ch-text"><b>Species #${s.id}</b>${s.isNew ? ' <span class="snew">✨ new</span>' : ''}
+      <div class="tdetail">${s.size} living (${s.adults} adult${s.adults === 1 ? '' : 's'}) · home: ${escapeHtml(s.homeBiomeName)} · voice: ${pitchLabel(s.meanPitch)}</div>
+    </div>
+    <div class="ch-jumps"><span>→</span></div>
+  </div>`;
+}
+function speciesDetailHtml(ui, s) {
+  const day = (t) => `day ${Math.floor(t / 600) + 1}`;
+  const divRows = s.divergences.length
+    ? s.divergences.map((d) => {
+        const arrow = d.rel > 0 ? '▲' : '▼';
+        const pct = Math.abs(d.rel * 100).toFixed(0);
+        return `<div class="ch-entry"><div class="ch-text">${arrow} <b>${escapeHtml(d.label)}</b> ${pct}% ${d.rel > 0 ? 'above' : 'below'} the population mean</div></div>`;
+      }).join('')
+    : `<div class="ch-empty">No strong divergences — this species sits near the population mean on every trait.</div>`;
+  const traitRows = Object.keys(s.meanTraits).map((k) =>
+    `<div class="trow"><span>${escapeHtml(k)}</span><span>${s.meanTraits[k].toFixed(2)}</span></div>`).join('');
+  const rangeRows = Object.keys(s.biomes).sort((a, b) => s.biomes[b] - s.biomes[a])
+    .map((k) => `<div class="trow"><span>${escapeHtml(k)}</span><span>${s.biomes[k]}</span></div>`).join('');
+  const hist = [];
+  if (s.firstSeen != null) hist.push(`First detected ${day(s.firstSeen)}.`);
+  if (s.parentId != null) hist.push(`Split from Species #${s.parentId}.`);
+  if (!hist.length) hist.push('A founder lineage — present since the first census.');
+  const memRows = s.members.map((m) =>
+    `<button class="smem" data-cid="${m.id}">🐒 ${escapeHtml(m.name)} <span class="tdetail">#${m.id}</span></button>`).join('');
+  const more = s.memberTotal > s.members.length ? `<div class="tnote">+${s.memberTotal - s.members.length} more — select one above to inspect it.</div>` : '';
+  return `<button class="sback" data-s-back>← all species</button>
+  <div class="bp-head"><h2>🧬 Species #${s.id}</h2>${s.isNew ? '<span class="snew">✨ new</span>' : ''}</div>
+  <div class="etitle">Population</div>
+  <div class="tdetail">${s.size} living · ${s.adults} adult${s.adults === 1 ? '' : 's'} · ${s.juveniles} young · generations ${s.genMin}–${s.genMax}</div>
+  <div class="etitle">Range</div>
+  <div class="tdetail">Home: ${escapeHtml(s.homeBiomeName)}</div>${rangeRows}
+  <div class="etitle">Voice</div>
+  <div class="tdetail">${pitchLabel(s.meanPitch)} dialect (mean pitch ${s.meanPitch.toFixed(2)}) · diet: ${escapeHtml(s.diet)}</div>
+  <div class="etitle">Notable divergences <span class="tnote">— vs the living population mean</span></div>
+  ${divRows}
+  <div class="etitle">Mean traits <span class="tnote">— adults</span></div>
+  ${traitRows}
+  <div class="etitle">History</div>
+  <div class="tdetail">${hist.map(escapeHtml).join(' ')}</div>
+  <div class="etitle">Members <span class="tnote">— click to inspect</span></div>
+  <div class="smems">${memRows}</div>${more}`;
+}
+function predatorsHtml(ov) {
+  const { sharks, bears } = ov.predators;
+  if (!sharks && !bears) return '';
+  let html = `<div class="etitle" style="margin-top:10px">Other residents <span class="tnote">— not tanglekins, part of the world</span></div>`;
+  if (sharks) html += `<div class="ch-entry"><div class="ch-icon">🦈</div><div class="ch-text"><b>Sharks × ${sharks}</b><div class="tdetail">Need ≥90px water depth — the shallows, the channels, the deep. Suffocate beached.</div></div></div>`;
+  if (bears) html += `<div class="ch-entry"><div class="ch-icon">🐻</div><div class="ch-text"><b>Bears × ${bears}</b><div class="tdetail">Overheat above ~0.35 ambient heat — confined by heat, not by walls.</div></div></div>`;
+  return html;
+}
+function renderSpecies(speciesPanel, ui) {
+  const world = ui.world;
+  const ov = speciesOverview(world);
+  speciesPanel.classList.remove('hidden');
+  let html = `<div class="bp-head"><h2>🧬 Species — the living taxonomy</h2><button id="s-close">✕</button></div>
+    <div class="tnote">Species are detected, never assigned — single-linkage clustering of adults
+    by genome distance. Ids persist by member overlap; splits are logged. New species walk in on their own.</div>`;
+  const sel = ov.species.find((s) => s.id === ui.speciesSel);
+  if (sel) {
+    html += speciesDetailHtml(ui, sel);
+  } else {
+    if (ui.speciesSel != null) ui.speciesSel = null; // selected species went extinct — back to the list
+    if (!ov.species.length) html += `<div class="ch-empty">No species clustered yet — the census needs adults.</div>`;
+    for (const s of ov.species) html += speciesRowHtml(s);
+    html += predatorsHtml(ov);
+    if (ov.unclustered) html += `<div class="tnote">${ov.unclustered} young not yet clustered — species are detected among adults.</div>`;
+  }
+  speciesPanel.innerHTML = html;
 }

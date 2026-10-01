@@ -1,9 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wildcode — a tiny artificial-life terrarium</title>
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Species panel preview</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; overflow: hidden; background: #101020;
@@ -153,10 +148,47 @@
     border-radius: 7px; color: inherit; font-size: 12px; padding: 2px 6px; cursor: pointer;
   }
   .ch-jumps button:hover { background: rgba(255,255,255,0.2); }
-</style>
-</head>
-<body>
-<canvas id="game"></canvas>
-<script type="module" src="./src/main.js"></script>
-</body>
-</html>
+
+body{background:#0d1420;color:#dfe;padding:24px;font-family:system-ui,sans-serif}
+.bigpanel{position:static;max-width:560px;margin:0 auto 40px}
+h1{font-size:15px;color:#9fb;margin-bottom:4px}
+p.note{color:#8a93a6;font-size:12px;max-width:560px;margin:0 auto 16px}
+</style></head><body>
+<h1>🧬 Species panel — list view (real renderSpecies output, fabricated world)</h1>
+<p class="note">Two species, one flagged ✨ new (split from Species #0), predators, unclustered young.</p>
+<div id="speciespanel" class="bigpanel"><div class="bp-head"><h2>🧬 Species — the living taxonomy</h2><button id="s-close">✕</button></div>
+    <div class="tnote">Species are detected, never assigned — single-linkage clustering of adults
+    by genome distance. Ids persist by member overlap; splits are logged. New species walk in on their own.</div><div class="ch-entry srow" data-species="0">
+    <div class="ch-icon">🧬</div>
+    <div class="ch-text"><b>Species #0</b>
+      <div class="tdetail">5 living (5 adults) · home: Sunscorch Desert · voice: mid-range</div>
+    </div>
+    <div class="ch-jumps"><span>→</span></div>
+  </div><div class="ch-entry srow" data-species="1">
+    <div class="ch-icon">🧬</div>
+    <div class="ch-text"><b>Species #1</b> <span class="snew">✨ new</span>
+      <div class="tdetail">3 living (3 adults) · home: Mangrove Shallows · voice: mid-range</div>
+    </div>
+    <div class="ch-jumps"><span>→</span></div>
+  </div><div class="etitle" style="margin-top:10px">Other residents <span class="tnote">— not tanglekins, part of the world</span></div><div class="ch-entry"><div class="ch-icon">🦈</div><div class="ch-text"><b>Sharks × 1</b><div class="tdetail">Need ≥90px water depth — the shallows, the channels, the deep. Suffocate beached.</div></div></div><div class="ch-entry"><div class="ch-icon">🐻</div><div class="ch-text"><b>Bears × 1</b><div class="tdetail">Overheat above ~0.35 ambient heat — confined by heat, not by walls.</div></div></div><div class="tnote">1 young not yet clustered — species are detected among adults.</div></div>
+<h1>🧬 Species panel — detail view (Species #0)</h1>
+<p class="note">Population, range, voice, divergences vs the population mean, mean traits, history, clickable members.</p>
+<div id="speciespanel2" class="bigpanel"><div class="bp-head"><h2>🧬 Species — the living taxonomy</h2><button id="s-close">✕</button></div>
+    <div class="tnote">Species are detected, never assigned — single-linkage clustering of adults
+    by genome distance. Ids persist by member overlap; splits are logged. New species walk in on their own.</div><button class="sback" data-s-back="">← all species</button>
+  <div class="bp-head"><h2>🧬 Species #0</h2></div>
+  <div class="etitle">Population</div>
+  <div class="tdetail">5 living · 5 adults · 0 young · generations 3–3</div>
+  <div class="etitle">Range</div>
+  <div class="tdetail">Home: Sunscorch Desert</div><div class="trow"><span>desert</span><span>5</span></div>
+  <div class="etitle">Voice</div>
+  <div class="tdetail">mid-range dialect (mean pitch 0.50) · diet: fruit</div>
+  <div class="etitle">Notable divergences <span class="tnote">— vs the living population mean</span></div>
+  <div class="ch-entry"><div class="ch-text">▲ <b>Fur thickness</b> 36% above the population mean</div></div><div class="ch-entry"><div class="ch-text">▼ <b>Body size</b> 27% below the population mean</div></div>
+  <div class="etitle">Mean traits <span class="tnote">— adults</span></div>
+  <div class="trow"><span>size</span><span>1.00</span></div><div class="trow"><span>legLength</span><span>1.00</span></div><div class="trow"><span>spikes</span><span>1.00</span></div><div class="trow"><span>fur</span><span>1.00</span></div><div class="trow"><span>eyeSize</span><span>1.00</span></div><div class="trow"><span>mouthSize</span><span>1.00</span></div><div class="trow"><span>immunity</span><span>1.00</span></div><div class="trow"><span>learningRate</span><span>1.00</span></div><div class="trow"><span>boldness</span><span>1.00</span></div><div class="trow"><span>lifespan</span><span>1.00</span></div>
+  <div class="etitle">History</div>
+  <div class="tdetail">First detected day 2.</div>
+  <div class="etitle">Members <span class="tnote">— click to inspect</span></div>
+  <div class="smems"><button class="smem" data-cid="1">🐒 Alpha <span class="tdetail">#1</span></button><button class="smem" data-cid="2">🐒 Beta <span class="tdetail">#2</span></button><button class="smem" data-cid="3">🐒 Gamma <span class="tdetail">#3</span></button><button class="smem" data-cid="4">🐒 Delta <span class="tdetail">#4</span></button><button class="smem" data-cid="5">🐒 Epsilon <span class="tdetail">#5</span></button></div></div>
+</body></html>
