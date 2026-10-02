@@ -23,7 +23,7 @@ import { gatherSenses, visionLightFactor, phaseSleepiness, predatorVigor, spawnP
 import { seasonalForcing, SEASON_AMP_MAX } from '../src/sim/weather.js';
 
 test('v0.28: exactly two new loci — activityPhase + instPhaseSleep (GENES 232)', () => {
-  assert.equal(GENES.length, 233); // v0.30 speciesTag
+  assert.equal(GENES.length, 239); // v0.32: 233 + six nerve loci
   assert.deepEqual([...DAYNIGHT28_KEYS].sort(), ['activityPhase', 'instPhaseSleep']);
   const chr4 = CHROMOSOMES[3];
   assert.ok(chr4.includes('activityPhase'), 'activityPhase rides the behavior chromosome');
@@ -56,17 +56,20 @@ test('v0.28: new loci draw from their own sub-stream — earlier streams untouch
   assert.ok(lo < 0.4 && hi > 0.6, `founder spread ${lo.toFixed(2)}..${hi.toFixed(2)}`);
 });
 
-test('v0.28: one new sense — phaseSleepiness at index 36, N_IN 38', () => {
-  assert.equal(SENSE32.length, 37);
+test('v0.32: one new sense — pain at index 37, N_IN 39', () => {
+  assert.equal(SENSE32.length, 38);
   assert.equal(SENSE32[36], 'phaseSleepiness');
-  assert.equal(N_IN, 38);
+  assert.equal(SENSE32[37], 'pain');
+  assert.equal(N_IN, 39);
   const s = {};
   for (const k of SENSE32) s[k] = 0;
   s.phaseSleepiness = 0.7;
+  s.pain = 0.9;
   const v = senseVector(s);
-  assert.equal(v.length, 38);
+  assert.equal(v.length, 39);
   assert.equal(v[36], 0.7);
-  assert.equal(v[37], 1); // bias
+  assert.equal(v[37], 0.9);
+  assert.equal(v[38], 1); // bias
 });
 
 test('v0.28: DAY length is a world parameter (ticks per day, default 3000)', () => {

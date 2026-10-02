@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   GENES, CHEM5, CHEM7, SENSE32, SENSE24, ACT20, ACT13,
   PLANT_REALMS_LOCI, REALMS18_KEYS, EVO17_KEYS, HANDS20_KEYS, FALLING20_KEYS,
-  WEB22_KEYS, SEASONS27_KEYS, DAYNIGHT28_KEYS, SPECIES30_KEYS, CHROMOSOMES,
+  WEB22_KEYS, SEASONS27_KEYS, DAYNIGHT28_KEYS, SPECIES30_KEYS, NERVES32_KEYS, CHROMOSOMES,
   randomGenome, phenotype,
 } from '../src/sim/genome.js';
 import { createBrain, senseVector, ACTIONS, N_IN } from '../src/sim/brain.js';
@@ -176,8 +176,8 @@ test('v0.18: the four realms instinct genes — indices and founders', () => {
   assert.deepEqual(PLANT_REALMS_LOCI.map((g) => g.key), ['heatTol', 'saltTol']);
 });
 
-test('v0.18: index contract — N_IN 38, N_OUT 24, append-only', () => {
-  assert.equal(N_IN, 38, '37 senses + bias'); // v0.28: +phaseSleepiness
+test('v0.18: index contract — N_IN 39, N_OUT 24, append-only', () => {
+  assert.equal(N_IN, 39, '38 senses + bias'); // v0.32: +pain
   assert.equal(N_OUT, 24, '23 old actions + bite'); // v0.22
   assert.equal(ACTIONS[17], 'drink');
   assert.equal(ACTIONS[18], 'bask');
@@ -186,7 +186,7 @@ test('v0.18: index contract — N_IN 38, N_OUT 24, append-only', () => {
   assert.equal(ACTIONS[21], 'carry'); // v0.20
   assert.equal(ACTIONS[22], 'drop'); // v0.20
   assert.equal(ACTIONS[23], 'bite'); // v0.22 "Web of Life": appended, never renumbered
-  assert.equal(SENSE32.length, 37); // v0.28: 36 + the phaseSleepiness sense
+  assert.equal(SENSE32.length, 38); // v0.32: 37 + the pain sense
   assert.deepEqual(SENSE32.slice(0, 24), SENSE24, 'the old 24 untouched');
   assert.equal(SENSE32[28], 'thirst');
   assert.equal(SENSE32[29], 'cold');
@@ -197,6 +197,7 @@ test('v0.18: index contract — N_IN 38, N_OUT 24, append-only', () => {
   assert.equal(SENSE32[34], 'falling'); // v0.20 "Falling": appended, never renumbered
   assert.equal(SENSE32[35], 'creatureSize'); // v0.22 "Web of Life": appended, never renumbered
   assert.equal(SENSE32[36], 'phaseSleepiness'); // v0.28 "Day and night": appended, never renumbered
+  assert.equal(SENSE32[37], 'pain'); // v0.32 "Nervous system": appended, never renumbered
   assert.equal(ACT20.length, 24); // v0.22
   assert.deepEqual(ACT20.slice(0, 13), ACT13, 'the old 13 untouched');
   assert.equal(ACT20[17], 'drink');
@@ -207,7 +208,7 @@ test('v0.18: index contract — N_IN 38, N_OUT 24, append-only', () => {
   assert.equal(ACT20[21], 'carry'); // v0.20
   assert.equal(ACT20[22], 'drop'); // v0.20
   const v = senseVector({ thirst: 0.7, cold: 0.1, heat: 0, buriedNear: 0.4 });
-  assert.equal(v.length, 38, '37 senses + bias'); // v0.28: +phaseSleepiness
+  assert.equal(v.length, 39, '38 senses + bias'); // v0.32: +pain
   assert.equal(v[28], 0.7, 'thirst rides at index 28');
   assert.equal(v[29], 0.1, 'cold rides at index 29');
   assert.equal(v[30], 0, 'heat rides at index 30');
@@ -215,7 +216,8 @@ test('v0.18: index contract — N_IN 38, N_OUT 24, append-only', () => {
   assert.equal(v[34], 0, 'falling rides at index 34'); // v0.20 "Falling"
   assert.equal(v[35], 0, 'creatureSize rides at index 35'); // v0.22 "Web of Life"
   assert.equal(v[36], 0, 'phaseSleepiness rides at index 36'); // v0.28 "Day and night"
-  assert.equal(v[37], 1, 'bias still last'); // v0.28: was 36
+  assert.equal(v[37], 0, 'pain rides at index 37'); // v0.32 "Nervous system"
+  assert.equal(v[38], 1, 'bias still last'); // v0.32: was 37
 });
 
 test('v0.18: founder main-stream bit-identity with pinSub + a pinned allele', () => {
@@ -227,6 +229,7 @@ test('v0.18: founder main-stream bit-identity with pinSub + a pinned allele', ()
     ...SEASONS27_KEYS, // v0.27 "Seasons": pantCapacity rides its own sub-stream pass
     ...DAYNIGHT28_KEYS, // v0.28 "Day and night": activityPhase/instPhaseSleep ride pass 7
     ...SPECIES30_KEYS, // v0.30 "Species gate": speciesTag rides its own sub-stream pass 8
+    ...NERVES32_KEYS, // v0.32 "Nervous system": nerve loci ride pass 9
     ...GENES.filter((g) => g.key.startsWith('lex')).map((g) => g.key)]);
   for (const gene of GENES) {
     if (gene.key === 'legPower' || subKeys.has(gene.key)) continue;
@@ -266,12 +269,14 @@ test('v0.18: NaN guards — garbage ctx leaves every body field finite', () => {
   };
   for (let t = 0; t < 100; t++) tickBiochem(b, p, 1, garbage);
   for (const [k, v] of Object.entries(b)) {
+    if (typeof v === 'string' || v === null) continue; // v0.32: healthDrainCause is metadata, not chemistry
     assert.ok(Number.isFinite(v), `body field finite after garbage ctx: ${k} = ${v}`);
   }
   // Missing ctx entirely is also safe.
   const b2 = createBiochem();
   for (let t = 0; t < 100; t++) tickBiochem(b2, p, 1);
   for (const [k, v] of Object.entries(b2)) {
+    if (typeof v === 'string' || v === null) continue; // v0.32: metadata
     assert.ok(Number.isFinite(v), `body field finite with no ctx: ${k} = ${v}`);
   }
 });

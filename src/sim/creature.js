@@ -4,6 +4,11 @@
 import { phenotype, markLocus } from './genome.js';
 import { createBiochem, tickBiochem, ageStage, stageSize, isDead, mood, coldSense, heatSense } from './biochem.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
+import {
+  createNerves, pushNerveSenses, nerveInput, deliverMotor, tickMotor,
+  evalReflexes, tickPain, tickNerveHealing, refreshNerves, painInhibition,
+  damageNerve, FLEE_IDX, SLEEP_IDX,
+} from './nerves.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY, foundCraft, CRAFT_USES, CRAFT_WINDOW, CRAFT_RADIUS } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
@@ -83,7 +88,7 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
   // v0.18 "Realms": the aquatic derivations (swimSpeed/sailDump/waterDrag)
   // overwrite the old fin-based swimSpeed with the membrane formula.
   const pheno = deriveAquaticPheno(phenotype(genome));
-  return {
+  const c = {
     kind: 'creature',
     id: nextId++,
     name: opts.name || rng.pick(NAMES),
@@ -176,6 +181,14 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     // created mass from nothing on every life-stage transition.
     bodyMass: 4.8 * (pheno.size ?? 0.3) * 1.0,
   };
+  // v0.32 "Nervous system": the peripheral nerves. _nerveRadiusPx seeds the
+  // trunk-length computation (re-derived per tick as the body grows — see
+  // refreshNerves in the tick). pain/_lastInjury seed the nociception loop.
+  c._nerveRadiusPx = creatureRadius(c);
+  c.nerves = createNerves(c);
+  c.pain = 0;
+  c._lastInjury = 0;
+  return c;
 }
 
 // v0.20 "Hands": nearest manipulable object within grasp reach — shared
@@ -314,6 +327,10 @@ export function phaseSleepiness(c, world) {
 
 export function gatherSenses(c, world) {
   const b = c.biochem;
+  // v0.32 (kumkrust P1): platformIndex can be -1 (falling, swimming, void) —
+  // every world.platforms[c.platformIndex] access below must guard on this.
+  const onPlat = c.platformIndex >= 0 && c.platformIndex < world.platforms.length;
+  const platY = onPlat ? world.platforms[c.platformIndex].y : 0;
   // v0.6 morphology: sight range comes from the eyeSize gene.
   // v0.28 "Day and night": vision range scales with light, through the
   // eyeSize the genome bought. Bigger eyes gather more light (night
@@ -358,8 +375,8 @@ export function gatherSenses(c, world) {
   // platform within leap range) is nearby. The instJump gene wires this to
   // the jump action; the brain learns the rest.
   let jumpNear = 0;
-  {
-    const py = world.platforms[c.platformIndex].y;
+  if (onPlat) {
+    const py = platY;
     const maxD = Math.hypot(JUMP_RANGE_DX, JUMP_RANGE_DY);
     let bd = Infinity;
     for (let i = 0; i < world.platforms.length; i++) {
@@ -382,8 +399,8 @@ export function gatherSenses(c, world) {
   // body's water state — 0 in v0.17, because the world has no water yet.
   const airborne = c.grounded ? 0 : 1;
   let farLedge = 0;
-  {
-    const py = world.platforms[c.platformIndex].y;
+  if (onPlat) {
+    const py = platY;
     const gMaxD = Math.hypot(GLIDE_RANGE_DX, GLIDE_RANGE_DY);
     const jMaxD = Math.hypot(JUMP_RANGE_DX, JUMP_RANGE_DY);
     let bd = Infinity;
@@ -415,17 +432,18 @@ export function gatherSenses(c, world) {
   // matings in long headless runs — and lineages died out. A climbing
   // species courts in the canopy's full depth.
   let mate = null, mateDist = 1;
-  if (stage === 'adult' || stage === 'senior') {
+  if ((stage === 'adult' || stage === 'senior') && onPlat) {
     const prefH = c.pheno.matePrefHue ?? 0.5;
     const prefS = c.pheno.matePrefSat ?? 0.5;
     const choosy = c.pheno.matePrefChoosy ?? 0;
-    const py = world.platforms[c.platformIndex].y;
+    const py = platY;
     let best = -Infinity;
     for (const o of world.creatures) {
       if (!o.alive || o.id === c.id) continue;
       if (o.sex === c.sex) continue;
       const ost = ageStage(o.biochem, o.pheno);
       if (ost !== 'adult' && ost !== 'senior') continue;
+      if (o.platformIndex < 0 || o.platformIndex >= world.platforms.length) continue;
       const oy = world.platforms[o.platformIndex].y;
       const d = Math.hypot(o.x - c.x, oy - py);
       if (d >= range) continue;
@@ -514,6 +532,7 @@ export function gatherSenses(c, world) {
     loneliness: b.social,
     fear: b.fear,
     illness: b.illness, // v0.8: the 15th sense — feeling sick is learnable
+    pain: c.pain || 0, // v0.32: nociception — recent injury, decaying
     light: world.light,
     // v0.28 "Day and night": the phase-sleepiness sense — how strongly this
     // body wants sleep RIGHT NOW given the light and its own activityPhase
@@ -1684,6 +1703,12 @@ function executeAction(c, world, dt, s) {
         const dmg = Math.max(0.01, 0.15 * mouth * mass * (1 - Math.min(0.9, armor)));
         target.biochem.injury = clamp01(target.biochem.injury + dmg);
         target.flinchT = 0;
+        // v0.32 "Nervous system": a bite can nick a nerve — 25% chance the
+        // victim's sensory or motor trunk takes damage (the v0.36 Scars
+        // interface, wired live so nerve damage actually happens in the world).
+        if (rng.chance(0.25)) {
+          damageNerve(target, rng.chance(0.5) ? 'sensory' : 'motor', 0.05 + rng.next() * 0.1);
+        }
         // Pain is an adrenaline event: the victim's fear spikes (fear =
         // adrenaline × drive gain), which wakes sleepers through the existing
         // wake condition. A mauled animal does not sleep through it — without
@@ -1700,6 +1725,10 @@ function executeAction(c, world, dt, s) {
           c.biochem.adrenaline = clamp01(c.biochem.adrenaline + 0.5);
           c.flinchT = 0.45;
           c.clashCooldown = 3;
+          // v0.32: spike retaliation can nick the biter's nerves too.
+          if (rng.chance(0.25)) {
+            damageNerve(c, rng.chance(0.5) ? 'sensory' : 'motor', 0.05 + rng.next() * 0.1);
+          }
           c.reward -= 0.2;
           if (world.bonds) nudgeBond(world, c, target, -0.3);
           world.events.push({ type: 'clash', creature: c, other: target, t: world.time });
@@ -1826,7 +1855,7 @@ export function updateCreature(c, world, dt) {
     if (isDead(b, pheno)) {
       c.alive = false;
       const oldAge = b.age >= pheno.lifespanSec;
-      noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : b.injury > 0.6 ? 'wounds' : 'ill health');
+      noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : b.injury > 0.6 ? 'wounds' : (b.healthDrainCause || 'ill health'));
       return;
     }
     return;
@@ -1960,15 +1989,29 @@ export function updateCreature(c, world, dt) {
   if (isDead(b, pheno)) {
     c.alive = false;
     const oldAge = b.age >= pheno.lifespanSec;
-    noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : b.injury > 0.6 ? 'wounds' : 'ill health');
+    noteDeath(world, c, oldAge ? 'old age' : b.illness > 0.6 ? 'illness' : b.hunger > 0.9 ? 'starvation' : b.injury > 0.6 ? 'wounds' : (b.healthDrainCause || 'ill health'));
     return;
   }
 
   c.reward = 0;
+  // v0.32 "Nervous system": pain and nerve-healing run whether the creature
+  // is awake or asleep — a sleeping creature's pain still decays (rest
+  // heals), and the relief reward still teaches.
+  tickPain(c, dt);
+  tickNerveHealing(c, dt);
   if (!c.sleeping) {
     c.sleepTicks = 0;
     const s = gatherSenses(c, world);
     c._senses = s;
+    // v0.32: the peripheral loop. The fresh sense vector rides the sensory
+    // delay line; reflex arcs evaluate on fresh senses and preempt the
+    // motor outbox. Trunk length re-derives from body size as the creature
+    // grows. (tickPain ran above — s.pain picks up this tick's value.)
+    s.pain = c.pain || 0;
+    c._nerveRadiusPx = creatureRadius(c);
+    refreshNerves(c);
+    pushNerveSenses(c, senseVector(s));
+    c._reflexFired = evalReflexes(c, s);
 
     // v0.14 "Voices": vocal learning — the dialect engine. Heard pitches
     // enter the culture memory (ring buffer of 16); the creature's own
@@ -2099,29 +2142,43 @@ export function updateCreature(c, world, dt) {
     if (c.actionTimer <= 0 || urgent) {
       finalizeEpisode(c, world); // the last commitment's outcome becomes memory
       const exploration = 0.22 * (stage === 'baby' ? 1.6 : 1) * (0.35 + pheno.boldness);
-      const input = senseVector(s);
+      // v0.32 "Nervous system": the brain sees the world LATE — the delayed
+      // sensory vector, attenuated by sensory-nerve damage. What the brain
+      // learns from is still its own outputs (lastOut); the delay changes
+      // timing, not credit.
+      const input = nerveInput(c, senseVector(s));
       const votes = recall(c.memory, input); // the past votes; it doesn't rule
       // v0.7: traditions vote too — the culture's past alongside the personal one.
       const tv = traditionVotes(c, world.culture, s);
       for (let j = 0; j < votes.length; j++) votes[j] += tv[j];
+      // v0.32: pain narrows the repertoire — severe pain with low tolerance
+      // subtracts a nudge from every vote except flee and sleep, so agony
+      // leaves escape or rest. A nudge, not a veto: the brain still chooses,
+      // and learning reinforces the brain's own outputs.
+      const inhib = painInhibition(c);
+      if (inhib > 0) {
+        for (let j = 0; j < votes.length; j++) {
+          if (j !== FLEE_IDX && j !== SLEEP_IDX) votes[j] -= inhib;
+        }
+      }
       const { action } = decide(c.brain, input, exploration, rng, votes);
       // Exhaustion overrides: a depleted creature should sleep.
-      c.action = b.energy < 0.1 && action !== 'flee' ? 'sleep' : action;
+      let chosen = b.energy < 0.1 && action !== 'flee' ? 'sleep' : action;
       // Starving overrides (v2, inverted): desperate hunger beats everything
       // except eating, seeking food, and fleeing. The old version listed the
       // actions hunger could interrupt (wander/play/approach/seekHome) and
       // missed sleep/mate/climb/groom — creatures starved while courting or
       // napping. Now hunger wins over the sleep override above.
-      if (b.hunger > 0.8 && c.action !== 'eat' && c.action !== 'seekFood' && c.action !== 'flee') {
-        c.action = 'seekFood';
+      if (b.hunger > 0.8 && chosen !== 'eat' && chosen !== 'seekFood' && chosen !== 'flee') {
+        chosen = 'seekFood';
       }
       // Terror overrides: a terrified creature cannot choose sleep. Fear
       // already forces urgent re-decision, but the brain could still return
       // 'sleep' — a mauled animal does not nap through it. (v0.28: surfaced
       // when an N_IN reshuffle gave a founder brain a pathological sleep
       // bias; it slept through bites at fear 0.98, out-healing them 5×.)
-      if (b.fear > 0.55 && c.action === 'sleep') {
-        c.action = 'flee';
+      if (b.fear > 0.55 && chosen === 'sleep') {
+        chosen = 'flee';
       }
       // Breeding opportunity (v0.5, retargeted v2): a lonely adult that senses
       // a nearby VALID mate courts instead of dithering. v2 reads s._mate
@@ -2144,21 +2201,34 @@ export function updateCreature(c, world, dt) {
       if (
         stage === 'adult' && partner &&
         c.mateCooldown <= 0 && partner.mateCooldown <= 0 && peckish &&
-        (c.action === 'wander' || c.action === 'play' || c.action === 'approach' || c.action === 'seekHome' || c.action === 'seekFood')
+        (chosen === 'wander' || chosen === 'play' || chosen === 'approach' || chosen === 'seekHome' || chosen === 'seekFood')
       ) {
-        c.action = 'mate';
+        chosen = 'mate';
       }
       // v2 (E): emitters — committing to an action releases a chemical pulse
       // (once per commitment, not per tick). Founder amounts are small
       // nudges; evolution can turn them into floods.
-      if (c.action !== c._lastEmittedAction) {
+      if (chosen !== c._lastEmittedAction) {
         fireEmitters(c);
-        c._lastEmittedAction = c.action;
+        c._lastEmittedAction = chosen;
       }
+      // v0.32: the chosen action travels the motor nerve — muscles hear it
+      // `motorDelay` ticks late, and a damaged motor trunk may drop the
+      // command entirely. c.action changes when the signal ARRIVES, not
+      // when the brain decides. A reflex that fired this tick already owns
+      // the motor line — the brain's command yields (preemption, not
+      // queueing), and the brain takes no credit for the reflex's work
+      // (Gemini review: else the cortex learns false correlations from
+      // outcomes its actions didn't cause).
+      if (!c._reflexFired) deliverMotor(c, chosen);
+      else c._reflexOverrode = true;
       c.episodeInput = input;
-      c.episodeAction = ACTIONS.indexOf(c.action);
+      c.episodeAction = ACTIONS.indexOf(chosen);
       c.actionTimer = rng.range(0.8, 2.4) * (0.6 + pheno.boldness * 0.8);
     }
+    // v0.32: the motor outbox ticks down here — reflexes (0-tick) land this
+    // tick; brain commands land when their signal arrives.
+    tickMotor(c);
     executeAction(c, world, dt, s);
   } else {
     c.action = 'sleep';
@@ -2180,7 +2250,12 @@ export function updateCreature(c, world, dt) {
 
   // v2 (B): learn takes the chemistry for neuromodulation, and the
   // juvenile boost from maturation (founder: both neutral).
-  learn(c.brain, pheno, Math.max(-1, Math.min(1, c.reward)) * (c._learnBoost ?? 1), b);
+  // v0.32: no learning on ticks where a reflex overrode the brain — the
+  // cortex doesn't take credit for the reflex's work.
+  if (!c._reflexOverrode) {
+    learn(c.brain, pheno, Math.max(-1, Math.min(1, c.reward)) * (c._learnBoost ?? 1), b);
+  }
+  c._reflexOverrode = false;
   c.episodeReward += c.reward; // the commitment's running outcome
   // Epigenetic life events: sustained conditions mark the genome, and the
   // marks refresh the phenotype — experience becomes heritable tuning that

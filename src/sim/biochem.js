@@ -41,6 +41,7 @@ export function createBiochem() {
     fun: 0.5, // need for play
     fear: 0, // 0 = calm, 1 = terrified
     health: 1.0,
+    healthDrainCause: null, // v0.32: last source that drained health — the death ledger reads this instead of 'ill health'
     illness: 0, // 0 = healthy, 1 = gravely ill
     injury: 0, // 0 = unhurt, 1 = badly wounded — the body records history
     age: 0, // seconds since birth
@@ -64,6 +65,18 @@ export function stageSize(stage) {
 
 function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+// v0.32 "Nervous system" fold-in (Bart's lab-hygiene finding): every health
+// drain stamps its source, so the death ledger names a real cause instead
+// of the 'ill health' confession of ignorance. The ledger reads
+// b.healthDrainCause when no specific threshold (illness/hunger/injury)
+// tripped — it names the last thing that was actually killing the creature.
+function drainHealth(b, amount, cause) {
+  if (amount > 0) {
+    b.health = clamp01(b.health - amount);
+    b.healthDrainCause = cause;
+  }
 }
 // v0.18: context hygiene — a non-finite ctx value falls back to its default
 // instead of poisoning the body (the v0.15 NaN lesson).
@@ -185,7 +198,7 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   }
   const drowning = b.oxygen <= 0.001;
   if (drowning) {
-    b.health = clamp01(b.health - 0.03 * dt);
+    drainHealth(b, 0.03 * dt, 'drowning');
     b.adrenaline = clamp01(b.adrenaline + 0.9 * dt);
   }
 
@@ -214,7 +227,7 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   const hydroRate = 0.004 + 0.016 * heat01 * exert + pant01 * PANT_WATER_K;
   b.hydration = clamp01(b.hydration - hydroRate * dt + drank01 * 0.3 + (ctx.ate ?? 0) * 0.5);
   const dehydrated = b.hydration <= 0.001;
-  if (dehydrated) b.health = clamp01(b.health - 0.03 * dt);
+  if (dehydrated) drainHealth(b, 0.03 * dt, 'dehydration');
 
   // Core temperature: drifts toward ambient; fur insulation slows the drift
   // BOTH ways (a parka in the desert is a liability); metabolic heat rises
@@ -261,8 +274,8 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   // health drains.
   const hypothermic = b.coreTemp < hypoThr;
   const hyperthermic = b.coreTemp > hyperThr;
-  if (hypothermic) b.health = clamp01(b.health - 0.015 * dt);
-  if (hyperthermic) b.health = clamp01(b.health - 0.015 * dt);
+  if (hypothermic) drainHealth(b, 0.015 * dt, 'hypothermia');
+  if (hyperthermic) drainHealth(b, 0.015 * dt, 'hyperthermia');
 
   // Comfort stays direct: touch soothes, scolding wounds.
   // v0.13: homesickness — being far from the imprinted home range wears
@@ -337,7 +350,7 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
     b.illness = clamp01(b.illness + (worsen - recovery) * dt);
   }
   if (b.illness > 0.25) {
-    b.health = clamp01(b.health - (b.illness - 0.25) * 0.06 * dt);
+    drainHealth(b, (b.illness - 0.25) * 0.06 * dt, 'illness');
     b.fatigue = clamp01(b.fatigue + b.illness * 0.004 * dt); // sickness exhausts
   }
 

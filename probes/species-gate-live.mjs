@@ -45,8 +45,11 @@ function mkAdult(world, skey, sex, x) {
   return c;
 }
 
-// Lab conditions: fed, watered, rested, unafraid, locked on the mate action.
+// Lab conditions: fed, watered, rested, unafraid, unhurt, locked on the mate action.
 // Everything downstream (senses, courtship, tryMate, eggs) runs live.
+// v0.32 (Bart's lab-hygiene finding): the lab is SEALED — health and injury
+// are topped up too, so a death in the lab can only come from the mechanism
+// under test, never from background causes the lab doesn't control.
 function labRat(c) {
   c.biochem.hunger = 0;
   c.biochem.energy = 0.95;
@@ -54,6 +57,8 @@ function labRat(c) {
   c.biochem.illness = 0;
   c.biochem.hydration = 1;
   c.biochem.bloodSugar = 1;
+  c.biochem.health = 1; // v0.32: sealed
+  c.biochem.injury = 0; // v0.32: sealed
   c.mateCooldown = 0;
   c.action = 'mate';
   c.actionTimer = 1e9;

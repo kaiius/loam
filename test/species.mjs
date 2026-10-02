@@ -51,7 +51,7 @@ test('v0.22: founders are deterministic — same seed + pinSub → identical all
 });
 
 test('v0.22: no new loci — the roster is founder VALUES, GENES stays 230', () => {
-  assert.equal(GENES.length, 233, 'vulture/beetle/bacteria add values, not loci (233 = 232 + v0.30 speciesTag)');
+  assert.equal(GENES.length, 239, 'vulture/beetle/bacteria add values, not loci (239 = 233 + v0.32 six nerve loci)');
 });
 
 // --- vulture founder-exactness -------------------------------------------------

@@ -136,6 +136,8 @@ export const SENSE32 = [
   'phaseSleepiness', // v0.28 "Day and night": how strongly the body wants
   // sleep RIGHT NOW given the light and its own activityPhase — appended,
   // never renumbered
+  'pain', // v0.32 "Nervous system": nociception — recent injury, decaying —
+  // appended, never renumbered
 ];
 // The pre-v0.17 vocabulary — family-C genes name senses against these
 // indices, which are never renumbered.
@@ -517,6 +519,28 @@ GENES.push(
 // === end GENOME v0.30 loci ==================================================
 export const SPECIES30_KEYS = new Set(GENES.slice(SPECIES30_START).map((g) => g.key));
 
+// === GENOME v0.32 "Nervous system": the peripheral nerves (append-only) =====
+// nerveConduction: conduction velocity of both trunks (px/tick = 4+26*v).
+// painTolerance: how much pain narrows the action repertoire (vote nudge).
+// reflPainFlee/reflPainFleeThr: withdrawal reflex gain + threshold.
+// reflFearFlee/reflFearFleeThr: startle reflex gain + threshold.
+// Reflex genes use the instinct-gene value scale but are NOT wired into the
+// brain's instW — nerves.js reads them directly, keeping the fast reflex
+// path experimentally separable from the cortical path. No new actions, so
+// Paul's v0.5 rule needs no new instinct genes. Draw from their own
+// sub-stream (pass 9) so every earlier RNG sequence stays bit-identical.
+const NERVES32_START = GENES.length;
+GENES.push(
+  { key: 'nerveConduction', kind: 'float', founder: 0.5 },
+  { key: 'painTolerance', kind: 'float', founder: 0.5 },
+  { key: 'reflPainFlee', kind: 'float', founder: 0.7 },
+  { key: 'reflPainFleeThr', kind: 'float', founder: 0.45 },
+  { key: 'reflFearFlee', kind: 'float', founder: 0.5 },
+  { key: 'reflFearFleeThr', kind: 'float', founder: 0.65 },
+);
+// === end GENOME v0.32 loci ==================================================
+export const NERVES32_KEYS = new Set(GENES.slice(NERVES32_START).map((g) => g.key));
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
@@ -562,7 +586,11 @@ export const CHROMOSOMES = [
   ['learningRate', 'memory', 'brainSize',
    'bpLayers', 'bpSparsity', 'bpHebb', 'bpLatInhib',
    'agCount', 'agGain', 'agThresh', 'mtDecay', 'mtGain',
-   'nmChem', 'nmGain', 'nmThresh'],
+   'nmChem', 'nmGain', 'nmThresh',
+   // v0.32 "Nervous system": conduction velocity + pain tolerance ride the
+   // neuroarchitecture chromosome — the peripheral nerves are the brain's
+   // body, or meiosis drops them.
+   'nerveConduction', 'painTolerance'],
   // 4 — Instincts (+ v2 family S: stimulus valence)
   ['curiosity', 'sociability', 'boldness',
    'instHungerSeek', 'instHungerEat', 'instTiredSleep', 'instBoredPlay',
@@ -583,6 +611,9 @@ export const CHROMOSOMES = [
    'instHungerBite',
    // v0.28 "Day and night": the activity-phase trait + its sleep instinct
    'activityPhase', 'instPhaseSleep',
+   // v0.32 "Nervous system": the reflex arcs ride the instinct chromosome —
+   // withdrawal and startle are nature, not nurture, or meiosis drops them.
+   'reflPainFlee', 'reflPainFleeThr', 'reflFearFlee', 'reflFearFleeThr',
    ..._chrS],
   // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
   [..._chrD, ..._chrC],
@@ -664,6 +695,7 @@ const PIN_SALT_WEB22 = 0x22; // v0.22 web-of-life pass (instBite)
 const PIN_SALT_SEASONS = 0x27; // v0.27 seasons pass (pantCapacity)
 const PIN_SALT_DAYNIGHT = 0x28; // v0.28 day/night pass (activityPhase, instPhaseSleep)
 const PIN_SALT_SPECIES30 = 0x30; // v0.30 species pass (speciesTag)
+const PIN_SALT_NERVES32 = 0x32; // v0.32 nervous-system pass
 export function randomGenome(rng, opts = {}) {
   // opts.pinSub (number): when set, the language (v0.16), evo-devo (v0.17),
   // realms (v0.18), hands/falling (v0.20), web-of-life (v0.22) and seasons
@@ -706,6 +738,8 @@ export function randomGenome(rng, opts = {}) {
   // seeded by a hash of the full pre-v0.27 genome — deterministic, and every
   // earlier stream stays bit-identical to v0.22. With opts.pinSub, passes
   // 2–6 seed from the pin instead of the content hashes.
+  // v0.32: the nervous-system loci draw from their own sub-stream in
+  // pass 9 — deterministic, every earlier pass bit-identical to v0.31.
   const isNew17 = (k) => EVO17_KEYS.has(k);
   const isNew18 = (k) => REALMS18_KEYS.has(k);
   const isNew20 = (k) => HANDS20_KEYS.has(k);
@@ -714,7 +748,8 @@ export function randomGenome(rng, opts = {}) {
   const isNew27 = (k) => SEASONS27_KEYS.has(k);
   const isNew28 = (k) => DAYNIGHT28_KEYS.has(k);
   const isNew30 = (k) => SPECIES30_KEYS.has(k);
-  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k) || isNew30(k);
+  const isNew32 = (k) => NERVES32_KEYS.has(k);
+  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k) || isNew30(k) || isNew32(k);
   for (const gene of GENES) {
     if (gene.key.startsWith('lex') || isNewer(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
@@ -744,7 +779,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h3 = 0x18ea1d;
   for (const gene of GENES) {
-    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key)) continue;
+    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
     for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
   }
   const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
@@ -760,7 +795,7 @@ export function randomGenome(rng, opts = {}) {
   // falling gene draws after the hands genes, deterministically.
   let h4 = 0x20a05;
   for (const gene of GENES) {
-    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key)) continue;
+    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
     for (const a of alleles[gene.key]) h4 = (Math.imul(h4, 31) + Math.floor(a * 1e9)) | 0;
   }
   const handsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_HANDS) : h4 >>> 0);
@@ -773,7 +808,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h5 = 0x22022;
   for (const gene of GENES) {
-    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key)) continue;
+    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
     for (const a of alleles[gene.key]) h5 = (Math.imul(h5, 31) + Math.floor(a * 1e9)) | 0;
   }
   const web22Rng = createRng(pinned ? hashPin(pinSub, PIN_SALT_WEB22) : h5 >>> 0);
@@ -786,7 +821,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h6 = 0x27027;
   for (const gene of GENES) {
-    if (isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key)) continue;
+    if (isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
     for (const a of alleles[gene.key]) h6 = (Math.imul(h6, 31) + Math.floor(a * 1e9)) | 0;
   }
   const seasonsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SEASONS) : h6 >>> 0);
@@ -799,7 +834,7 @@ export function randomGenome(rng, opts = {}) {
   // own sub-stream in pass 7 — new loci never shift the main RNG sequence.
   let h7 = 0x28028;
   for (const gene of GENES) {
-    if (isNew28(gene.key) || isNew30(gene.key)) continue;
+    if (isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
     for (const a of alleles[gene.key]) h7 = (Math.imul(h7, 31) + Math.floor(a * 1e9)) | 0;
   }
   const daynightRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_DAYNIGHT) : h7 >>> 0);
@@ -813,13 +848,27 @@ export function randomGenome(rng, opts = {}) {
   // pass stays bit-identical to v0.29.
   let h8 = 0x30030;
   for (const gene of GENES) {
-    if (isNew30(gene.key)) continue;
+    if (isNew30(gene.key) || isNew32(gene.key)) continue;
     for (const a of alleles[gene.key]) h8 = (Math.imul(h8, 31) + Math.floor(a * 1e9)) | 0;
   }
   const speciesRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SPECIES30) : h8 >>> 0);
   for (const gene of GENES) {
     if (!isNew30(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, speciesRng), randomAllele(gene, speciesRng)];
+    marks[gene.key] = 1.0;
+  }
+  // v0.32 "Nervous system": the nerve loci draw from their own sub-stream
+  // in pass 9 — new loci never shift the main RNG sequence. Every earlier
+  // pass stays bit-identical to v0.31.
+  let h9 = 0x32032;
+  for (const gene of GENES) {
+    if (isNew32(gene.key)) continue;
+    for (const a of alleles[gene.key]) h9 = (Math.imul(h9, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const nervesRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_NERVES32) : h9 >>> 0);
+  for (const gene of GENES) {
+    if (!isNew32(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, nervesRng), randomAllele(gene, nervesRng)];
     marks[gene.key] = 1.0;
   }
   // v0.18: allele overrides — applied after the draws, so a sweep can pin

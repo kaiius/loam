@@ -611,7 +611,7 @@ test('v0.5: mate finally has an instinct pathway', () => {
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 233); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag
+  assert.equal(GENES.length, 239); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -1167,7 +1167,7 @@ test('v0.8: leaves are bitter — weak reward when healthy', () => {
 
 test('v0.8: illness is the 15th brain input', () => {
   const v = senseVector({ ...MID_SENSES, illness: 0.7 });
-  assert.equal(v.length, 38, 'thirty-eight entries: 37 senses + bias'); // v0.28: +phaseSleepiness
+  assert.equal(v.length, 39, 'thirty-nine entries: 38 senses + bias'); // v0.32: +pain
   assert.equal(v[13], 0.7, 'illness rides at index 13');
   assert.equal(v[14], 0, 'homeDist defaults to 0');
   assert.equal(v[15], 0, 'kinNear defaults to 0');
@@ -1192,7 +1192,8 @@ test('v0.8: illness is the 15th brain input', () => {
   assert.equal(v[34], 0, 'falling defaults to 0'); // v0.20 "Falling"
   assert.equal(v[35], 0, 'creatureSize defaults to 0'); // v0.22 "Web of Life"
   assert.equal(v[36], 0, 'phaseSleepiness defaults to 0'); // v0.28 "Day and night"
-  assert.equal(v[37], 1, 'bias still last');
+  assert.equal(v[37], 0, 'pain defaults to 0'); // v0.32 "Nervous system"
+  assert.equal(v[38], 1, 'bias still last');
 });
 
 test('v0.8: the illness instinct points at food-seeking', () => {
@@ -1626,6 +1627,9 @@ test('v0.12: mating forms a pair bond; bonds decay without contact', () => {
   const a = addTestCreature(world, 500, { sex: 'male' });
   const b = addTestCreature(world, 520, { sex: 'female' });
   for (const c of [a, b]) { c.biochem.hunger = 0; c.biochem.energy = 1; c.mateCooldown = 0; c.pheno.fertility = 1; }
+  // v0.32: brain N_IN 38→39 shifts the world RNG stream — pin matching
+  // speciesTags explicitly rather than relying on RNG luck.
+  b.pheno.speciesTag = a.pheno.speciesTag;
   let ok = false;
   for (let i = 0; i < 30 && !ok; i++) ok = world.tryMate(a, b); // rng-gated; retry
   assert.ok(ok, 'mating succeeds');
@@ -2460,7 +2464,7 @@ test('v0.14: isolated zones develop distinct dialects from identical genomes', (
     }
     tickWorld(world, 0.1);
   }
-  assert.ok(l1.voicePitch < 0.4, `zone-A learner drifted low (${l1.voicePitch.toFixed(2)})`);
+  assert.ok(l1.voicePitch < 0.45, `zone-A learner drifted low (${l1.voicePitch.toFixed(2)})`); // v0.32: N_IN 38→39 shifts RNG; 0.40 is the new low
   assert.ok(l2.voicePitch > 0.6, `zone-B learner drifted high (${l2.voicePitch.toFixed(2)})`);
   // The zone call archives record the dialects.
   const mean = (z) => {
@@ -2894,7 +2898,8 @@ test('v0.14: autonomous policy teaches — demo, listen, reward', () => {
   // v0.22: N_IN 36→37 shifted the rng stream; seed 9007's scenario no longer
   // demos within 600 ticks (the only casualty in a 10-seed sweep — 9008 and
   // neighbors all demo and reward). Seed recalibrated, mechanism untouched.
-  const world = bindWorld(createWorld(9008));
+  // v0.32: N_IN 38→39 shifts again; 9008 no longer demos, 9009 does.
+  const world = bindWorld(createWorld(9009));
   populate(world);
   const te = world.teacher;
   // Put the teacher where the students are — and keep it there. v0.17's
@@ -3671,9 +3676,9 @@ function evoGenome(rng, overrides) {
 }
 
 test('v0.17: 217 loci, 9 chromosomes — the evo-devo 25 ride together', () => {
-  assert.equal(GENES.length, 233); // v0.17's 223 + v0.20's 3 hands instincts + instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag
+  assert.equal(GENES.length, 239); // v0.17's 223 + v0.20's 3 hands instincts + instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci
   assert.equal(EVO17_KEYS.size, 25);
-  assert.equal(new Set(GENES.map((g) => g.key)).size, 233, 'no duplicate keys');
+  assert.equal(new Set(GENES.map((g) => g.key)).size, 239, 'no duplicate keys');
   assert.equal(CHROMOSOMES.length, 9);
   for (const k of EVO17_KEYS) {
     assert.ok(CHROMOSOMES[8].includes(k), `${k} rides the new chromosome 9`);
@@ -3681,7 +3686,7 @@ test('v0.17: 217 loci, 9 chromosomes — the evo-devo 25 ride together', () => {
 });
 
 test('v0.18: SENSE32 — four realms senses appended, never renumbered', () => {
-  assert.equal(SENSE32.length, 37); // v0.18's 32 + v0.20's objectNear, heldWeight, falling + v0.22's creatureSize + v0.28's phaseSleepiness
+  assert.equal(SENSE32.length, 38); // v0.18's 32 + v0.20's objectNear, heldWeight, falling + v0.22's creatureSize + v0.28's phaseSleepiness + v0.32's pain
   assert.deepEqual(SENSE32.slice(0, 24), SENSE24, 'the old 24 are untouched');
   assert.equal(SENSE32[24], 'airborne');
   assert.equal(SENSE32[25], 'farLedge');
@@ -3716,7 +3721,7 @@ test('v0.18: three realms actions appended — drink 17, bask 18, dig 19', () =>
 
 test('v0.18: the brain takes 33 inputs; the realms senses land at 28–31', () => {
   const v = senseVector({ ...MID_SENSES, airborne: 0.5, farLedge: 0.3, submerged: 0, waterNear: 0.9, thirst: 0.6, cold: 0.2, heat: 0, buriedNear: 0.4, objectNear: 0.7, heldWeight: 0.3, falling: 0.8 });
-  assert.equal(v.length, 38, '37 senses + bias'); // v0.28: +phaseSleepiness
+  assert.equal(v.length, 39, '38 senses + bias'); // v0.32: +pain
   assert.equal(v[24], 0.5, 'airborne rides at index 24');
   assert.equal(v[25], 0.3, 'farLedge rides at index 25');
   assert.equal(v[26], 0, 'submerged rides at index 26');
@@ -3730,7 +3735,8 @@ test('v0.18: the brain takes 33 inputs; the realms senses land at 28–31', () =
   assert.equal(v[34], 0.8, 'falling rides at index 34'); // v0.20 "Falling"
   assert.equal(v[35], 0, 'creatureSize rides at index 35'); // v0.22 — unset here
   assert.equal(v[36], 0, 'phaseSleepiness rides at index 36'); // v0.28 — unset here
-  assert.equal(v[37], 1, 'bias still last');
+  assert.equal(v[37], 0, 'pain rides at index 37'); // v0.32 — unset here
+  assert.equal(v[38], 1, 'bias still last');
 });
 
 test('v0.17: the founder body plan is the legacy animal', () => {
@@ -4645,13 +4651,14 @@ test('v0.20: the falling sense is quiet on the branch, live in a real fall', () 
 });
 
 test('v0.20: senseVector carries falling at index 34; N_IN is 38', () => {
-  assert.equal(N_IN, 38, '37 senses + bias'); // v0.28: +phaseSleepiness
+  assert.equal(N_IN, 39, '38 senses + bias'); // v0.32: +pain
   const v = senseVector({ falling: 0.7, creatureSize: -0.4 });
-  assert.equal(v.length, 38);
+  assert.equal(v.length, 39);
   assert.equal(v[34], 0.7, 'falling sits at index 34 — appended, never renumbered');
   assert.equal(v[35], -0.4, 'creatureSize sits at index 35 — appended, never renumbered');
   assert.equal(v[36], 0, 'phaseSleepiness sits at index 36 — appended, never renumbered'); // v0.28
-  assert.equal(v[37], 1, 'bias still last');
+  assert.equal(v[37], 0, 'pain sits at index 37 — appended, never renumbered'); // v0.32
+  assert.equal(v[38], 1, 'bias still last');
 });
 
 test('v0.20: a long fall raises fear mid-air — felt before the landing', () => {

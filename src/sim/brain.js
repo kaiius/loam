@@ -51,7 +51,7 @@ export const ACTIONS = [
   // spikeArmor; fatigue-billed; spikes retaliate. No prey-finding cheats.
 ];
 
-export const N_IN = 38; // 37 senses + bias... see senseVector
+export const N_IN = 39; // 38 senses + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -65,7 +65,7 @@ const MIN_ASSOC = 16; // pruning never goes below this
 //           climbUp, climbDown, groomNear, jumpNear, callHeard, callPitch,
 //           wasteOdor, airborne, farLedge, submerged, waterNear,
 //           thirst, cold, heat, buriedNear, objectNear, heldWeight, falling,
-//           creatureSize, bias]
+//           creatureSize, phaseSleepiness, pain, bias]
 // v0.12 rule kept: never renumber. New senses append before the bias.
 export function senseVector(s) {
   return [
@@ -81,6 +81,7 @@ export function senseVector(s) {
     s.falling || 0, // v0.20 "Falling": the vestibular sense — appended, never renumbered
     s.creatureSize || 0, // v0.22 "Web of Life": relative mass of nearest creature, no identity
     s.phaseSleepiness || 0, // v0.28 "Day and night": the phase-sleepiness sense — appended, never renumbered
+    s.pain || 0, // v0.32 "Nervous system": nociception — appended, never renumbered
     1,
   ];
 }

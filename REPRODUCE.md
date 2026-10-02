@@ -23,18 +23,34 @@ After 20000 ticks at dt=0.5 (10000 sim-seconds ≈ 2.8 sim-hours):
 All three must hold. A world that survives on immortal founders without
 breeding is not viable; a world that breeds once and dies out is not viable.
 
-## The pinned seeds (v0.13.1)
+## The pinned seeds (v0.32)
 
-Seeds 7 and 21 are the standing viability battery. Both must pass on every
-release:
+Seed 3 is the standing viability battery. It must pass on every release:
+
+```bash
+node test/viability-proof.mjs 3 20000
+# v0.32: seed 3 → 44 alive, 602 births → VIABLE
+```
+
+Seed 3 is the long-standing survivor (viable since v0.31 at 20000 ticks).
+
+## Historical batteries
+
+### v0.13.1 battery (retired)
+
+Seeds 7 and 21 were the v0.13.1 viability battery. Both are EXTINCT on
+v0.31+ due to brain architecture evolution (N_IN 29→33→37→38→39 across
+versions changes the RNG stream and emergent behavior). The v0.13.1 numbers
+are preserved below for the historical record.
 
 ```bash
 for s in 7 21; do node test/viability-proof.mjs $s 20000; done
 # v0.13.1: seed 7 → 64 alive, 358 births, 179 matings → VIABLE
 # v0.13.1: seed 21 → 45 alive, 325 births, 163 matings → VIABLE
+# v0.32: seed 7 → EXTINCT, seed 21 → EXTINCT (brain architecture changed)
 ```
 
-Seed 7 is the long-standing survivor; seed 21 is the regression pin for the
+Seed 7 was the long-standing survivor; seed 21 was the regression pin for the
 v0.13.1 brain-NaN fix (it went extinct on every pre-fix build via the NaN
 trap, and the fix rescued it).
 

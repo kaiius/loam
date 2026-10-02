@@ -18,14 +18,15 @@ import {
 // --- the locus ---------------------------------------------------------------
 
 test('v0.30: speciesTag locus exists — choice over the species keys, on the morphology chromosome', () => {
-  assert.equal(GENES.length, 233, 'one new locus in v0.30');
+  assert.equal(GENES.length, 239, 'v0.32: 233 + six nerve loci');
   const g = GENES.find((x) => x.key === 'speciesTag');
   assert.ok(g, 'speciesTag in GENES');
   assert.equal(g.kind, 'choice');
   assert.deepEqual(g.choices, SPECIES_TAG_CHOICES);
   assert.ok(CHROMOSOMES[0].includes('speciesTag'), 'rides chromosome 1 (morphology)');
-  // append-only: the locus is last, every earlier index untouched
-  assert.equal(GENES[GENES.length - 1].key, 'speciesTag');
+  // append-only: speciesTag sits at its v0.30 index; v0.32's nerve loci append after it
+  assert.equal(GENES[232].key, 'speciesTag');
+  assert.equal(GENES[GENES.length - 1].key, 'reflFearFleeThr', 'v0.32 nerve loci append last');
 });
 
 test('v0.30: every species key has a tag choice', () => {
