@@ -207,16 +207,17 @@ test('v0.18: spawnBuriedFood caches per-biome provender', () => {
     const k = biomeKeyAt(b.x, 800);
     byBiome[k] = (byBiome[k] || 0) + 1;
   }
-  assert.deepEqual(byBiome, { plains: 8, desert: 6, jungle: 6, arctic: 4, shallows: 5, archipelago: 4 });
+  assert.deepEqual(byBiome, { plains: 8, desert: 6, jungle: 6, arctic: 4, archipelago: 4 });
   const kinds = new Set(world.buried.map((b) => b.kind));
-  assert.ok(kinds.has('tuber') && kinds.has('grub') && kinds.has('snowcache') && kinds.has('morsel') && kinds.has('sandcache'));
+  // v0.31: morsels retired — shallows bury nothing.
+  assert.ok(kinds.has('tuber') && kinds.has('grub') && kinds.has('snowcache') && kinds.has('sandcache') && !kinds.has('morsel'));
 });
 
 test('v0.18: digAt unearths buried food and returns the count', () => {
   const world = bindWorld(createWorld(11));
   spawnBuriedFood(world);
   const before = world.buried.length;
-  assert.equal(before, 33);
+  assert.equal(before, 24); // v0.31: was 33 (v1) / 44 (v0.30 actual) — 20 shallows morsels retired
   // Dig at an actual cache — buried positions come from world.rng, so they
   // depend on the call sequence; the contract is unearth-and-count, not an
   // absolute coordinate.

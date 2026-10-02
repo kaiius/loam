@@ -63,10 +63,10 @@ export const DIG_RADIUS = 60; // px — digAt search radius
 // small prey and corpses have fixed nutrition overrides. Plant kinds burn
 // through fruitEfficiency. Leaves are medicine, scraps desperation.
 // Anything not listed is unknown — skipped, never crashed on.
-export const MEAT_KINDS = new Set(['meat', 'bug', 'minnow', 'corpse', 'grub', 'morsel']);
+export const MEAT_KINDS = new Set(['meat', 'bug', 'minnow', 'corpse', 'grub']);
 export const PLANT_KINDS = new Set(['fruit', 'tuber', 'kelp', 'moss', 'seed',
   'propagule', 'cactusfruit', 'berry', 'snowcache', 'sandcache']);
-export const PREY_NUTRITION = 0.15; // bug/minnow/grub/morsel — small mouthfuls
+export const PREY_NUTRITION = 0.15; // bug/minnow/grub — small mouthfuls
 export const CORPSE_NUTRITION = 0.4; // corpse — rotten, but food
 // v0.22 "Web of Life": detritivory — grazing the soil's waste directly.
 // Poor food (already half-decomposed); the midden beetle's trade.
@@ -893,7 +893,7 @@ export function doEat(c, world) {
   }
   if (!food) return false;
   // v0.18 "Realms": explicit diet branches. Meat kinds (meat, bug, minnow,
-  // corpse, grub, morsel) burn through meatEfficiency — small prey and
+  // corpse, grub) burn through meatEfficiency — small prey and
   // corpses have fixed nutrition overrides. Plant kinds (fruit, tuber,
   // kelp, moss, …) burn through fruitEfficiency. Leaves are medicine,
   // scraps desperation — both keep their existing logic. A truly unknown
@@ -945,10 +945,10 @@ export function doEat(c, world) {
     // the conditional.
     c.reward += wasSick ? 0.6 : 0.15;
   } else if (isMeat) {
-    // Meat: small prey (bug/minnow/grub/morsel) are fixed small mouthfuls;
+    // Meat: small prey (bug/minnow/grub) are fixed small mouthfuls;
     // corpse is rotten but substantial; meat uses the food's own nutrition.
     let nut = food.nutrition || 1;
-    if (kind === 'bug' || kind === 'minnow' || kind === 'grub' || kind === 'morsel') nut = PREY_NUTRITION;
+    if (kind === 'bug' || kind === 'minnow' || kind === 'grub') nut = PREY_NUTRITION;
     else if (kind === 'corpse') nut = CORPSE_NUTRITION;
     c._ate = (c._ate || 0) + bite * 1.1 * c.pheno.meatEfficiency * nut;
     c.actionLabel = `eating ${kind}`;

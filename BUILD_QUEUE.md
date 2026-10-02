@@ -7,6 +7,13 @@ never renumbered. New loci from their own RNG sub-stream. Same seed → same
 world. No species labels in sense vectors (§9.4 grep gate).
 
 ## Build stream (in order)
+
+Release-post rule (2026-10-02, Joshua's correction): the Colony release post
+ships WITH the source zip attached (git archive of the tag, uploaded, link in
+the post body) — never a bare announcement with the zip handed out separately.
+Bart's v0.30 comment ("v0.30 ships with no source attached, so there is nothing
+to run yet") is what a missing zip looks like from the outside.
+
 - [x] v0.22.1 — bite (commit 8009e81) — DONE by previous builder
 - [x] v0.22.2 — critter promotion: flutter (13th) + grub (14th) founders,
       world.critters retired, pollination placeholder (visits → fruit set) —
@@ -117,11 +124,22 @@ world. No species labels in sense vectors (§9.4 grep gate).
       Probe: forced tanglekin×beetle fails, tanglekin×tanglekin succeeds.
       DONE 2026-10-02 (tag v0.30). 451 tests, 391 pass, 60 fail (all
       pre-existing on v0.29).
-- [ ] v0.31 — morsel retirement (design §5, §13.8: retired, not kept
-      alongside): morsels no longer spawn/tick; drop 'morsel' from
-      MEAT_KINDS. CHECK FIRST: scavenger guild food supply — carrion must
-      cover it; if the guild starves, say so loudly. Probe: 10k ticks, zero
-      morsel spawns, scavengers fed.
+- [x] v0.31 — morsel retirement (design §5, §13.8: retired, not kept
+      alongside): morsels no longer spawn/tick; dropped 'morsel' from
+      MEAT_KINDS. CHECK FIRST done: 10k-tick probes (seeds 7, 42) on v0.30
+      showed ZERO morsels ever unearthed/eaten (15–20 buried, 0 consumed) —
+      the morsel path was already dead; carrion is the working scavenger
+      food (44–65 units eaten). After: zero morsel spawns, corpse
+      consumption healthy (254 units, seed 42), starvation at baseline —
+      the guild does not starve. Note: removing buryFood calls shifts the
+      decorRng draw sequence for later spawns, so before/after trajectories
+      diverge chaotically (verified deterministic per code version).
+      Probe: probes/morsel-retirement.mjs PASS. Gemini spec review (5
+      findings, none blocking — legacy-save, mass-seal, shallows-nerf,
+      RNG-shift, comment; all addressed/non-issues).
+      DONE 2026-10-02 (tag v0.31). 451 tests, 392 pass, 59 fail (all
+      pre-existing on v0.30; the digAt count assertion was fixed by this
+      change: 60 → 59).
 - [ ] v0.32 — leg-pressure experiment (BIOMES_DESIGN §13.7): isolate leg
       weakness from illness/contamination confound; fix sub-stream seeding
       confound; find the leg value where climb-pressure is readable

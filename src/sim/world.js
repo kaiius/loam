@@ -1751,8 +1751,8 @@ export function tickWorld(world, dt) {
 
   // v0.18 §13.3: mobile food — one system, two media. Bugs random-walk
   // their platform; minnows random-walk their water (constrained: a minnow
-  // that would leave the water stays put). No brains, no instincts — slow
-  // random-walk morsels, the first meat. Edible via the existing eat verb.
+  // that would leave the water stays put). Edible via the existing eat
+  // verb. (v0.31: the brainless morsel path is retired per design §5.)
   // v0.17.2: other loose food obeys gravity — lifted into the sky and
   // released, it falls (stepLightBody hangs it still while dragged).
   for (const f of world.foods) {
@@ -2163,7 +2163,8 @@ export function spawnBuriedFood(world) {
       else if (r.label === 'desert') buryFood(world, r.id, 'tuber', 1.8, x0, x1, midY, 6);
       else if (r.label === 'jungle') buryFood(world, r.id, 'grub', 1.2, x0, x1, midY, 6);
       else if (r.label === 'arctic') buryFood(world, r.id, 'snowcache', 1.4, x0, x1, midY, 4);
-      else if (r.label === 'shallows') buryFood(world, r.id, 'morsel', 1.0, x0, x1, midY, 5);
+      // v0.31: morsels retired (design §5) — shallows bury nothing; the
+      // water column's food is the minnow schools (spawnMobileFood).
       else if (r.label === 'archipelago') {
         const plats = L.platforms.filter((p) => p.regionId === r.id && p.kind === 'ground');
         if (plats.length) {
@@ -2187,8 +2188,7 @@ export function spawnBuriedFood(world) {
   buryFood(world, 'jungle', 'grub', 1.2, jux0, jux1, gy((jux0 + jux1) / 2), 6); // grubs under leaf litter
   const [arx0, arx1] = zb('arctic');
   buryFood(world, 'arctic', 'snowcache', 1.4, arx0, arx1, gy((arx0 + arx1) / 2), 4); // snow caches
-  const [shx0, shx1] = zb('shallows');
-  buryFood(world, 'shallows', 'morsel', 1.0, shx0, shx1, gy((shx0 + shx1) / 2), 5); // seabed morsels
+  // v0.31: morsels retired (design §5) — shallows bury nothing in v1 either.
   const ia = L.platformsByZone.archipelago[0]; // island A ground — the sand flat
   buryFood(world, 'archipelago', 'sandcache', 1.3, ia.x1 + 10, ia.x2 - 10, ia.y, 4);
 }
