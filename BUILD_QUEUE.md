@@ -109,40 +109,41 @@ world. No species labels in sense vectors (§9.4 grep gate).
       sorting within N generations (or the builder reports why not, with
       numbers); plus a 48h probe where nocturnal-phase founders out-forage
       diurnal ones at night and lose by day.
-- [ ] v0.29 — species-tag mating gate (ECOLOGY_DESIGN §13.2): inherited
+- [x] v0.29 — GENERATIVE WORLDGEN v2 (design/worldgen-v2.md, Joshua-approved 2026-10-01; DONE 2026-10-02, tag v0.29): seeded fbm elevation + tectonic ridges + rift basin; quantile sea level (0.55–0.70 land); substrate classification; plateau-gradient Tinit (hot-west/hot-east, bit-stable); Whittaker region labels; constructive canopy generator (founder ≥6 branches, BFS-connected, ≥8 fruit slots); 8 label-preferring cohort finders; viability gate G1–G7; gentle fallback. Migration: biomes/weather/world/creature/painter/ui region-based; soil keyed by region id. Probes: determinism bit-for-bit; viability 100/100 (seeds 1–50 × sizes 1–2); difference metric 81.9× baseline (≥5× req); canopy 20/20; founder spawn 10/10; climate 10/10. Gemini spec review (10 findings, 4 accepted) + diff review (APPROVED). Builder corrections: sea-level quantile inversion fixed; fbm climate wave → plateau-gradient (fbm never hit jungle threshold); beach 25px→12px, founder 700px, mountain ground platforms.
+- [ ] v0.30 — species-tag mating gate (ECOLOGY_DESIGN §13.2): inherited
       species-tag; gate mating on tag match; SPECIES-level not tribe-level
       (tanglekin × tanglekin across tribes must succeed); new loci from own
       sub-stream; default-neutral so viability battery passes unchanged.
       Probe: forced tanglekin×beetle fails, tanglekin×tanglekin succeeds.
-- [ ] v0.30 — morsel retirement (design §5, §13.8: retired, not kept
+- [ ] v0.31 — morsel retirement (design §5, §13.8: retired, not kept
       alongside): morsels no longer spawn/tick; drop 'morsel' from
       MEAT_KINDS. CHECK FIRST: scavenger guild food supply — carrion must
       cover it; if the guild starves, say so loudly. Probe: 10k ticks, zero
       morsel spawns, scavengers fed.
-- [ ] v0.31 — leg-pressure experiment (BIOMES_DESIGN §13.7): isolate leg
+- [ ] v0.32 — leg-pressure experiment (BIOMES_DESIGN §13.7): isolate leg
       weakness from illness/contamination confound; fix sub-stream seeding
       confound; find the leg value where climb-pressure is readable
       independently of illness deaths. Measurement task — report number +
       method. Gets a verdict, not just code.
-- [ ] v0.32 — pollination, properly (design §6.1): flower state, pollen tags
+- [ ] v0.33 — pollination, properly (design §6.1): flower state, pollen tags
       (carrier + flora species id + viability timer), deposition on second
       flower of same species → fruit set; wind/selfing fallback per design.
       Probe: exclosure experiment — netted vs open flowers, fruit set differs.
-- [ ] v0.33 — seed dispersal vectors (design §6.2) + water current field
+- [ ] v0.34 — seed dispersal vectors (design §6.2) + water current field
       (§13.6): endozoochory (gut timer → deposition away from parent) +
       hydrochory (current field per water biome → wash-ashore zones).
       Gravity-only dispersal ends. Probe: seed-voyage gate — seeds deposited
       away from parents; new ground colonized.
-- [ ] v0.34 — §14 ecological QA gates: pollinator-crash cascade, 50k-tick
+- [ ] v0.35 — §14 ecological QA gates: pollinator-crash cascade, 50k-tick
       food-web persistence, seed voyage (≥2/10), predator–prey cycle,
       defense evolution, colonization both-outcomes, physiological-confinement
       grep. Pass/fail per gate with evidence; un-runnable gates get a named
       owner + trigger, never silence.
-- [ ] v0.35 — three instruments: (a) generation-50 drift watch (teacher
+- [ ] v0.36 — three instruments: (a) generation-50 drift watch (teacher
       prototypes vs ridge sound shadows); (b) jump-weakening clean test
       (measured number replaces unprincipled one); (c) duplication-to-fixation
       demo (DUP_RATE, dupLog — show a fixation or report why not).
-- [ ] v0.35 — tribe-divergence instrument (Joshua 2026-10-01): track
+- [ ] v0.37 — tribe-divergence instrument (Joshua 2026-10-01): track
       morphological divergence between tribes over generations — do separated
       tribes drift apart in body form (size, tail/arm/leg/ear, spikes, fur,
       hue, pattern), and does it correlate with habitat once v0.25 heat

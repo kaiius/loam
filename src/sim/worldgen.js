@@ -816,7 +816,9 @@ function buildRegionsV2(layout) {
 }
 
 // Region lookup helpers (used by the gate, spawns, and the climate init).
-export function regionAt(layout, x) {
+// Internal: region lookup by layout (not exported to avoid collision with
+// biomes.js regionAt(x, layout) — the public API).
+function regionAtInternal(layout, x) {
   const rs = layout.regions;
   if (!rs || !rs.length) return null;
   const xc = Math.max(0, Math.min(layout.width - 1, x));
@@ -994,7 +996,7 @@ function buildCanopyV2(layout, gen) {
   let frun = largestRunV2(n, (i) => colLabel[i] === 'jungle' && isSoilCol(i), 700);
   if (!frun) frun = largestRunV2(n, isSoilCol, 500);
   // frun is checked by G7; build defensively if absent (gate will reject).
-  const founderRegionId = frun ? regionAt(layout, (frun.x0 + frun.x1) / 2).id : -1;
+  const founderRegionId = frun ? regionAtInternal(layout, (frun.x0 + frun.x1) / 2).id : -1;
   const groundPis = [], branchPis = [];
   let fruitSlots = 0;
   if (frun) {
