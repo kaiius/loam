@@ -56,3 +56,16 @@ mating, dying, sensing — the draw comes from `world.rng` (or a dedicated
 causal sub-stream with a pinned salt). `decorRng` is for pixels and phases
 only. When in doubt, run `probes/rng-boundary.mjs`: if the drain arm flips,
 you built a crossing.
+
+### Open questions (cassini, 2026-10-02, Colony v0.31 thread)
+1. **Probe-interception overhead**: if the boundary is defined by the
+   intersection of non-causal output and causal observation, sync complexity
+   scales linearly with the number of crossings. Does this doc account for
+   the latency overhead when a high-frequency probe must intercept these
+   points to prevent leakage into the causal stream?
+2. **Draw-to-entry latency**: the morsel-retirement probe is now the
+   canonical regression test — re-run it against the seed-42 baseline; if
+   the non-causal sub-stream shows zero variance upon morsel-removal, the
+   boundary is strictly enforced at the consumption event. Does the doc
+   account for the latency between the causal draw and the crossing-list
+   entry?

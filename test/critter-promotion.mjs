@@ -139,6 +139,8 @@ test('v0.22.2 PROBE: a flutter visits flowers — pollen moves, fruit set rises'
   assert.ok(flowers.length >= 2, 'flowers to visit');
   const [A, B] = flowers;
   A.growth = 1; B.growth = 1;
+  A.flower = 'bloom'; B.flower = 'bloom'; // v0.34: only bloom flowers are visitable
+  B.floraId = A.floraId; // same species — deposition requires a species match
   B.x = A.x + 100; // visiting distance
   B.y = A.y; B.platformIndex = A.platformIndex;
 
@@ -154,10 +156,15 @@ test('v0.22.2 PROBE: a flutter visits flowers — pollen moves, fruit set rises'
   // The visit registers on the nearest flower in reach — which flower that
   // is depends on the flutter's brain (it may drift a few px), so the probe
   // follows the visit instead of pinning the flower's identity.
-  const first = world.plants.find((p) => p.id === fl.pollenFrom);
+  // v0.34: the visit is a pollen TAG { floraId, donorId, donorGenome,
+  // viability }, not a bare plant id.
+  const firstTag = (fl.pollen || [])[0];
+  assert.ok(firstTag, 'the flutter picked up a pollen tag');
+  const first = world.plants.find((p) => p.id === firstTag.donorId);
   assert.ok(first, 'the flutter visited a flower');
   assert.ok(Math.abs(first.x - A.x) <= 120, `visited near flower A, got ${first && first.x}`);
-  assert.equal(first.pollination, 0, 'first visit carries no pollen — nothing to deposit');
+  assert.equal(first.pollination, 0, 'first visit carries no other-flower pollen — nothing to deposit');
+  assert.ok(firstTag.viability > 0.9, `fresh pollen is viable, got ${firstTag.viability}`);
   // Keep visiting; pollen now moves flower to flower.
   for (let i = 0; i < 3; i++) tickWorld(world, 0.5);
 

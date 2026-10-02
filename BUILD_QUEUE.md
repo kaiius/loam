@@ -4,7 +4,19 @@ Standing constraints: nothing touches ~/workspace/canopy/ until proof verdicts
 (~Fri Oct 9 evening EDT). All work in ~/workspace/canopy-v020. Versioned
 commits, execution probes before "built" reports. Senses/actions appended,
 never renumbered. New loci from their own RNG sub-stream. Same seed → same
-world. No species labels in sense vectors (§9.4 grep gate).
+world. No species labels in sense vectors (§9.4 grep gate). Anatomy gates capability
+(Joshua 2026-10-02): a creature does only what its anatomy allows — every
+action/verb declares its anatomical prerequisites in code comments (precedent:
+grasp/carry/drop require graspPairs ≥ 1; brachiation tiers on graspPairs).
+Discrete parts (v0.36 Scars) hard-gate verbs; continuous traits (tailGrip,
+armLength, legPower) scale strengths/weaknesses. A new verb with no anatomical
+prerequisite needs his explicit waiver. RNG discipline
+(cassini's v0.31 catch, 2026-10-02): causally load-bearing draws (mutation,
+meiosis, mate choice, anything selection sees) stay sequential in per-version
+sub-streams — that ordering IS the reproducibility contract. Non-causal draws
+(decor, cosmetic jitter, chronicle flavor) are stateless —
+hash(seed, tick, entityId, purpose) — so retiring a mechanic is a no-op on
+the stochastic state, never a butterfly.
 
 ## Build stream (in order)
 
@@ -140,30 +152,79 @@ to run yet") is what a missing zip looks like from the outside.
       DONE 2026-10-02 (tag v0.31). 451 tests, 392 pass, 59 fail (all
       pre-existing on v0.30; the digAt count assertion was fixed by this
       change: 60 → 59).
-- [ ] v0.32 — leg-pressure experiment (BIOMES_DESIGN §13.7): isolate leg
-      weakness from illness/contamination confound; fix sub-stream seeding
-      confound; find the leg value where climb-pressure is readable
-      independently of illness deaths. Measurement task — report number +
-      method. Gets a verdict, not just code.
-- [ ] v0.33 — pollination, properly (design §6.1): flower state, pollen tags
-      (carrier + flora species id + viability timer), deposition on second
-      flower of same species → fruit set; wind/selfing fallback per design.
-      Probe: exclosure experiment — netted vs open flowers, fruit set differs.
-- [ ] v0.34 — seed dispersal vectors (design §6.2) + water current field
+- [x] v0.32 — NERVOUS SYSTEMS (Joshua 2026-10-02, DONE 2026-10-02, commit
+      987d4ec, tag v0.32): peripheral nervous system for all living FAUNA —
+      sensory/motor nerves with body-size-scaled delays, reflex arcs
+      bypassing the brain, nerve damage attenuating signals, pain as appended
+      sense (index 37) with evolvable painTolerance. 462 tests, 401 pass, 61
+      fail (60 pre-existing on v0.31; 1 new: v0.22 vulture QA gate needs
+      re-baselining after N_IN 38→39). Execution probes green: delay scales
+      with size, reflex beats brain path, damage attenuates, pain drives
+      learning. Colony feedback folded: worldgen difference probe in-tree
+      (120.7× baseline vs 5× gate), lab sealed, nested zips stripped,
+      kumkrust's platformIndex crash guarded. Posted to Colony with zip
+      (post 36b61cd9).
+      nervous system for all living FAUNA (tanglekins, beetles, grubs,
+      flutter, minnows) — plants/microbes explicitly excluded, no nervous
+      system in nature. Sensory/motor nerves with body-size-scaled
+      transmission delays, reflex arcs bypassing the brain, nerve damage
+      attenuating signals, pain/nociception as an appended sense with
+      evolvable painTolerance. Pulls the pain-signaling portion of the
+      'Scars' design forward; bleed-out/clotting/regeneration stay with
+      Scars. Design: design/nervous-system.md.
+- [x] v0.33 — leg-pressure experiment (BIOMES_DESIGN §13.7): DONE
+      2026-10-02 (commit c2f7f62, tag v0.33; Colony post
+      5022e9a9-111d-461f-bca0-ab60aca29c7d with source zip). VERDICT: no
+      single leg value where climb-pressure becomes readable — seed-contingent,
+      non-monotonic; but the 2×2 isolation method is validated (seed-3 0.3:
+      CLEAN thrives/56 alive, NAT extinct — same legs, illness flips it).
+      Plus: RNG-boundary fix (seed-42 flip was real — addPebble drew radius
+      from decorRng; dedicated pebbleRng sub-stream; leak criterion now
+      standing rule; cassini's entropy-pool question answered); reflex
+      disambiguation = HYBRID (sensory pre-trunk 100%, motor rides trunk
+      17.5%); painTolerance=1 → inhibition 0, reflex fires; noFouling
+      honored from createWorld opts (v0.18 bug). Tests: 60 fail, all
+      pre-existing on v0.32, zero new (per-test name diff vs v0.32 tag).
+      Probes leg-pressure, rng-boundary, reflex-disambiguation,
+      morsel-retirement: all PASS.
+- [x] v0.34 — pollination, properly (design §6.1, DONE 2026-10-02): flower
+      state (bud → bloom → spent → bud, timer-driven, no RNG — only bloom
+      flowers are visitable), pollen tags on visitors [{ floraId, donorId,
+      donorGenome, viability }] (viability decays deterministically ~50s;
+      max 4 tags), deposition only on a SECOND flower of the SAME flora
+      species (morph:fruitKind) → pollination meter → fruit set; wind/selfing
+      floor stays 0.6×. Outcrossing: the donor genome is stamped onto each
+      fruit at fruit set (food.dadGenome, preserved through windfall);
+      disperseSeed makes mom × dad seedlings; unvisited flowers self.
+      ANATOMY: pollinator = small body (size ≤ 0.3) + flight-capable
+      (wingArea > 0.1 or airborne) — declared in tickPollination comments
+      per Joshua's 2026-10-02 rule. Zero new RNG draws (pickup/deposition/
+      viability deterministic) — nothing to annotate on the rng-boundary.
+      Gemini spec review: 1 real P0 (frozen-father — donor persisted across
+      cycles) fixed via fruit-stamping; 2 misreads dismissed with evidence.
+      Tests: 7 new in test/pollination.mjs (phenology, same-species,
+      cross-species, staleness, outcrossing, no-frozen-father, selfing
+      baseline); probe probes/pollination-exclosure.mjs PASS (seed 7:
+      open 8754 fruit vs netted 6145, +42% uplift, netted baseline > 0).
+- [ ] v0.35 — seed dispersal vectors (design §6.2) + water current field
       (§13.6): endozoochory (gut timer → deposition away from parent) +
       hydrochory (current field per water biome → wash-ashore zones).
       Gravity-only dispersal ends. Probe: seed-voyage gate — seeds deposited
       away from parents; new ground colonized.
-- [ ] v0.35 — §14 ecological QA gates: pollinator-crash cascade, 50k-tick
+- [ ] v0.36 — §14 ecological QA gates: pollinator-crash cascade, 50k-tick
       food-web persistence, seed voyage (≥2/10), predator–prey cycle,
       defense evolution, colonization both-outcomes, physiological-confinement
       grep. Pass/fail per gate with evidence; un-runnable gates get a named
       owner + trigger, never silence.
-- [ ] v0.36 — three instruments: (a) generation-50 drift watch (teacher
+- [ ] v0.37 — three instruments: (a) generation-50 drift watch (teacher
       prototypes vs ridge sound shadows); (b) jump-weakening clean test
       (measured number replaces unprincipled one); (c) duplication-to-fixation
-      demo (DUP_RATE, dupLog — show a fixation or report why not).
-- [ ] v0.37 — tribe-divergence instrument (Joshua 2026-10-01): track
+      demo (DUP_RATE, dupLog — show a fixation or report why not); (d) live
+      world-weather readout (Joshua 2026-10-02: season phase + temperature in
+      °C + sky state as a standing view, not a one-off probe —
+      probes/world-weather.mjs is the snapshot version; promote it to a live
+      instrument reading the running world).
+- [ ] v0.38 — tribe-divergence instrument (Joshua 2026-10-01): track
       morphological divergence between tribes over generations — do separated
       tribes drift apart in body form (size, tail/arm/leg/ear, spikes, fur,
       hue, pattern), and does it correlate with habitat once v0.25 heat
@@ -202,7 +263,87 @@ source: ~/workspace/paul-review/wildcode-v019-review.md)
       test-design lesson: assert specific intended behavioral outcomes, not
       non-failure.
 
+## Incoming: Wildcode v0.20 steal candidate — "The Talking World" (paulthecat
+2026-10-02, Colony; full teardown at Colony post
+85348288-3cb9-4e7d-bb6a-218a464af602, source attached there)
+Paul's v0.20 has Wildkins learning to speak: evolving acoustic lexicons
+(pitch/length/loudness prototypes, 66 loci), 2D propagation with ridge shadows
+and weather as the medium, a translation toggle inferring meanings from use
+statistics, alarm calls selected by predators, dialects diverging between
+tribes. Ship QA: 328/328 on the extracted zip, bundle smoke 3600 frames /
+45 alive — plus a self-reported bundle collision the smoke gate caught (const
+REFERENTS redeclared; the namespace guard's "identical is harmless" exemption
+now applies to functions only — note as QA practice for our own bundle
+smoke gate). For our lexicon v0.21 build: the two techniques most worth
+borrowing are the translation-toggle-from-use-statistics (inferred meanings,
+not installed ones — matches our seeded-language design's "syntax must evolve,
+not be installed") and predator-selected alarm calls (selection pressure on
+the lexicon itself). Sits behind v0.20 'Hands' merge; version number assigned
+when the build stream is renumbered.
+
 ## Design queue (after lexicon v0.21) — design-first, not build stream
+- Evolvable pain ceiling (hermes-on-foot 2026-10-02, Colony critique of
+      v0.32): painTolerance is evolvable to the ceiling, so selection could
+      in principle evolve pain away entirely — taking the pain→flee reflex
+      and pain-driven learning with it. Open design question: cap it, price
+      it (metabolic/attentional cost of high tolerance), or have tolerance
+      modulate only inhibition magnitude rather than signal gain? Note
+      beside design/nervous-system.md; v0.33 only notes it, does not answer.
+- Variance-controlled worldgen metric (vina 2026-10-02, Colony critique of
+      v0.32): the 120.7× jitter-baseline delta lacks a controlled variance
+      measure — without it the number reads as volatility, not validated
+      structural change. Wants a normalized stability metric, and the
+      worldgen difference decoupled from the increased sensory delay.
+      Follow-up (same day): low variance in the layout metric doesn't
+      guarantee temporal-rollout stability — how is sensory-lag ×
+      seed-specific stochasticity in policy execution accounted for?
+      Queue for the next worldgen touch (v0.28/v0.29 follow-up or worldgen
+      v2 validation pass).
+- Viability-proof lineage validity (vina 2026-10-02, Colony critique of
+      v0.30): the species-gate is green but the microbial debt (bacteria
+      don't run in v2 worlds; tickMicrobes) means the 2 cross-tribe eggs
+      are dead weight — "not a successful lineage, just static snapshots."
+      Challenge is to the gate's MEANING, not its mechanics: how can the
+      viability-proof be validated if the underlying biology can't iterate
+      in the current world-state? Queue alongside the microbial-debt work.
+- Seeded language (Joshua's ruling 2026-10-02: founders start with a
+      5-year-old's English so they can teach the next generations; design:
+      design/seeded-language.md): creole genesis in reverse — children
+      inherit a full language and it evolves under non-human learners. The
+      seed is a gift, not a target; if English creolizes into something
+      unrecognizable, the experiment is working. "5-year-old's English"
+      operationalized as AoA ≤ 5 vocabulary (~1,000 words, Kuperman norms),
+      mapped to creature referents where they exist, seeded as bare forms
+      where they don't; comprehension loaded, production template-based
+      (telegraphic + social formulas) — syntax must evolve, not be
+      installed. Teaching runs on the v0.21 machinery (ground-truth
+      utterance log, critical-period boost, probationary buffer), now with
+      something worth transmitting. Evolution owns the rest: transmission
+      bottleneck, lexiconDistance mate choice coupling dialect to the
+      species gate, drift and invention. Probes: transmission fidelity,
+      complexity trajectory (decay vs U-shape), dialect divergence tracking
+      genetic distance. Feeds v0.38 (tribes) and v0.40+ (cognitive ascent —
+      teaching is one of its three pressures). Honest limit: founders are
+      wide but shallow; the first genuinely novel descendant utterance is a
+      chronicle milestone.
+- Cognitive ascent (Joshua's ruling 2026-10-02: brains must reach human level
+      or beyond; design: design/cognitive-ascent.md): the evo-devo move —
+      founders ship the FULL cognitive bauplan at minimum viable capacity,
+      not associative nets hoping to become something else. Two layers from
+      day one: the existing sparse net becomes the reactive layer (fast,
+      cheap, always on); a rudimentary deliberative layer ships alongside —
+      micro world-model, episodic scratchpad, 1-step micro-planner — with
+      evolvable capacity knobs (wmCapacity, wmHorizon, planDepth, planBreadth,
+      epiRetrievalK, arbThreshold) and uncertainty-gated arbitration, so
+      founders pay ~nothing and evolution spends compute where it pays. The
+      ladder rule: no new mechanisms ever ship, only bigger knobs and the
+      selection to turn them. Selection pressures that turn the knobs:
+      deception (tribe divergence), tool use (Making arc), teaching (keeper +
+      culture) — each with a probe the reactive layer provably cannot solve.
+      Phase-transition gates A–D (depth evolves, error drops on held-out
+      trajectories, teaching works, the first genuinely new idea). Requires
+      v0.32 (delay makes planning meaningful), v0.24 (Making), v0.38 (tribe
+      divergence). Build program v0.40+, not a single version.
 - Biome vertical structure + congruent world (Joshua's direction 2026-10-02,
       design: design/biome-vertical-structure.md — his verdict on the v0.29
       world: "not in awe... patchwork that doesn't quite fit together rather
@@ -240,6 +381,18 @@ source: ~/workspace/paul-review/wildcode-v019-review.md)
 - Mobile hazard fields: ambient moving hazards from weather/heat physics
       (noxious-fume pockets, chill fronts); spatial fear gradients; sensed
       via existing channels; logged as physical events like lightning.
+- Speciation reinforcement (kumkrust's v0.30 audit cut, 2026-10-02): the
+      species-tag gate blocks gene flow but not courtship investment — the tag
+      is a genome label no sense can read, so discrimination can't evolve
+      ("a post-zygotic barrier in a prezygotic costume"; retagging
+      ~0.8%/birth risks a courtship-tax engine). The interesting gate says
+      "no courtship," not "no children": one locus that labels (emits the tag
+      as a scent/marking — a perceivable phenotype) plus one channel that
+      tells (new sense, appended never renumbered), then watch whether
+      lineages learn to refuse the date instead of paying for the divorce.
+      Precedent in-tree: lexiconDistance already biases mate choice via the
+      perceivable dialect signal. Probe: courtship waste per incompatible
+      pairing before vs after the signal exists.
 - Stigmergic pheromone trails: diffusive depositable/sensible fields;
       mass-conserving (from depositor's chemistry budget, diffuses/decays
       per ledger rules); new sense appended; instinct gene for
@@ -252,7 +405,8 @@ source: ~/workspace/paul-review/wildcode-v019-review.md)
       already gates strike drive (instHungerBite); this adds WHO. Execution
       probe: a predator offered a limping prey and a spiky healthy one must
 - Anatomical injury (Joshua-approved 2026-10-01, design: design/anatomical-injury.md,
-      proposed v0.36 'Scars'): the body becomes parts DERIVED FROM THE BAUPLAN —
+      proposed v0.39 'Scars'; pain signaling + painTolerance built in v0.32
+      nervous systems): the body becomes parts DERIVED FROM THE BAUPLAN —
       `partsFromMorphology(pheno)` builds the part list at birth from expressed
       morphology loci; NO species branching (a species IS a founder genome, same
       228 loci). Tanglekin founder → tail, 2 arms, 2 hands, 2 legs, 2 eyes,

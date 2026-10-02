@@ -307,14 +307,27 @@ export function addPlant(world, x, platformIndex, genome, opts = {}) {
   // main stream's sequence (founder genomes, rolls, etc.).
   const g = genome || randomPlantGenome(world.decorRng || world.rng);
   const plat = platformIndex === -1 ? null : world.platforms[platformIndex];
+  const bk = biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout });
+  const flora = floraFor(bk);
+  const morph = opts.morph || flora.morph;
+  const fruitKind = opts.fruitKind || flora.fruitKind;
   world.plants.push({
     kind: 'plant', id: oid(), x, platformIndex, y: plat ? plat.y : floatY(world, x),
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     pollination: 0, // v0.22.2: 0..1 — raised by pollinator visits; fruit set scales with it
+    // v0.34 — flower state: bud → bloom → (fruit set) → spent → bud.
+    // Only bloom flowers receive pollinator visits. floraId is the
+    // pollination species key (morph:fruitKind) — deposition only
+    // fertilizes a second flower of the SAME species. pollenDonorGenome
+    // is recorded on deposition, stamped onto each fruit at fruit set,
+    // then cleared — the dad rides the fruit, not the plant.
+    flower: 'bud', bloomTimer: 2, spentTimer: 0,
+    floraId: morph + ':' + fruitKind,
+    pollenDonorGenome: null,
+    netted: world._exclosure === true, // exclosure probe: mesh excludes insects, not wind
     sway: world.rng.range(0, Math.PI * 2),
-    zone: biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout }), // v0.26: geographic zone key
-    morph: opts.morph || floraFor(biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout })).morph,
-    fruitKind: opts.fruitKind || floraFor(biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout })).fruitKind,
+    zone: bk, // v0.26: geographic zone key
+    morph, fruitKind,
     genome: g, pheno: plantPhenotype(g), // v0.13: plant genomes
   });
 }
@@ -328,6 +341,7 @@ export function addHerb(world, x, platformIndex, genome, opts = {}) {
     kind: 'herb', id: oid(), x, platformIndex, y: plat ? plat.y : floatY(world, x),
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     pollination: 0, // v0.22.2: inert on herbs (they bear leaves, not fruit)
+    flower: null, // v0.34: herbs don't bloom — the pollination loop is fruit plants only
     sway: world.rng.range(0, Math.PI * 2),
     zone: biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout }), // v0.26: geographic zone key
     morph: opts.morph || 'herb',
@@ -347,6 +361,7 @@ export function addFood(world, x, platformIndex, kind = 'fruit', amount = 1, rot
     // avoidance of bitter plants.
     plantId: opts.plantId || 0, bitterness: opts.bitterness || 0,
     nutrition: opts.nutrition || 1,
+    dadGenome: opts.dadGenome || null, // v0.34: outcrossing dad — stamped at fruit set
     // rotAfter: seconds until this fruit rots (0 = never). Nest-cache fruit
     // rots so it can't become a population-level food source — births must
     // increase food DEMAND, not supply, or the ecology explodes.
@@ -397,7 +412,7 @@ export function dropWindfall(world, f, rng) {
   if (world.foods.length > 80) { compost(f.amount); return; } // force-rot: the floor can't stockpile
   const jx = f.x + (rng ? rng.range(-24, 24) : 0);
   addFood(world, jx, gi, f.foodKind, f.amount, WINDFALL_ROT, {
-    plantId: f.plantId, bitterness: f.bitterness || 0,
+    plantId: f.plantId, bitterness: f.bitterness || 0, dadGenome: f.dadGenome || null,
     nutrition: (f.nutrition || 1) * 0.8, // overripe: still food, less of it
   });
 }
@@ -431,7 +446,13 @@ export function disperseSeed(world, c, food) {
   const plat = world.platforms[c.platformIndex];
   if (!plat) return;
   const x = Math.max(plat.x1 + 10, Math.min(plat.x2 - 10, c.x + world.rng.range(-40, 40)));
-  const childGenome = inheritPlant(parent.genome, parent.genome, world.rng);
+  // v0.34 — outcrossing: the fruit carries its dad (stamped at fruit set from
+  // the donor genome deposited during bloom); unvisited flowers self as
+  // before (plantgenome.js noted this as the future pressure — it arrives
+  // here). The dad rides the fruit, not the plant — a later bloom can't
+  // rewrite this fruit's parentage.
+  const dadGenome = food.dadGenome || parent.genome;
+  const childGenome = inheritPlant(parent.genome, dadGenome, world.rng);
   if (parent.kind === 'herb') addHerb(world, x, c.platformIndex, childGenome);
   else addPlant(world, x, c.platformIndex, childGenome);
   const seedling = world.plants[world.plants.length - 1];
@@ -1497,15 +1518,28 @@ function hatchEgg(world, egg) {  const c = createCreature(egg.genome, egg.x, egg
   if (i >= 0) world.eggs.splice(i, 1);
 }
 
-// v0.22.2 — pollination. Any small winged creature (realized wingArea from
-// the body plan — phenotypic, never a species label) visiting a mature
-// flower carries pollen: arriving with ANOTHER plant's pollen raises the
-// flower's pollination meter (0..1, decays); fruit set scales with it in
-// the fruiting block above. The visitor sips nectar — a small _ate trickle
-// through the same chemistry path as eating. The flutter's whole niche is
-// this loop; the skimmer freelances it (hummingbird ecology).
+// v0.34 — pollination, properly. The v0.22.2 placeholder (any other-flower
+// visit raises a meter) is replaced by the real loop:
+//   flower state: only 'bloom' flowers are visited;
+//   pollen tags: the visitor carries [{ floraId, donorId, donorGenome,
+//     viability }] — viability decays deterministically, no RNG;
+//   deposition: a viable tag on a SECOND flower of the SAME flora species
+//     fertilizes it (pollination meter up, donor genome recorded for
+//     outcrossing); self-pollen and cross-species pollen don't;
+//   fruit set scales with the meter in the fruiting block; wind, selfing and
+//     gravity hold the 0.6 baseline floor there — the fallback per design.
+// ANATOMY (Joshua 2026-10-02 — every verb declares its prerequisites):
+//   pollinator = small body (pheno.size ≤ 0.3) AND flight-capable
+//   (bodyPlan.wingArea > 0.1, or airborne and not grounded). Phenotypic —
+//   never a species label. A grub that never flies never pollinates.
+// No RNG draws anywhere in this path: pickup, deposition and viability are
+// deterministic; the world's own stochasticity (who visits what, when)
+// supplies the variance. Nothing to annotate on the rng-boundary.
 const POLLINATION_VISIT_R = 80;   // px, horizontal
 const POLLINATION_VISIT_DY = 140; // px, vertical
+const POLLEN_TAGS_MAX = 4;        // a visitor's pollen load — oldest drops off
+const POLLEN_VIABLE_MIN = 0.25;   // below this a tag can't fertilize
+const POLLEN_STALE_RATE = 0.02;   // viability/s — ~50s of foraging life
 
 export function tickPollination(world, dt) {
   for (const c of world.creatures) {
@@ -1516,7 +1550,8 @@ export function tickPollination(world, dt) {
     if (wingArea <= 0.1 && !c.gliding && c.grounded) continue; // must fly to visit
     let best = null, bd = Infinity;
     for (const p of world.plants) {
-      if (p.kind !== 'plant' || p.growth < 1) continue;
+      if (p.kind !== 'plant' || p.growth < 1 || p.flower !== 'bloom') continue;
+      if (p.netted) continue; // exclosure probe: netted flowers are unvisitable
       const dx = Math.abs(p.x - c.x);
       if (dx > POLLINATION_VISIT_R) continue;
       const dy = Math.abs(p.y - (c.y === undefined ? p.y : c.y));
@@ -1524,16 +1559,33 @@ export function tickPollination(world, dt) {
       const d = dx + dy * 0.5;
       if (d < bd) { bd = d; best = p; }
     }
+    // Pollen goes stale whether or not a flower is in reach.
+    const tags = (c.pollen = c.pollen || []);
+    for (let i = tags.length - 1; i >= 0; i--) {
+      tags[i].viability -= dt * POLLEN_STALE_RATE;
+      if (tags[i].viability <= 0) tags.splice(i, 1);
+    }
     if (!best) continue;
-    // Pollen exchange: only other-flower pollen fertilizes.
-    if (c.pollenFrom !== undefined && c.pollenFrom !== best.id) {
+    // PICKUP: every bloom visit dusts the visitor with this flower's pollen.
+    const existing = tags.find((t) => t.donorId === best.id);
+    if (existing) existing.viability = 1;
+    else {
+      tags.push({ floraId: best.floraId, donorId: best.id, donorGenome: best.genome, viability: 1 });
+      while (tags.length > POLLEN_TAGS_MAX) tags.shift();
+    }
+    // DEPOSITION: a viable tag from a SECOND flower of the SAME species
+    // fertilizes — the meter rises and the donor genome is recorded for
+    // outcrossing (disperseSeed reads it).
+    for (const t of tags) {
+      if (t.viability < POLLEN_VIABLE_MIN || t.donorId === best.id || t.floraId !== best.floraId) continue;
       best.pollination = Math.min(1, (best.pollination || 0) + 0.25 * Math.min(1, dt * 4));
+      best.pollenDonorGenome = t.donorGenome;
       if (world.time - (world._lastPollenLog === undefined ? -1e9 : world._lastPollenLog) > 60) {
-        world.events.push({ type: 'pollinated', plant: best.id, by: c.id, t: world.time });
+        world.events.push({ type: 'pollinated', plant: best.id, by: c.id, donor: t.donorId, t: world.time });
         world._lastPollenLog = world.time;
       }
+      break; // one deposition per visit — the first viable tag wins
     }
-    c.pollenFrom = best.id;
     // Nectar: a sip — the flower's sugar is photosynthate, sunlight's
     // labeled boundary input (v0.24). The sugar's MASS enters the gut
     // (a ledger pool); the _ate is the energy from digesting it, tracked
@@ -1611,6 +1663,18 @@ export function tickWorld(world, dt) {
       }
     }
     p.sway += dt;
+    // v0.34 — flower phenology: bud → bloom → (fruit set) → spent → bud.
+    // Bloom is the only visitable state; the cycle is timer-driven, no RNG.
+    // Seedlings don't flower — phenology starts at maturity.
+    if (p.flower && p.growth >= 1) {
+      if (p.flower === 'spent') {
+        p.spentTimer -= dt;
+        if (p.spentTimer <= 0) p.flower = 'bud';
+      } else if (p.flower === 'bud') {
+        p.bloomTimer -= dt;
+        if (p.bloomTimer <= 0) p.flower = 'bloom';
+      }
+    }
     if (p.growth >= 1) {
       p.fruitTimer -= dt;
       if (p.fruitTimer <= 0) {
@@ -1669,6 +1733,12 @@ export function tickWorld(world, dt) {
           interval = interval * intervalGene * zoneStress * densityMul;
         }
         p.fruitTimer = interval;
+        // v0.34: the bloom is spent making fruit — phenology resets for the
+        // next cycle (bud → bloom). The donor genome recorded on deposition
+        // during bloom stays on the plant: the next seed dispersal outcrosses
+        // with it (disperseSeed). _fruitSetTotal is the exclosure probe's
+        // instrument (cumulative fruit set by the fruiting block).
+        p.flower = 'spent'; p.spentTimer = 3; p.bloomTimer = interval * 0.4;
         // Fruit hangs in the tree: it appears on the plant's own branch,
         // within reach of branch-dwellers. (The old world dropped it to
         // the ground; the canopy keeps its fruit where it grows.)
@@ -1702,11 +1772,17 @@ export function tickWorld(world, dt) {
           fs.waste = Math.max(0, (fs.waste || 0) - fd);
         }
         ledgerIn(world, 'sunlight', fruits * 1 - fruitDraw);
+        // v0.34: the fruit carries its dad — the donor genome deposited
+        // during this bloom (or null → selfing). Stamped per fruit set, so
+        // a later bloom's visits can't rewrite this fruit's parentage.
+        const dadGenome = p.pollenDonorGenome || null;
         for (let f = 0; f < fruits; f++) {
           addFood(world, p.x + rng.range(-30, 30), p.platformIndex, dropKind, 1, 0, {
-            plantId: p.id, bitterness: ph.bitterness || 0, nutrition,
+            plantId: p.id, bitterness: ph.bitterness || 0, nutrition, dadGenome,
           });
         }
+        p.pollenDonorGenome = null; // the bloom's pollen is spent with its fruit
+        world._fruitSetTotal = (world._fruitSetTotal || 0) + fruits; // v0.34: exclosure probe instrument
         // v0.20 "Falling": windfall — the oldest uneaten fruit doesn't vanish,
         // it falls. Overripe fruit drops to the ground platform below and
         // becomes floor food (slightly less nutritious, and it rots within
