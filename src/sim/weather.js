@@ -270,7 +270,7 @@ export const SEASON_AMP_BY_SUBSTRATE = {
   [SUBSTRATE.DEEP_WATER]: 0.35,
   [SUBSTRATE.SHALLOW_WATER]: 0.35,
   [SUBSTRATE.SAND]: 1.0,
-  [SUBSTRATE.SOIL]: 0.5,
+  [SUBSTRATE.SOIL]: 0.4, // v0.27: jungle breathes (0.4), matches the painted map pin
   [SUBSTRATE.ROCK]: 0.6,
   [SUBSTRATE.ALPINE]: 0.8,
 };

@@ -96,9 +96,18 @@ test('v0.18: floraFor — eight morphs, one per biome', () => {
 
 test('v0.18: worldgen builds 47 platforms with biome soil and floes', () => {
   const world = bindWorld(createWorld(42));
-  assert.equal(world.platforms.length, 47); // v0.20: +2 ground fills (mountains gap, archipelago seam)
-  assert.equal(world.platforms.filter((p) => p.kind === 'floe').length, 3);
-  assert.deepEqual(Object.keys(world.soil), ['arctic', 'mountains', 'jungle', 'plains', 'desert', 'shallows', 'archipelago', 'deep']);
+  // v1: 47 platforms, 3 floes, 8 soil pools. v2: counts vary by seed;
+  // verify the properties (platforms, soil pools, teacher) hold.
+  if (world.layout.canonical) {
+    assert.equal(world.platforms.length, 47); // v0.20: +2 ground fills (mountains gap, archipelago seam)
+    assert.equal(world.platforms.filter((p) => p.kind === 'floe').length, 3);
+    assert.deepEqual(Object.keys(world.soil), ['arctic', 'mountains', 'jungle', 'plains', 'desert', 'shallows', 'archipelago', 'deep']);
+  } else {
+    assert.ok(world.platforms.length > 20, `v2 builds platforms (got ${world.platforms.length})`);
+    const deepRs = world.layout.regions.filter(r => r.label === 'deep');
+    if (deepRs.length) assert.ok(world.platforms.some(p => p.kind === 'floe'), 'v2 deep water has floes');
+    assert.equal(Object.keys(world.soil).length, world.layout.regions.length, 'v2 soil pool per region');
+  }
   assert.ok(world.teacher, 'teacher avatar spawns');
   assert.ok(Array.isArray(world.predators), 'predator roster exists (empty until the creature agent scripts it)');
   assert.ok(Array.isArray(world.buried));

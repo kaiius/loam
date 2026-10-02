@@ -79,7 +79,8 @@ const L = (layout) => layout || canon();
 // the reading via the lapse, so high peaks emerge as alpine without any
 // painted "mountain = cold" rule.
 export function biomeKeyAt(x, y, world = null) {
-  const layout = world ? world.layout : null;
+  // world may be a world object (with .layout and .climate) or a layout directly.
+  const layout = world ? (world.layout || (world.regions ? world : null)) : null;
   if (world && world.climate) {
     const c = colAt(world.climate, x);
     const lapse = Math.max(0, 800 - y) / 550;
