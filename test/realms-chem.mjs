@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   GENES, CHEM5, CHEM7, SENSE32, SENSE24, ACT20, ACT13,
   PLANT_REALMS_LOCI, REALMS18_KEYS, EVO17_KEYS, HANDS20_KEYS, FALLING20_KEYS,
-  WEB22_KEYS,
+  WEB22_KEYS, SEASONS27_KEYS, CHROMOSOMES,
   randomGenome, phenotype,
 } from '../src/sim/genome.js';
 import { createBrain, senseVector, ACTIONS, N_IN } from '../src/sim/brain.js';
@@ -222,6 +222,7 @@ test('v0.18: founder main-stream bit-identity with pinSub + a pinned allele', ()
   const subKeys = new Set([...EVO17_KEYS, ...REALMS18_KEYS, ...HANDS20_KEYS,
     ...FALLING20_KEYS, // v0.20 "Falling": rides the hands sub-stream pass
     ...WEB22_KEYS, // v0.22 "Web of Life": instBite rides its own sub-stream pass
+    ...SEASONS27_KEYS, // v0.27 "Seasons": pantCapacity rides its own sub-stream pass
     ...GENES.filter((g) => g.key.startsWith('lex')).map((g) => g.key)]);
   for (const gene of GENES) {
     if (gene.key === 'legPower' || subKeys.has(gene.key)) continue;
@@ -295,6 +296,66 @@ test('v0.18: §13.6 — max-fur walker at ambient 0.55 overheats and dies', () =
   }
   assert.ok(deadAt > 0 && deadAt <= 300,
     `dead ${deadAt}s after the crossing window (a few minutes)`);
+});
+
+test('v0.27: pantCapacity locus — registered, thermal chromosome, founder 0, sub-stream drawn', () => {
+  const g = GENES.find((x) => x.key === 'pantCapacity');
+  assert.ok(g, 'pantCapacity is a registered locus');
+  assert.equal(g.founder, 0, 'dormant by default (the way the drink instincts shipped)');
+  assert.ok(CHROMOSOMES[0].includes('pantCapacity'), 'rides chromosome 1 thermal morphology, or meiosis drops it');
+  // Sub-stream determinism: same seed, same alleles — and the new locus
+  // never shifts the main stream (spot-check a pre-v0.27 locus is stable
+  // across the two draws, which share the seed).
+  const a = randomGenome(createRng(777));
+  const b2 = randomGenome(createRng(777));
+  assert.deepEqual(a.alleles.pantCapacity, b2.alleles.pantCapacity, 'pantCapacity deterministic per seed');
+  assert.deepEqual(a.alleles.heatTol, b2.alleles.heatTol, 'main streams untouched');
+});
+
+test('v0.27: panting reflex — a panting bird holds a hot summer under the hyper threshold', () => {
+  // Vulture-like: thin insulation (0.06), heatTol 0.8 → hyperThr 0.83,
+  // pantCapacity 0.8, plains-summer ambient 0.70, soaring (active 0.3).
+  // Without the reflex the equilibrium is ~0.86 (dead); with it, ~0.75.
+  const p = pheno(7, { fur: [0.2, 0.2], heatTol: [0.8, 0.8], pantCapacity: [0.8, 0.8] });
+  assert.ok(Math.abs(0.75 + p.heatTol * 0.1 - 0.83) < 1e-9, 'hyperThr 0.83 probe');
+  const b = createBiochem();
+  b.coreTemp = 0.6;
+  const feed = { active: 0.3, ambientTemp: 0.70, ate: 0.05, drank: 0.2 }; // fed, so only heat can kill; drinks enough to pay the water price
+  for (let t = 0; t < 900; t++) { tickBiochem(b, p, 1, feed); if (isDead(b, p)) break; }
+  assert.ok(!isDead(b, p), 'the panting bird survives the hot summer');
+  assert.ok(b.coreTemp < 0.83, `equilibrium ${b.coreTemp.toFixed(2)} stays under the hyper threshold`);
+  assert.ok(b.hydration > 0.5, `drinking covers the water bill: hydration ${b.hydration.toFixed(2)}`);
+});
+
+test('v0.27: panting bills water — no water, no cooling', () => {
+  // Differential probe: same hot bird, hydration pinned at 0 vs 0.8
+  // (health topped up so only the thermal gate is measured). The dry bird
+  // cannot pant and runs hotter — the water-for-cooling trade is real.
+  const p = pheno(7, { fur: [0.2, 0.2], heatTol: [0.8, 0.8], pantCapacity: [0.8, 0.8] });
+  const run = (hydro) => {
+    const b = createBiochem();
+    b.coreTemp = 0.6;
+    for (let t = 0; t < 300; t++) {
+      tickBiochem(b, p, 1, { active: 0.3, ambientTemp: 0.70 });
+      b.hydration = hydro; b.health = 1; // pin: measure only the cooling gate
+    }
+    return b.coreTemp;
+  };
+  const dry = run(0), wet = run(0.8);
+  assert.ok(dry > wet + 0.02, `dry bird runs hotter: ${dry.toFixed(2)} vs ${wet.toFixed(2)} (no water, no panting)`);
+});
+
+test('v0.27: panting is heat-gated — a cold bird never pants', () => {
+  // Same bird, winter ambient 0.40: the reflex must not fire, so the water
+  // bill is identical to a non-panting bird (only the base hydration drain).
+  const pPant = pheno(7, { fur: [0.2, 0.2], heatTol: [0.8, 0.8], pantCapacity: [0.8, 0.8] });
+  const pNo = pheno(7, { fur: [0.2, 0.2], heatTol: [0.8, 0.8], pantCapacity: [0, 0] });
+  const run = (p) => {
+    const b = createBiochem();
+    for (let t = 0; t < 100; t++) tickBiochem(b, p, 1, { active: 0.3, ambientTemp: 0.40 });
+    return b.hydration;
+  };
+  assert.ok(Math.abs(run(pPant) - run(pNo)) < 1e-9, 'no panting in the cold: identical water bills');
 });
 
 test('v0.18: §13.6 — coldTol-0.5 animal resting in arctic ambient does NOT freeze', () => {

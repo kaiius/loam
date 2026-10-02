@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createWorld, bindWorld, populate, platformIndexAt, addFood } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, platformIndexAt, addFood, groundYAt } from '../src/sim/world.js';
 import { createRng } from '../src/sim/rng.js';
 import { randomGenome } from '../src/sim/genome.js';
 import { createBiochem, tickBiochem, isDead } from '../src/sim/biochem.js';
@@ -402,7 +402,7 @@ test('v0.18: spawnPredators — 5 sharks, 2 bears, in the right waters', () => {
   }
   for (const b of bears) {
     assert.ok(b.x < 600, `bear in the arctic: x=${b.x.toFixed(0)}`);
-    assert.equal(b.pheno.furInsulation, 1.0, 'arctic-native insulation');
+    assert.equal(b.pheno.furInsulation, 0.3, 'arctic-native insulation (v0.27: one physics for every body — the 1.0 degeneracy is gone)');
   }
 });
 
@@ -438,15 +438,33 @@ test('v0.18: bears — jungle heat kills, arctic cold does not', () => {
   const world = testWorld();
   spawnPredators(world);
   const jungleBear = world.predators.find((p) => p.kind === 'bear');
-  jungleBear.x = 1500; jungleBear.y = 800; // jungle, ambient 0.55
+  jungleBear.x = 1500; // jungle, ambient 0.55
+  jungleBear.y = groundYAt(1500, world.layout);
   const arcticBear = world.predators.filter((p) => p.kind === 'bear')[1];
-  arcticBear.x = 300; arcticBear.y = 800; // arctic, ambient 0.0
-  for (let t = 0; t < 140; t += 1) {
+  arcticBear.x = 300; // arctic, ambient 0.0
+  arcticBear.y = groundYAt(300, world.layout);
+  // v0.27: bears run the unified tickBiochem (fur 0.3, no fallback). The
+  // jungle death is slower now (~430s: eq 0.763 vs hyper 0.76 — the bear
+  // hovers just above the threshold, then the ordinary hyperthermia drain
+  // wins) — same behavioral verdict, honest chemistry instead of the
+  // hand-rolled fallback. Hydration and bloodSugar are controlled.
+  // Bears stand on the real ground (no y=800 override — that buried them and
+  // injured them under the unified physics). All non-thermal drives are
+  // controlled: this is the thermal test, not the hunger/thirst/fatigue
+  // test (live bears have slow metabolisms + drink from nearby water).
+  for (let t = 0; t < 500; t += 1) {
     jungleBear.x = 1500; // pin both: the thermal test, not the wandering test
     arcticBear.x = 300;
+    for (const b of [jungleBear.biochem, arcticBear.biochem]) {
+      // Hold non-thermal drives neutral: hydration/bloodSugar topped up,
+      // fatigue at 0.8 (energy ~0.2: below the 0.3 regen threshold, above
+      // the 0.01 exhaustion threshold) — so only the thermal drain can kill.
+      // (b.energy is recomputed from fatigue each tick; set fatigue, not energy.)
+      b.hydration = 0.8; b.bloodSugar = 0.8; b.fatigue = 0.8;
+    }
     tickPredators(world, 1.0);
   }
-  assert.ok(!jungleBear.alive, 'max-insulation bear dies in jungle heat (~133s)');
+  assert.ok(!jungleBear.alive, 'max-insulation bear dies in jungle heat (~430s, unified chemistry)');
   assert.ok(arcticBear.alive && arcticBear.biochem.health > 0.9,
     `arctic bear survives its home biome: health=${arcticBear.biochem.health.toFixed(2)}`);
 });

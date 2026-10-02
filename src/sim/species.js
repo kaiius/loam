@@ -181,6 +181,12 @@ export const SPECIES = {
       // soaring in thermals). The random draw gave 0.31; the niche needs it
       // pinned high, like the midden beetle's pinned immunity.
       heatTol: 0.8,
+      // Evaporative cooling: real vultures pant and wet their legs
+      // (urohidrosis) — the water-for-cooling trade is the desert bird's
+      // license. Pinned high like heatTol; the drink instincts above are
+      // what pay for it. Founder economics, not a scripted outcome: a
+      // vulture that can't reach water still cooks.
+      pantCapacity: 0.8,
       // The carrion contract: stomach acid like battery acid (real vultures
       // shrug off anthrax and botulism) — high immunity is the specialist's
       // license to eat rot. Same logic as the midden beetle's 0.7.
@@ -201,6 +207,7 @@ export const SPECIES = {
       'immunity 0.8 (the carrion contract)',
       'instThirstDrink 0.85 + instWaterDrink 0.7 (a desert carnivore drinks)',
       'heatTol 0.8 (desert bird — the scurrier\'s tolerance or better)',
+      'pantCapacity 0.8 (urohidrosis — water-for-cooling, paid by drinking)',
     ],
   },
   flutter: { // v0.22.2 — the butterfly, promoted to a full creature.

@@ -12,6 +12,15 @@
 // thirst/cold/heat are SENSES, not drives — the chemistry invariant holds:
 // drives are readouts of chemicals; hazards are chemicals and body states.
 
+// v0.27 "Seasons": panting constants — the evaporative-cooling reflex.
+// PANT_COOL_K: coreTemp drop per second at full pant (pant01 = 1).
+// PANT_WATER_K: hydration drain per second at full pant. Sized so a
+// pantCapacity-0.8 vulture holds a plains summer (~0.75 eq, under the 0.83
+// hyper threshold) while a pantCapacity-0 random founder barely notices
+// (the v0.18 §13.6 heatstroke probe still crosses 0.80 in-window).
+export const PANT_COOL_K = 0.006;
+export const PANT_WATER_K = 0.02;
+
 export function createBiochem() {
   return {
     // chemicals — the actual body state
@@ -95,6 +104,7 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
     basking: cf01(ctx.basking, 0),
     sailDump: cf01(ctx.sailDump, 0),
     cloud: cf01(ctx.cloud, 0), // v0.25 "Heat": overcast shades the basker
+    seasonSun: cf(ctx.seasonSun, 1), // v0.27 "Seasons": seasonal insolation 0.2..1
   };
   // --- chemistry ---------------------------------------------------------
   // Fuel: eating fills the tank, living drains it. A full belly lasts a
@@ -178,12 +188,29 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
     b.adrenaline = clamp01(b.adrenaline + 0.9 * dt);
   }
 
+  // Hypo/hyperthermia thresholds shift with the thermal-tolerance loci —
+  // hoisted above hydration and coreTemp because the panting reflex reads
+  // the hyperthermia threshold.
+  const hypoThr = 0.25 - (pheno.coldTol ?? 0.5) * 0.1;
+  const hyperThr = 0.75 + (pheno.heatTol ?? 0.5) * 0.1;
+  // v0.27 "Seasons": panting — the evaporative-cooling reflex (urohidrosis /
+  // panting analog). Active, not passive: it fires only as coreTemp climbs
+  // toward the hyperthermia threshold, ramping over the top 0.15 below it,
+  // gated by the pantCapacity body-plan locus. It bills WATER (hydration),
+  // not fuel — and no water means no panting (a dehydrated animal cannot
+  // evaporate what it doesn't have). The economics: water-for-cooling, paid
+  // at the waterhole by creatures that drink.
+  const pantCap = clamp01(pheno.pantCapacity ?? 0);
+  const pantStress = clamp01((b.coreTemp - (hyperThr - 0.15)) / 0.15);
+  const pant01 = pantCap * pantStress * (b.hydration > 0.001 ? 1 : 0);
+
   // Hydration: drains with heat × exertion — base ~0.004/s, up to ~0.02/s
   // hot and sprinting. ctx.drank restores it; fruit is mostly water, so
   // eating (ctx.ate) restores a little too — the founder-neutral hydration
   // source that keeps the jungle control group viable without teaching it
-  // to drink in four minutes. At 0: dehydration drains health.
-  const hydroRate = 0.004 + 0.016 * heat01 * exert;
+  // to drink in four minutes. Panting evaporates body water on top.
+  // At 0: dehydration drains health.
+  const hydroRate = 0.004 + 0.016 * heat01 * exert + pant01 * PANT_WATER_K;
   b.hydration = clamp01(b.hydration - hydroRate * dt + drank01 * 0.3 + (ctx.ate ?? 0) * 0.5);
   const dehydrated = b.hydration <= 0.001;
   if (dehydrated) b.health = clamp01(b.health - 0.03 * dt);
@@ -205,21 +232,29 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   // are physiological, not geographical.
   const subCold = sub01 * 0.35; // water chill — submerged is cold
   const ambientEff = clamp01(ambient - subCold);
-  const driftK = 0.02 * (1 - (pheno.furInsulation ?? 0));
+  // v0.27: driftK floor — at furInsulation = 1.0 the old formula hit exactly
+  // zero (zero ambient coupling; metabolic heat railed coreTemp in ANY
+  // biome). Unreachable via the genome (fur ≤ 1 → insulation ≤ 0.3, pinned
+  // by test) and no fixed body plan uses 1.0 anymore (bears moved to 0.3) —
+  // this floor is defense-in-depth so the chemistry can never degenerate.
+  const driftK = 0.02 * Math.max(0.05, 1 - (pheno.furInsulation ?? 0));
   const metabolic = 0.00228 + 0.0024 * active01;
   const warmthFrac = clamp01((ambientEff - 0.4) / 0.5); // basking only pays in warmth
   // v0.25 "Heat": basking value varies with cloud cover — sunbathing under
   // full overcast pays 30%. The brain can learn to bask when the sky is clear.
   const sunFrac = 1 - 0.7 * ctx.cloud;
+  // v0.27 "Seasons": basking gain follows seasonal insolation — 1.0 at the
+  // summer solstice, 0.2 at winter (else creatures bypass winter by basking).
+  // Defaults to 1 when the caller passes no season (unit probes).
+  const seasonSunFrac = ctx.seasonSun ?? 1;
   b.coreTemp = clamp01(b.coreTemp
     + driftK * (ambientEff - b.coreTemp) * dt
     + metabolic * dt
-    + basking01 * 0.008 * warmthFrac * sunFrac * dt
-    - sailDump01 * 0.01 * dt);
+    + basking01 * 0.008 * warmthFrac * sunFrac * seasonSunFrac * dt
+    - sailDump01 * 0.01 * dt
+    - pant01 * PANT_COOL_K * dt);
   // Hypothermia: health drains, fatigue accumulates 2×. Hyperthermia:
-  // health drains. Thresholds shift with the thermal-tolerance loci.
-  const hypoThr = 0.25 - (pheno.coldTol ?? 0.5) * 0.1;
-  const hyperThr = 0.75 + (pheno.heatTol ?? 0.5) * 0.1;
+  // health drains.
   const hypothermic = b.coreTemp < hypoThr;
   const hyperthermic = b.coreTemp > hyperThr;
   if (hypothermic) b.health = clamp01(b.health - 0.015 * dt);

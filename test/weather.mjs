@@ -254,9 +254,12 @@ test('v0.25: T diffusion is slow, stable, and conserves heat', () => {
   const cl = world.climate;
   for (const c of cl.cols) c.T = 0.5;
   cl.cols[20].T = 0.9;
-  const before = cl.cols.reduce((s, c) => s + c.T, 0);
+  // Heat is Σ(m·T): diffusion moves heat, not temperature (v0.27: the
+  // diffusion term is mass-aware, like the reversion and vent terms).
+  const heat = () => cl.cols.reduce((s, c, i) => s + c.T * (cl.thermalMass ? cl.thermalMass[i] : 1), 0);
+  const before = heat();
   diffuseT(cl, 10);
-  const after = cl.cols.reduce((s, c) => s + c.T, 0);
+  const after = heat();
   assert.ok(Math.abs(after - before) < 1e-9, `diffusion conserves heat: ${before} → ${after}`);
   assert.ok(cl.cols[20].T < 0.9 && cl.cols[20].T > 0.5, 'the spike decays toward its neighbors');
   assert.ok(cl.cols[19].T > 0.5 && cl.cols[21].T > 0.5, 'neighbors warm');

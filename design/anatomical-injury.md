@@ -144,13 +144,13 @@ maimed leg, clotting stops the bleed, scar floor holds after healing. Then the
 same for an eye (vision noise) and an ear (call range).
 
 ## 14. Version slot
-Proposed **v0.34 'Scars'** — after instruments (v0.33), before the contagious
+Proposed **v0.36 'Scars'** — after instruments (v0.35), before the contagious
 disease tenant (wounds are its entry point). Design-first like the rest of the
 queue; build only after Joshua's go.
 
 ## 15. Reference: Paul's Wildcode v0.18 'The Body Remembers' (2026-10-01)
 Source: ~/workspace/paul-review/wildcode-v018/ — anatomy.js (329 lines) +
-DESIGN-anatomy.md. Evaluated in full. Steal list for the v0.34 build:
+DESIGN-anatomy.md. Evaluated in full. Steal list for the v0.36 build:
 1. **Dependency-free anatomy module** — imports nothing; creature/fauna/world/
    chronicle share it without cycles. Copy the architecture.
 2. **Cached-per-tick mods** — `computeAnatMods` runs once per tick into

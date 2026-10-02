@@ -458,6 +458,22 @@ GENES.push(
 // === end GENOME v0.22 loci =================================================
 export const WEB22_KEYS = new Set(GENES.slice(WEB22_START).map((g) => g.key));
 
+// === GENOME v0.27 "Seasons": the panting locus (append-only) =================
+// pantCapacity: evaporative-cooling capacity (panting / urohidrosis analog).
+// A body-plan reflex, NOT an action: when coreTemp climbs toward the
+// hyperthermia threshold, the creature pants — dumping heat at a water price.
+// Founder 0 = dormant (the way the drink instincts shipped in v0.18); the
+// vulture founder pins 0.8 (real vultures are the urohidrosis champions —
+// they cool themselves by wetting their legs). Rides chromosome 1's thermal
+// morphology block (with coldTol/heatTol) or meiosis drops it. Draws from its
+// own sub-stream (pass 6) so every earlier RNG sequence stays bit-identical.
+const SEASONS27_START = GENES.length;
+GENES.push(
+  _f('pantCapacity', 0),
+);
+// === end GENOME v0.27 loci ==================================================
+export const SEASONS27_KEYS = new Set(GENES.slice(SEASONS27_START).map((g) => g.key));
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
@@ -490,7 +506,9 @@ export const CHROMOSOMES = [
    'matePrefHue', 'matePrefSat', 'matePrefChoosy',
    // v0.18: thermal morphology — coldTol/heatTol travel with fur (the
    // thermal reader's own loci ride the thermal morphology's chromosome)
-   'coldTol', 'heatTol'],
+   // v0.27: pantCapacity rides the same block — the evaporative-cooling
+   // reflex is thermal morphology (or meiosis drops it)
+   'coldTol', 'heatTol', 'pantCapacity'],
   // 2 — Metabolism
   ['hungerRate', 'energyDrain', 'lifespan', 'growthRate', 'fertility', 'immunity'],
   // 3 — Neuroarchitecture (+ v2 family B: brain plan, attention gates,
@@ -595,12 +613,13 @@ const PIN_SALT_EVO = 0x17; // v0.17 evo-devo pass
 const PIN_SALT_REALMS = 0x18; // v0.18 realms pass
 const PIN_SALT_HANDS = 0x20; // v0.20 hands pass
 const PIN_SALT_WEB22 = 0x22; // v0.22 web-of-life pass (instBite)
+const PIN_SALT_SEASONS = 0x27; // v0.27 seasons pass (pantCapacity)
 export function randomGenome(rng, opts = {}) {
   // opts.pinSub (number): when set, the language (v0.16), evo-devo (v0.17),
-  // realms (v0.18), hands/falling (v0.20) and web-of-life (v0.22)
-  // sub-stream passes seed from hash(pin, passSalt) instead of the content
-  // hash — identical sub-stream alleles across founders with different
-  // main-stream content.
+  // realms (v0.18), hands/falling (v0.20), web-of-life (v0.22) and seasons
+  // (v0.27) sub-stream passes seed from hash(pin, passSalt) instead of the
+  // content hash — identical sub-stream alleles across founders with
+  // different main-stream content.
   // opts.overrides ({ key: value | [a, b] }): pin specific alleles after
   // the draws (e.g. { legPower: 0.3 } sets both homologs). The legPower
   // sweep is: same rng seed + same pinSub + different legPower override →
@@ -633,12 +652,17 @@ export function randomGenome(rng, opts = {}) {
   // pass 5, seeded by a hash of the full pre-v0.22 genome — deterministic,
   // and every earlier stream stays bit-identical to v0.20. With opts.pinSub,
   // passes 2–5 seed from the pin instead of the content hashes.
+  // v0.27: the panting locus draws from its own sub-stream in pass 6,
+  // seeded by a hash of the full pre-v0.27 genome — deterministic, and every
+  // earlier stream stays bit-identical to v0.22. With opts.pinSub, passes
+  // 2–6 seed from the pin instead of the content hashes.
   const isNew17 = (k) => EVO17_KEYS.has(k);
   const isNew18 = (k) => REALMS18_KEYS.has(k);
   const isNew20 = (k) => HANDS20_KEYS.has(k);
   const isNewFalling = (k) => FALLING20_KEYS.has(k);
   const isNewWeb22 = (k) => WEB22_KEYS.has(k);
-  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k);
+  const isNew27 = (k) => SEASONS27_KEYS.has(k);
+  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k);
   for (const gene of GENES) {
     if (gene.key.startsWith('lex') || isNewer(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
@@ -668,7 +692,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h3 = 0x18ea1d;
   for (const gene of GENES) {
-    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key)) continue;
+    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key)) continue;
     for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
   }
   const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
@@ -684,7 +708,7 @@ export function randomGenome(rng, opts = {}) {
   // falling gene draws after the hands genes, deterministically.
   let h4 = 0x20a05;
   for (const gene of GENES) {
-    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key)) continue;
+    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key)) continue;
     for (const a of alleles[gene.key]) h4 = (Math.imul(h4, 31) + Math.floor(a * 1e9)) | 0;
   }
   const handsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_HANDS) : h4 >>> 0);
@@ -697,13 +721,26 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h5 = 0x22022;
   for (const gene of GENES) {
-    if (isNewWeb22(gene.key)) continue;
+    if (isNewWeb22(gene.key) || isNew27(gene.key)) continue;
     for (const a of alleles[gene.key]) h5 = (Math.imul(h5, 31) + Math.floor(a * 1e9)) | 0;
   }
   const web22Rng = createRng(pinned ? hashPin(pinSub, PIN_SALT_WEB22) : h5 >>> 0);
   for (const gene of GENES) {
     if (!isNewWeb22(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, web22Rng), randomAllele(gene, web22Rng)];
+    marks[gene.key] = 1.0;
+  }
+  // v0.27 "Seasons": pantCapacity draws from its own sub-stream — new loci
+  // never shift the main RNG sequence.
+  let h6 = 0x27027;
+  for (const gene of GENES) {
+    if (isNew27(gene.key)) continue;
+    for (const a of alleles[gene.key]) h6 = (Math.imul(h6, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const seasonsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SEASONS) : h6 >>> 0);
+  for (const gene of GENES) {
+    if (!isNew27(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, seasonsRng), randomAllele(gene, seasonsRng)];
     marks[gene.key] = 1.0;
   }
   // v0.18: allele overrides — applied after the draws, so a sweep can pin

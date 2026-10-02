@@ -77,7 +77,78 @@ export function createClimate(seed, ncols = WEATHER_COLS) {
     // whatever T results).
     thermalMass: null,
     vents: [], // { x, dT, sigma } — placed by placeVents at worldgen
+    // v0.27 "Seasons": per-column seasonal amplitude (fraction of
+    // SEASON_AMP_MAX) — set in initClimateFromPainted from the painted
+    // biome key; deserts swing hard, rainforests breathe easy, water
+    // buffers. The year's length (ticks) — set lazily on the first
+    // tickClimate from the founders' median lifespanSec (no rng draws,
+    // deterministic per seed), clamped to [2 days, 8 days].
+    seasonAmp: new Array(ncols).fill(0.4),
+    yearLength: null,
   };
+}
+
+// v0.27 "Seasons": the year as a slow radiative forcing on the T field.
+//
+// Design (Gemini adversarial review, all six findings folded in):
+// - The sine modulates the REVERSION TARGET (the radiative-equilibrium
+//   temperature), NOT the T values — the sink stays intact, so this cannot
+//   become a heat pump. Annual mean of the forcing is zero by construction.
+//   Temperature is not a mass pool, so the ledger doesn't book it; the
+//   conservation guarantee is the net-zero construction plus the existing
+//   conserving diffusion.
+// - Phase derives from (t mod YEAR), never raw t — floating-point phase
+//   drift at millions of ticks would break same-seed determinism.
+// - The water cycle couples from the SAME clock (T-only forcing would
+//   collapse relative humidity into an annual desiccation event): rain
+//   efficiency rides the seasonal wave (wet summers, dry winters).
+// - Volcanic vents are ABSOLUTE geothermal sources, exempt from the
+//   seasonal forcing (separate source term, untouched).
+// - No rng draws anywhere in the seasonal path; no new loci (seasons are
+//   environmental, responses are environmental multipliers).
+export const SEASON_AMP_MAX = 0.3; // T-units of seasonal swing at amplitude 1.0
+const SEASON_AMP_BY_BIOME = {
+  desert: 1.0, plains: 0.5, jungle: 0.4, mountains: 0.6, arctic: 0.8,
+  shallows: 0.35, archipelago: 0.35, deep: 0.35,
+};
+export const SEASON_MIN_YEAR = 600;  // 2 days — a year never blurs into a day
+export const SEASON_MAX_YEAR = 2400; // 8 days
+
+// Seasonal clock. Phase 0 = spring equinox (forcing crosses zero rising),
+// 0.25 = summer solstice, 0.5 = autumn equinox, 0.75 = winter solstice.
+export function seasonPhase(world) {
+  const cl = world.climate;
+  const Y = (cl && cl.yearLength) || 1200;
+  if (!Number.isFinite(world.time)) return 0; // no clock → spring equinox (neutral)
+  return (((world.time % Y) + Y) % Y) / Y;
+}
+export function seasonSin(world) { return Math.sin(seasonPhase(world) * Math.PI * 2); }
+// Basking insolation factor: 1.0 at summer solstice, 0.2 at winter solstice.
+// (v0.27: else creatures bypass winter by basking.)
+export function seasonSun(world) { return 0.6 + 0.4 * seasonSin(world); }
+// Breeding multiplier: 1.0 at spring equinox, 0.6 at autumn equinox —
+// founder economics (a pull on the mating chance, never a gate).
+export function seasonBreedMul(world) { return 0.8 + 0.2 * Math.cos(seasonPhase(world) * Math.PI * 2); }
+
+// Lazy season-clock init: the year's length is relative to the founders'
+// lifespans — a typical founder lives ~1 year, so individuals span seasons
+// and birth-season effects are measurable. Median of founder lifespanSec,
+// clamped; falls back to 1200 with no creatures. Deterministic per seed.
+export function ensureSeasonClock(cl, world) {
+  if (cl.yearLength != null) return cl.yearLength;
+  const lifes = [];
+  for (const c of world.creatures || []) {
+    if (!c.parents && c.pheno && c.pheno.lifespanSec > 0) lifes.push(c.pheno.lifespanSec);
+  }
+  if (!lifes.length) {
+    for (const c of world.creatures || []) {
+      if (c.pheno && c.pheno.lifespanSec > 0) lifes.push(c.pheno.lifespanSec);
+    }
+  }
+  lifes.sort((a, b) => a - b);
+  const med = lifes.length ? lifes[lifes.length >> 1] : 1200;
+  cl.yearLength = Math.max(SEASON_MIN_YEAR, Math.min(SEASON_MAX_YEAR, med));
+  return cl.yearLength;
 }
 
 // v0.25 "Heat": place volcanic vents — explicit, seeded worldgen heat
@@ -122,6 +193,31 @@ export function placeVents(world) {
   return cl.vents;
 }
 
+// v0.25 "Heat" (v0.27: thermal-mass-corrected, extracted for testability):
+// explicit worldgen heat sources with Gaussian distance falloff. The source
+// rate is divided by the column's thermal mass — the SAME divisor as the
+// reversion in tickClimate §1 — so the equilibrium offset is exactly
+// vent.dT everywhere (source dT*0.02/m balances reversion 0.02/m). Before
+// the fix the source was undivided: near-shore vents (thermalMass up to 2)
+// ran up to 2× hotter than designed while the comment claimed "exactly
+// vent.dT". Vents are ABSOLUTE geothermal sources, exempt from seasonal
+// forcing (v0.27): the season moves the reversion target, never the vent.
+// No volcanic biome exists: the Whittaker lookup reads whatever T results,
+// same as any other warm column.
+export function applyVentHeat(cl, dt) {
+  if (!cl.vents.length) return;
+  for (let i = 0; i < NC(cl); i++) {
+    const cx = (i + 0.5) * WEATHER_COL_W;
+    let src = 0;
+    for (const v of cl.vents) {
+      const dx = cx - v.x;
+      src += v.dT * Math.exp(-(dx * dx) / (2 * v.sigma * v.sigma));
+    }
+    const m = cl.thermalMass ? cl.thermalMass[i] : 1;
+    if (src > 0) cl.cols[i].T = clamp01(cl.cols[i].T + src * dt * 0.02 / m);
+  }
+}
+
 // v0.25 "Heat": slow, stable diffusion of temperature between neighboring
 // columns. Explicit scheme with zero-flux boundaries; k = D*dt is clamped
 // far below the 0.5 stability limit, so it cannot go unstable. Two-sided
@@ -137,7 +233,11 @@ export function diffuseT(climate, dt) {
   for (let i = 0; i < n; i++) {
     const tL = i > 0 ? climate.cols[i - 1].T : climate.cols[i].T;
     const tR = i < n - 1 ? climate.cols[i + 1].T : climate.cols[i].T;
-    d[i] = k * (tL + tR - 2 * climate.cols[i].T);
+    // v0.27: mass-aware — heat diffuses, not temperature. dT_i = k/m_i × ΣΔT
+    // (the seasonal reversion and the vent source already divide by m; the
+    // diffusion term was the odd one out). Conserved quantity is Σ(m·T).
+    const m = climate.thermalMass ? climate.thermalMass[i] : 1;
+    d[i] = k * (tL + tR - 2 * climate.cols[i].T) / m;
   }
   for (let i = 0; i < n; i++) climate.cols[i].T = clamp01(climate.cols[i].T + d[i]);
 }
@@ -158,6 +258,9 @@ export function initClimateFromPainted(climate, keyAt) {
     c.windU = baseWindU(cx) + rng.range(-8, 8); // ITCZ regimes, +x eastward
     climate.baseT[i] = c.T;
     climate.wet[i] = 0.5 + s.M; // dry biomes saturate easier, wet biomes hold more
+    // v0.27 "Seasons": per-column seasonal amplitude from the painted biome —
+    // the initial condition the field then evolves away from.
+    climate.seasonAmp[i] = SEASON_AMP_BY_BIOME[k] !== undefined ? SEASON_AMP_BY_BIOME[k] : 0.4;
   }
 }
 
@@ -243,6 +346,12 @@ export function tickClimate(world, dt, geo) {
   const sdt = Math.sqrt(dt);
   const tod = (world.time / 300) % 1; // DAY_LENGTH = 300
   const diurnal = Math.sin(tod * Math.PI * 2 - Math.PI / 2) * 0.04; // warm afternoon
+  // v0.27 "Seasons": one clock for the whole year — the T forcing and the
+  // water-cycle modulation below both read this sine, so wet/dry can never
+  // creep out of alignment with warm/cold (there is no separate weather
+  // cadence; tickClimate runs every tick).
+  ensureSeasonClock(cl, world);
+  const sSin = seasonSin(world);
 
   // Biomass per column for evapotranspiration ∝ biomass.
   const biomass = new Array(NC(cl)).fill(0);
@@ -268,28 +377,20 @@ export function tickClimate(world, dt, geo) {
   }
   for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
-    const target = clamp01(cl.baseT[i] + diurnal);
+    // v0.27 "Seasons": the seasonal wave rides the reversion target — the
+    // radiative-equilibrium temperature the column relaxes toward. Per-biome
+    // amplitude (desert ±0.30, jungle ±0.12). Annual mean of the forcing is
+    // zero by construction; diffusion still conserves; vents are a separate
+    // term and stay season-exempt.
+    const seasonal = (cl.seasonAmp ? cl.seasonAmp[i] : 0.4) * SEASON_AMP_MAX * sSin;
+    const target = clamp01(cl.baseT[i] + diurnal + seasonal);
     c.T += (target - c.T) * Math.min(1, dt * 0.02 / cl.thermalMass[i]);
     c.T += rng.range(-1, 1) * 0.006 * sdt;
     c.T = clamp01(c.T);
   }
 
-  // 1b. Volcanic vents: explicit worldgen heat sources, Gaussian distance
-  // falloff. The rate is written so the equilibrium offset at the vent
-  // center is exactly vent.dT (source dT*0.02/s balances reversion 0.02/s)
-  // — physics, not a paint job. No volcanic biome exists: the Whittaker
-  // lookup reads whatever T results, same as any other warm column.
-  if (cl.vents.length) {
-    for (let i = 0; i < NC(cl); i++) {
-      const cx = (i + 0.5) * WEATHER_COL_W;
-      let src = 0;
-      for (const v of cl.vents) {
-        const dx = cx - v.x;
-        src += v.dT * Math.exp(-(dx * dx) / (2 * v.sigma * v.sigma));
-      }
-      if (src > 0) cl.cols[i].T = clamp01(cl.cols[i].T + src * dt * 0.02);
-    }
-  }
+  // 1b. Volcanic vents: explicit worldgen heat sources — see applyVentHeat.
+  applyVentHeat(cl, dt);
 
   // 1c. Slow stable diffusion of T between neighbor columns (v0.25).
   diffuseT(cl, dt);
@@ -327,6 +428,11 @@ export function tickClimate(world, dt, geo) {
       c.cloud += l; // capped in the 3b normalization pass (never deleted)
     } else if (dElev < -50 && Math.abs(c.windU) > 1) {
       // Rain shadow: descending air warms and dries — nudge T up, vapor down.
+      // v0.27 note (review P2): this nudge is unbooked energy (+0.025 T-units
+      // at equilibrium) — a small explicit parameterized heat source in the
+      // lee of ridges, in the same family as the volcanic vents. Temperature
+      // is not a mass pool, so the mass ledger has nothing to book; the
+      // magnitude is bounded and documented here instead of hidden.
       c.T = clamp01(c.T + dt * 0.0005);
     }
     const excess = c.vapor - sat;
@@ -337,7 +443,13 @@ export function tickClimate(world, dt, geo) {
     }
     // Rain: cloud → soil (85%) + runoff to the sea (15%, LABELED sink).
     // Soil-cap overflow joins the runoff (never deleted — v0.24 cap rule).
-    const rain = Math.min(c.cloud, c.cloud * RAIN_RATE * dt);
+    // v0.27 "Seasons": wet/dry seasons from the same clock as the T forcing
+    // (T-only forcing would collapse relative humidity into an annual
+    // desiccation event). Summer rains 1.5×, winter 0.5× — a RATE modulation,
+    // so every drop remains a donor-limited transfer and the mass books
+    // balance. Vapor and cloud respond emergently (warmer air evaporates
+    // more and holds more); their stocks are never touched directly.
+    const rain = Math.min(c.cloud, c.cloud * RAIN_RATE * (1 + 0.5 * sSin) * dt);
     c.cloud -= rain;
     c.rain += rain; // per-column accumulator — the emergent-rainfall probe reads this
     const rainAdd = rain * RAIN_SOIL;

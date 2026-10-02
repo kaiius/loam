@@ -66,8 +66,8 @@ test('v0.22.2: grub founder-exactness — the prey base, soft and fearful', () =
   assert.ok(SPECIES.grub.exact.length > 0, 'documented');
 });
 
-test('v0.22.2: no new loci — GENES stays 229', () => {
-  assert.equal(GENES.length, 229, 'promotion adds values, not loci');
+test('v0.22.2: no new loci — GENES stays 230', () => {
+  assert.equal(GENES.length, 230, 'promotion adds values, not loci (230 = 229 + v0.27 pantCapacity)');
 });
 
 test('v0.22.2: starter sets + caps cover the promoted', () => {

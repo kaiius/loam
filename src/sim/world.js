@@ -7,7 +7,7 @@ import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele 
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
 import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
-import { createClimate, initClimateFromPainted, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, WEATHER_COL_W, NC } from './weather.js';
+import { createClimate, initClimateFromPainted, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, seasonBreedMul, WEATHER_COL_W, NC } from './weather.js';
 import { rollLayout, computeClimbLinks, ZONE_KEYS } from './worldgen.js';
 
 // v0.18: the biome map is the world's geography now — re-export its API so
@@ -530,7 +530,10 @@ export function tryMate(a, b) {
     const d = Math.abs(t - (p.pheno.ferPeak ?? 0.5));
     return d <= 0.4 ? 1 : Math.max(0.2, 1 - (d - 0.4) * 2);
   };
-  if (world.rng.next() > 0.35 + 0.4 * Math.min(a.pheno.fertility * fertAt(a), b.pheno.fertility * fertAt(b))) return false;
+  if (world.rng.next() > seasonBreedMul(world) * (0.35 + 0.4 * Math.min(a.pheno.fertility * fertAt(a), b.pheno.fertility * fertAt(b)))) return false;
+  // v0.27 "Seasons": breeding rides the year — 1.0 at the spring equinox,
+  // 0.6 at autumn. A pull on the mating chance, never a gate (founder
+  // economics, not forced outcomes). Analytic in world.time: no rng draws.
   const mom = a.sex === 'female' ? a : b;
   const dad = a.sex === 'female' ? b : a;
   // v0.5: clutches of two. One egg per mating kept the birth rate below the

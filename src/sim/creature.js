@@ -13,7 +13,7 @@ import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA
 // v0.18 "Realms": the biome map — region layout, temperature fields,
 // waters, ground. Pure geography; every call NaN-guarded at use.
 import { biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, groundYAt } from './biomes.js';
-import { windAt, tempAt, cloudAt } from './weather.js';
+import { windAt, tempAt, cloudAt, seasonSun } from './weather.js';
 
 let nextId = 1;
 
@@ -1885,6 +1885,9 @@ export function updateCreature(c, world, dt) {
     // v0.25 "Heat": cloud cover shades the basker — basking pays less
     // under overcast (biochem scales the basking term by sunFrac).
     cloud: world.climate ? cloudAt(world, c.x) : 0,
+    // v0.27 "Seasons": basking follows seasonal insolation (1.0 summer
+    // solstice → 0.2 winter) — else creatures bypass winter by basking.
+    seasonSun: world.climate ? seasonSun(world) : 1,
   });
   // v0.18: flailing (swimming without membranes) costs 3× the oxygen.
   // The chemistry doesn't read a flail flag, so the surcharge is billed
@@ -2213,7 +2216,7 @@ export function scoldCreature(c) {
 const SHARK_SPEED = 90; // px/s cruise
 const SHARK_TOUCH_RANGE = 30; // px — a bump that kills
 const SHARK_HUNGER_RANGE = 480; // px — scent range
-const BEAR_THERMAL_LOAD = 0.05; // health/s per unit of thermal load (fallback)
+// (v0.27: the bear thermal fallback was deleted — bears run tickBiochem now.)
 
 function makeShark(world, x, y) {
   return {
@@ -2244,13 +2247,25 @@ function makeBear(world, x, y) {
     kind: 'bear',
     id: nextId++,
     alive: true,
-    // Arctic-native: maximal insulation, cold-tolerant, heat-fragile.
+    // Arctic-native: maximal insulation on the 0–0.3 physiological scale,
+    // cold-tolerant, heat-fragile. v0.27: was 1.0 with a special-case thermal
+    // fallback in tickPredators (the chemistry degenerates at exactly 1.0 —
+    // zero ambient coupling). One physics for every body now: bears run the
+    // same tickBiochem as everything else, and the fallback is deleted.
+    // The pheno is COMPLETE for tickBiochem (hungerRate/energyDrain/
+    // lifespanSec have no fallbacks — undefined would NaN the chemistry).
     pheno: {
-      furInsulation: 1.0,
+      furInsulation: 0.3,
       coldTol: 0.9,
       heatTol: 0.1,
       breathTime: 30,
       swimSpeed: 50, // bears can swim, badly
+      hungerRate: 0.15, // large predator: slow metabolism (v0.26 bears
+      energyDrain: 0.15, // never hungered/tired; v0.27 keeps them viable
+      lifespanSec: 5400, // long-lived; old age is not what kills a bear
+      legDrainMult: 1.2, // heavy quadruped
+      immunity: 0.5,
+      sociability: 0.3, // solitary
     },
     biochem: createBiochem(world.rng),
     x, y, vx: 0, vy: 0, grounded: true,
@@ -2452,35 +2467,27 @@ export function tickPredators(world, dt) {
       } else {
         integrateGravity(p, world, dt);
       }
-      // Thermal: the chemistry degenerates at furInsulation=1.0
-      // (driftK = 0.02×(1−1) = 0 — zero ambient coupling, so metabolic
-      // heat accumulates and an arctic bear would die in its home biome).
-      // Feature-detect the degeneracy and apply the specified fallback
-      // directly: health −0.05×load/s, load = max(0, ambient−0.45)×
-      // (0.5+fur)×(1.2−heatTol). Arctic (ambient 0) → load 0, survives;
-      // jungle (0.55) → dead ~133s; desert (1.0) → dead ~24s.
+      // Thermal (v0.27): bears run the same chemistry as every other body —
+      // furInsulation 0.3 is the physiological max (the old 1.0 needed a
+      // special-case fallback; deleted). Arctic ambient keeps them safe;
+      // jungle/desert heat kills them through the ordinary hyperthermia
+      // path. One physics for every body.
       let ambTemp = 0.5;
       try { ambTemp = ambientTemp(p.x, p.y, world.layout); } catch (e) { /* default */ }
       if (!Number.isFinite(ambTemp)) ambTemp = 0.5;
-      const fur = p.pheno.furInsulation ?? 0;
-      if (fur >= 1) {
-        const load = Math.max(0, ambTemp - 0.45) * (0.5 + fur) * (1.2 - (p.pheno.heatTol ?? 0.5));
-        b.health = clamp01(b.health - BEAR_THERMAL_LOAD * load * dt);
-        // Keep the coreTemp readout sane under the fallback (lagged
-        // toward ambient + metabolic offset, so the senses stay honest).
-        b.coreTemp = clamp01((Number.isFinite(b.coreTemp) ? b.coreTemp : 0.5) + (ambTemp + 0.1 - b.coreTemp) * 0.1 * dt);
-        if (b.health <= 0) {
-          p.alive = false;
-          world.events.push({ type: 'predatorDied', predator: p, t: world.time });
-        }
-      } else {
+      // Bears drink when water is near — the unified chemistry runs
+      // hydration (the old fallback never did), so a bear that never drinks
+      // would desiccate in ~200s. Honest behavior, not a test hack.
+      let drank = 0;
+      try { drank = waterAt(p.x, p.y + 30, world.layout) ? 1 : 0; } catch (e) { drank = 0; }
+      {
         const before = b.health;
         tickBiochem(b, p.pheno, dt, {
           sleeping: false, playing: false, nearFriend: false, petted: false,
           scolded: false, grooming: false, groomed: false,
           ate: 0, active: 0.3, threat: 0, homesick: 0,
           develop: 0,
-          submerged: 0, heat: 0, ambientTemp: ambTemp, drank: 0, basking: 0,
+          submerged: 0, heat: 0, ambientTemp: ambTemp, drank, basking: 0,
           sailDump: 0,
         });
         void before;

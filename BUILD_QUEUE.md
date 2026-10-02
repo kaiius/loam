@@ -22,7 +22,7 @@ world. No species labels in sense vectors (§9.4 grep gate).
       transfers; global ledger; 10k-tick closed-world probe, zero drift;
       labeled boundary inputs (sunlight = energy in). Paul's 3 missed leaks
       to avoid: fixed carcass humus, seed-cap splice, transpiration 0.3 gain.
-- [ ] v0.25 — heat physics: T(x,t) living field; thermal mass (water slow,
+- [x] v0.25 — heat physics (done 2026-10-01, tag v0.25): T(x,t) living field; thermal mass (water slow,
       land fast); VOLCANIC VENTS as explicit worldgen heat sources (distance
       falloff — NO volcanic biome exists; the biome is future fire/disaster
       work); slow stable diffusion; couplings (evaporation ∝ T,
@@ -48,41 +48,116 @@ world. No species labels in sense vectors (§9.4 grep gate).
       the sweet spot is; first experiment at ~2x platforms, not 10x. (Standing
       lesson from the brain scaling: things tuned at one scale break silently
       at another — normalize, don't rescale; measure.)
-- [ ] v0.27 — species-tag mating gate (ECOLOGY_DESIGN §13.2): inherited
+- [x] v0.27 — seasons (Joshua-requested 2026-10-01, done 2026-10-01, tag v0.27): the year becomes physics.
+      Seasonal forcing on the v0.25 T(x,t) field as a SLOW radiative boundary
+      term — NOT an additive hack on T values (Gemini spec-review P0: additive
+      forcing on a conserving diffusion field is a heat pump; the sine must
+      enter as energy in/out through the ledger's sunlight/boundary pools,
+      annual net zero by construction since the sine integrates to zero).
+      Forcing shape A(x)·sin(2π·((t mod YEAR)/YEAR) + φ) — phase from t mod
+      YEAR, never raw t (Gemini P0: floating-point phase drift at millions of
+      ticks breaks same-seed determinism). Amplitude per biome column (desert
+      swings hard, rainforest mild, highland between); worldgen parameter,
+      tuned not guessed. YEAR length relative to lifespanSec (~2–4 years per
+      founder, reported); YEAR must be an integer multiple of the v0.23
+      weather update cadence (Gemini P2: else seasonal creep desyncs wet/dry
+      from warm/cold). Weather couples: vapor/rain/cloud get seasonal
+      modulation from the same clock (Gemini P0: T-only forcing collapses
+      relative humidity → an annual desiccation event; wet/dry seasons are
+      part of the feature, not a separate one). Volcanic vents are absolute
+      geothermal sources — EXEMPT from seasonal forcing, pinned (Gemini P1:
+      else "summer volcanoes" vs "winter volcanoes"). Water's 5x thermal lag
+      is expected and wanted (coastal phase offset); wind response to the
+      seasonal coastal gradient is a watch item — bounded monsoon behavior
+      acceptable, gale-force quarters are not; builder reports. Couplings:
+      plant fruiting phenology (EMERGENT — no hard gating; the exit measures
+      life, not the code branch), breeding seasonality (fertility multiplier
+      — founder economics, never forced), thermoregulation swings (fur's
+      value moves with the year; v0.25 heatstroke exit still passes in
+      summer), basking gain ∝ seasonal insolation (Gemini P2: else creatures
+      bypass winter by basking). OUT: freezing/ice (no water-phase change;
+      acknowledged cost: winter is legible through fuel, light, rain and
+      water lag, not through ice), migration (no new action). Watch:
+      generation resonance (1-year maturation × seasonal breeding →
+      population pulsing; feature, but the probe watches necromass spikes).
+      EXIT CRITERION (hardened per review): 2-year headless probe — annual
+      mean T stable (no drift; the heat-pump test), spring-born individuals
+      show >30% higher lifetime biomass than autumn-born (emergent, not
+      gated), winter fuel burn measurably above summer for identical genomes,
+      and no summer desiccation collapse (soil-moisture distribution must not
+      crash annually).
+- [ ] v0.28 — day and night (Joshua-requested 2026-10-01): the day becomes
+      physics, and activity phase becomes evolvable. DAY length as a world
+      parameter (ticks per day, reported); light(t) a smooth day/night curve
+      feeding the v0.23 light field (cloud shading still applies — overcast
+      noon is dimmer than clear noon). The T field gains a small diurnal
+      ripple (reverses v0.25's OUT on diurnal — deliberate, now that seasons
+      exist; amplitude small vs the seasonal wave). New: activity-phase as an
+      evolvable behavioral trait (own sub-stream, founder variation across
+      the diurnal↔nocturnal axis); rest/sleep as a low-energy off-phase state
+      (fatigue recovery up, vulnerability up — founder economics, never
+      forced). Nocturnal adaptation hooks: eyeSize couples to night-vision
+      range (bigger eyes see farther in dim light, paid through existing
+      morphology economics); vision range scales with light while
+      hearing/smell don't — night becomes the hearing animal's world (plays
+      with v0.19 sound shadows and the lexicon). Predation: a predator whose
+      phase matches its prey's off-phase hunts better — selection pressure
+      for phase divergence, tuned never forced. OUT: torpor/hibernation
+      (seasonal-scale dormancy is later work). Determinism: light(t) analytic
+      in tick. EXIT CRITERION: phase-divergence probe — under night-active
+      predators, a mixed-phase founder population shows measurable phase
+      sorting within N generations (or the builder reports why not, with
+      numbers); plus a 48h probe where nocturnal-phase founders out-forage
+      diurnal ones at night and lose by day.
+- [ ] v0.29 — species-tag mating gate (ECOLOGY_DESIGN §13.2): inherited
       species-tag; gate mating on tag match; SPECIES-level not tribe-level
       (tanglekin × tanglekin across tribes must succeed); new loci from own
       sub-stream; default-neutral so viability battery passes unchanged.
       Probe: forced tanglekin×beetle fails, tanglekin×tanglekin succeeds.
-- [ ] v0.28 — morsel retirement (design §5, §13.8: retired, not kept
+- [ ] v0.30 — morsel retirement (design §5, §13.8: retired, not kept
       alongside): morsels no longer spawn/tick; drop 'morsel' from
       MEAT_KINDS. CHECK FIRST: scavenger guild food supply — carrion must
       cover it; if the guild starves, say so loudly. Probe: 10k ticks, zero
       morsel spawns, scavengers fed.
-- [ ] v0.29 — leg-pressure experiment (BIOMES_DESIGN §13.7): isolate leg
+- [ ] v0.31 — leg-pressure experiment (BIOMES_DESIGN §13.7): isolate leg
       weakness from illness/contamination confound; fix sub-stream seeding
       confound; find the leg value where climb-pressure is readable
       independently of illness deaths. Measurement task — report number +
       method. Gets a verdict, not just code.
-- [ ] v0.30 — pollination, properly (design §6.1): flower state, pollen tags
+- [ ] v0.32 — pollination, properly (design §6.1): flower state, pollen tags
       (carrier + flora species id + viability timer), deposition on second
       flower of same species → fruit set; wind/selfing fallback per design.
       Probe: exclosure experiment — netted vs open flowers, fruit set differs.
-- [ ] v0.31 — seed dispersal vectors (design §6.2) + water current field
+- [ ] v0.33 — seed dispersal vectors (design §6.2) + water current field
       (§13.6): endozoochory (gut timer → deposition away from parent) +
       hydrochory (current field per water biome → wash-ashore zones).
       Gravity-only dispersal ends. Probe: seed-voyage gate — seeds deposited
       away from parents; new ground colonized.
-- [ ] v0.32 — §14 ecological QA gates: pollinator-crash cascade, 50k-tick
+- [ ] v0.34 — §14 ecological QA gates: pollinator-crash cascade, 50k-tick
       food-web persistence, seed voyage (≥2/10), predator–prey cycle,
       defense evolution, colonization both-outcomes, physiological-confinement
       grep. Pass/fail per gate with evidence; un-runnable gates get a named
       owner + trigger, never silence.
-- [ ] v0.33 — three instruments: (a) generation-50 drift watch (teacher
+- [ ] v0.35 — three instruments: (a) generation-50 drift watch (teacher
       prototypes vs ridge sound shadows); (b) jump-weakening clean test
       (measured number replaces unprincipled one); (c) duplication-to-fixation
       demo (DUP_RATE, dupLog — show a fixation or report why not).
+- [ ] v0.35 — tribe-divergence instrument (Joshua 2026-10-01): track
+      morphological divergence between tribes over generations — do separated
+      tribes drift apart in body form (size, tail/arm/leg/ear, spikes, fur,
+      hue, pattern), and does it correlate with habitat once v0.25 heat
+      physics gives traits something to be for? Sexual selection (matePref/
+      choosiness) and drift are the expected non-adaptive drivers; report
+      which traits diverge adaptively vs ornamentally.
 
 ## Design queue (after lexicon v0.21) — design-first, not build stream
+- Solid terrain under land (Joshua-requested 2026-10-01): v0.26 worldgen
+      leaves voids beneath landmasses that creatures fall into. Land must
+      extend downward as solid ground — terrain columns, not floating slabs.
+      The solid earth is the future substrate for digging/mining (evolved or
+      learned skills) and burrowing animals: soil/rock strata, diggability as
+      a material property, burrow as a future action with its instinct gene.
+      Until then: no voids under land — creatures stand on ground, not lids.
 - Decaying-inertia action arbitration (brain): SwitchCost(t, boldness) =
       C0·boldness·exp(−t/τ(boldness)); switch iff max[U(new)−SwitchCost] >
       U(current); existential hazards preempt at ~0 cost (hazard zeroes
@@ -108,7 +183,7 @@ world. No species labels in sense vectors (§9.4 grep gate).
       already gates strike drive (instHungerBite); this adds WHO. Execution
       probe: a predator offered a limping prey and a spiky healthy one must
 - Anatomical injury (Joshua-approved 2026-10-01, design: design/anatomical-injury.md,
-      proposed v0.34 'Scars'): the body becomes parts DERIVED FROM THE BAUPLAN —
+      proposed v0.36 'Scars'): the body becomes parts DERIVED FROM THE BAUPLAN —
       `partsFromMorphology(pheno)` builds the part list at birth from expressed
       morphology loci; NO species branching (a species IS a founder genome, same
       228 loci). Tanglekin founder → tail, 2 arms, 2 hands, 2 legs, 2 eyes,
