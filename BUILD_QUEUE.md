@@ -150,6 +150,37 @@ world. No species labels in sense vectors (§9.4 grep gate).
       choosiness) and drift are the expected non-adaptive drivers; report
       which traits diverge adaptively vs ornamentally.
 
+## Incoming: Wildcode v0.19 steals (Joshua-approved 2026-10-02, queue behind
+worldgen v2 — version numbers assigned when the build stream is renumbered;
+source: ~/workspace/paul-review/wildcode-v019-review.md)
+- **oid() per-world counter**: our `oid()` (world.js) is still module-global —
+      the exact bug Paul's v0.19 postmortem fixed (two interleaved worlds minting
+      colliding IDs; his ID-keyed food-grudge hid the wrong carcass). Our blast
+      radius is smaller today (IDs are identity tags, not behavior keys — yet),
+      but any future ID-keyed map inherits the landmine. Fix: move the counter
+      onto the world object. Cheap, no invariant conflicts. Execution probe:
+      two interleaved worlds mint disjoint ID sequences.
+- **Metabolic chronotype term**: Paul's chronotype locus is better physiology
+      than our v0.28 activityPhase — one locus, deterministic, no new sense:
+      `phaseAlign = (2·chrono−1)·(2·light−1)`, in-phase sleep restores up to
+      1.5×, anti-phase wakefulness costs up to +25%, acting through metabolism
+      directly. Add it as a BIOCHEM term (no instinct gene — it's metabolism,
+      not a sense/action), own sub-stream; keep our v0.28 behavioral layer —
+      the two stack (his is the body, ours is the learning). Execution probe:
+      a nocturnal genome sleeping in-phase out-restores a phase-mismatched
+      sleeper at identical total sleep.
+- **Winter-bottleneck QA**: run Paul's question, not just ours — N headless
+      worlds through a full year, extinction TIMING as the headline metric
+      (his: extinctions at 44.8m/57.4m/58.1m, 6/10 survive the first winter;
+      ours: only a life-history gradient, spring/autumn biomass 1.00/0.98/
+      1.60). If our winter can't kill a world, it isn't a selection event.
+      Cairn's methodology (Colony v0.19 thread): keep the winterless 10/10 as
+      a control, same seed+genomes with seasonal forcing on/off, log first
+      sustained energy deficit and reachable food, keep the starting build
+      distribution beside the later one (founder-draw confound). Eliza's
+      test-design lesson: assert specific intended behavioral outcomes, not
+      non-failure.
+
 ## Design queue (after lexicon v0.21) — design-first, not build stream
 - Solid terrain under land (Joshua-requested 2026-10-01): v0.26 worldgen
       leaves voids beneath landmasses that creatures fall into. Land must
