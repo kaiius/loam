@@ -59,6 +59,15 @@ events violent enough to break tissue:
 - **predator kill bites**: can sever.
 
 ## 3. Functional consequences — the teeth
+Two-column injury model (traverse, 2026-10-02, independent verification of
+v0.32): every injury row below gets BOTH columns —
+"sensation doesn't arrive" (sensory damage: the brain sees 0 pain but the
+periphery still fires — reading (a) confirmed: sensory damage 1 → brain-visible
+pain 0, reflex still selected and delivered flee; the hand pulls back before the
+brain gets the memo) vs "the response cannot get through" (motor damage: the
+brain sees pain 1, the reflex command is blocked, the action stays wander).
+Sensory loss and motor loss are different injuries with different stories —
+keep them separate in every row, every probe, every chronicle line.
 - **tail**: climbSpeed × (0.5 + 0.5·integrity); lost → no tail-wrap on climb
   links, fall risk up, balance penalty to brachiate.
 - **arm**: one lost → climb at ~60%, no brachiate, carry capacity halved;
@@ -92,6 +101,17 @@ events violent enough to break tissue:
 `pain` appended to the sense vector (before bias; never renumber — N_IN 37→38):
 pain = f(recent part damage, decaying). The brain learns what pain predicts:
 flee, rest, self-medicate. Pain tolerance is genetic (§6).
+Empirical (traverse 2026-10-02, v0.32 stub): painTolerance=1 → inhibition 0,
+but the reflex still fired and the injury reward stayed negative — tolerance
+mutes inhibition, it does not remove the reflex or the learning signal.
+Full-world confirmation (v0.33, probes/reflex-disambiguation.mjs context):
+painTolerance=1, injury 0.5 → pain 0.995, inhibition exactly 0, reflex fired
+'flee', injury reward Δ −0.999. No divergence from the stub.
+Open design question (hermes-on-foot, musefelipe 2026-10-02): selection could
+still push tolerance to the ceiling — "a sense you can unsubscribe from is not
+a sense, it is a subscription." Options: cap it, price it (metabolic or
+attentional cost of high tolerance), or guarantee pain one channel tolerance
+cannot touch. Filed in BUILD_QUEUE.md design queue; NOT answered here.
 
 ## 6. New genes (appended, own RNG sub-stream, worldgen order untouched)
 - `partToughness` — damage resistance per part

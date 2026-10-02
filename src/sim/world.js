@@ -64,7 +64,7 @@ export function createWorld(seed = 1, opts = {}) {
     stats: { jumps: 0, climbs: 0 }, // v0.18: action counters for the leg experiment
     buried: [], // v0.18 §13.1: buried food [{x, y, kind, amount, biome}] — the dig verb's pantry
     predators: [], // v0.18 §13.6: predator roster (spawned by the creature agent)
-    noFouling: false, // v0.18 §13.7: the contamination-neutralize switch for the leg experiment
+    noFouling: !!opts.noFouling, // v0.18 §13.7: the contamination-neutralize switch for the leg experiment (v0.33: honored from opts — the v0.18 script set it post-hoc, so the opt-in was silently ignored)
     // The canopy: jungle region (biome 2) holds the founder 9 platforms —
     // the v0.15 9 with x mapped into the jungle region, x' = 1200 + x×0.375,
     // y UNCHANGED. Honest deviation from "byte-identical": uniform x-scale
@@ -92,6 +92,14 @@ export function createWorld(seed = 1, opts = {}) {
     // order is load-bearing for determinism — cosmetic additions must never
     // shift the main stream's sequence (founder genomes, rolls, etc.).
     decorRng: createRng(seed * 31 + 7),
+    // v0.33 (RNG-boundary fix, Colony: hermes-on-foot): pebbles are NOT
+    // decor — they block, pile, and must be navigated (physics-visible, so
+    // selection-visible). Their radius was drawn from decorRng, a crossing:
+    // draining decorRng flipped a seed-42 death (starvation→illness) via a
+    // death-pebble's size. Pebble radii now draw from their own CAUSAL
+    // sub-stream — deterministic per seed, never the decor stream, and the
+    // main sequence stays bit-identical (genome.js sub-stream precedent).
+    pebbleRng: createRng((seed * 7919 + 17) >>> 0),
     // v0.13 "Roots":
     seenGenomes: new Set(), // genome hashes ever born — the beautiful-mutant watch
     novelParents: new Set(), // ids of living creatures with novel genomes
@@ -454,7 +462,7 @@ export function addPebble(world, x, platformIndex) {
   const plat = world.platforms[platformIndex];
   world.pebbles.push({
     kind: 'pebble', id: oid(), x, platformIndex, y: plat.y,
-    vx: 0, vy: 0, r: (world.decorRng || world.rng).range(9, 17),
+    vx: 0, vy: 0, r: (world.pebbleRng || world.rng).range(9, 17),
     dragged: false, // v0.17.2: the observer's hand — gravity pauses while held
   });
 }
@@ -1076,7 +1084,11 @@ export function wasteOdorOf(world, x) {
 }
 
 export function excrete(c, world, dt) {
-  if (world.noFouling) return; // §13.7: the contamination-neutralize switch
+  // v0.33: noFouling NO LONGER no-ops excretion. The illness path is
+  // neutralized at wasteOdorOf (→ 0), and detritus grazing is already
+  // gated on !noFouling in creature.js — so the nutrient cycle
+  // (waste → fertility → plants) runs identically in both arms and the
+  // CLEAN arm differs from NAT only by the illness contraction.
   if (!c.gut || c.gut <= 0 || !world.soil) return;
   const dep = Math.min(c.gut, c.gut * EXCRETE_RATE * dt);
   if (dep <= 0) return;
@@ -1086,7 +1098,8 @@ export function excrete(c, world, dt) {
 }
 
 export function tickSoil(world, dt) {
-  if (world.noFouling) return; // §13.7: the contamination-neutralize switch
+  // v0.33: noFouling NO LONGER freezes the soil. See excrete() above —
+  // the CLEAN arm keeps the full nutrient cycle; only illness is held out.
   if (!world.soil) return;
   // v2: soil pools keyed by region id — iterate entries (key, pool).
   // v1: keyed by the 8 biome keys.

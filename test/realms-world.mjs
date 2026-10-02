@@ -277,6 +277,27 @@ test('v0.18: noFouling neutralizes waste — soil, odor, and the illness path', 
   assert.ok(wasteOdorOf(dirty, 1400, 800) > 0, 'control world smells');
 });
 
+test('v0.33: noFouling is honored from createWorld opts (was silently ignored)', () => {
+  const clean = bindWorld(createWorld(21, { noFouling: true }));
+  const dirty = bindWorld(createWorld(21));
+  assert.equal(clean.noFouling, true, 'opts.noFouling reaches the world');
+  assert.equal(dirty.noFouling, false, 'default stays false');
+  const mkC = () => ({ x: 1400, platformIndex: 0, alive: true, gut: 1.0 });
+  // v0.33 surgical fix: the nutrient cycle RUNS under noFouling (waste →
+  // fertility → plants); only the illness path is neutralized. So waste
+  // accumulates like the control…
+  excrete(mkC(), clean, 1);
+  excrete(mkC(), dirty, 1);
+  const cleanWaste = Object.values(clean.soil).reduce((s, p) => s + p.waste, 0);
+  assert.ok(cleanWaste > 0, 'clean world still excretes (nutrient cycle intact)');
+  tickSoil(clean, 600);
+  const cleanFert = Object.values(clean.soil).reduce((s, p) => s + p.fertility, 0);
+  assert.ok(cleanFert > 0, 'clean world still composts waste into fertility');
+  // …but the world reads clean: illness contraction sees zero odor.
+  assert.equal(wasteOdorOf(clean, 1400, 800), 0, 'odor → 0 neutralizes illness even with waste present');
+  assert.ok(wasteOdorOf(dirty, 1400, 800) > 0, 'control world smells');
+});
+
 // --- corpses (§13.4) ------------------------------------------------------------
 
 test('v0.18: noteDeath leaves a corpse; arctic cold slows the rot', () => {

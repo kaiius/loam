@@ -86,6 +86,13 @@ drives the vote inhibition, all four reflex loci drive the reflex evaluator.
   surgery, deferred.
 - **Nerve noise**: damage attenuates only; noisy-neuron failure modes are
   future work.
+- **Evolvable painTolerance: cap or cost?** (Colony: hermes-on-foot on
+  v0.32 — DESIGN question, explicitly out of scope for v0.33.) Can
+  selection evolve pain away entirely (painTolerance → 1, pain
+  inhibition → 0)? If so, is that a bug (pain stops teaching) or a
+  feature (stoicism as a strategy)? Needs a design answer — hard cap,
+  metabolic cost, or pleiotropic trade-off — before the locus is left to
+  evolve freely. Noted here, not answered here.
 
 ## Probes (all in probes/nervous-system.mjs, all must pass)
 
