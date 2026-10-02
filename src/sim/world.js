@@ -26,8 +26,7 @@ export { tickMicrobes, decompMultiplier, sterilizeZone, bacteriaOf };
 
 // v0.24 "Mass conservation": the global ledger — re-exported so the sim's
 // facade stays world.js (creature.js, teacher.js book their flows here).
-import { initLedger, ledgerIn, ledgerOut, ledgerSeal, ledgerDrift, ledgerPools, ledgerTotal,
-         bodyMassOf, eggMassForGenome, PLANT_MASS, MINERAL_FRAC, FRUIT_MINERAL, LITTER_FRAC } from './ledger.js';
+import { initLedger, ledgerIn, ledgerOut, ledgerSeal, ledgerDrift, ledgerPools, ledgerTotal, bodyMassOf, eggMassForGenome, PLANT_MASS, MINERAL_FRAC, FRUIT_MINERAL, LITTER_FRAC } from './ledger.js';
 export { ledgerIn, ledgerOut, ledgerSeal, ledgerDrift, ledgerPools, ledgerTotal, bodyMassOf, eggMassForGenome };
 
 export const DAY_LENGTH = 300; // seconds per full day/night cycle

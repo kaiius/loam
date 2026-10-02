@@ -262,15 +262,19 @@ export function render(r, world, ui, t) {
   // Foods.
   for (const f of world.foods) { drawFood(ctx, f, t); if (ui.selected === f) drawInspectRing(ctx, f.x, f.y - 12, 20, 20, t); }
 
+  // 👁: the creature layer — one guard for everything the animals are or
+  // make: grove rings, home ticks, eggs, predators, bodies, the Teacher.
+  const showCreatures = !ui || ui.showCreatures !== false;
+
   // v0.7: visible culture — grove tradition rings on the ground.
-  drawGroves(ctx, world, t);
+  if (showCreatures) drawGroves(ctx, world, t);
 
   // v0.12: home-range ticks — each living creature's imprinted homeX, drawn
   // in its band's color. Honest: homeX is sim state, bands are detected.
-  drawHomeTicks(ctx, world);
+  if (showCreatures) drawHomeTicks(ctx, world);
 
   // Eggs.
-  for (const e of world.eggs) drawEgg(ctx, e, t, ui);
+  if (showCreatures) for (const e of world.eggs) drawEgg(ctx, e, t, ui);
 
   // Toys.
   for (const toy of world.toys) drawBall(ctx, toy, t);
@@ -299,14 +303,14 @@ export function render(r, world, ui, t) {
 
   // v0.18 "Realms": predators — every agent of selection is visible.
   // Paul's v0.17-dev lesson: no phantom killers.
-  for (const pr of world.predators || []) {
+  if (showCreatures) for (const pr of world.predators || []) {
     drawPredator(ctx, pr, t, light);
     if (ui.selected === pr) drawInspectRing(ctx, pr.x, (pr.y || 0) - 20, 46, 36, t);
   }
 
   // Creatures (selected last, with ring).
-  const sorted = [...world.creatures].sort((a, b) =>
-    (ui.selected === a ? 1 : 0) - (ui.selected === b ? 1 : 0));
+  const sorted = showCreatures ? [...world.creatures].sort((a, b) =>
+    (ui.selected === a ? 1 : 0) - (ui.selected === b ? 1 : 0)) : [];
   for (const c of sorted) {
     const plat = world.platforms[c.platformIndex];
     // Physics: creatures have their own y now — the airborne draw mid-air.
@@ -327,7 +331,7 @@ export function render(r, world, ui, t) {
 
   // The Teacher — Sunny's visitor avatar (v0.14 "Voices"). Drawn after the
   // tanglekins: blue monkey, jaunty newsboy cap, unmistakably not one of them.
-  if (world.teacher) {
+  if (showCreatures && world.teacher) {
     const te = world.teacher;
     const tplat = world.platforms[te.platformIndex];
     const ty = (te.y !== undefined && te.y !== null) ? te.y : tplat.y;

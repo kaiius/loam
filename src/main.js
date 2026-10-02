@@ -24,6 +24,23 @@ populateWorld(world);
 const renderer = createRenderer(canvas);
 const ui = createUI(canvas, renderer, world);
 
+// v0.26 "Procedural worldgen": the 🌍 New World button. Regenerate in
+// place: build the fresh world, then swap its contents into the live
+// `world` object — every closure (UI, teacher bridge, canopyWorld) holds
+// that same object, so nothing dangles. Selection/camera reset via
+// ui.resetView + auto-fit; speed and other session UI state persist.
+ui.onNewWorld = (seed, size) => {
+  const fresh = bindWorld(createWorld(seed, { size }));
+  populateWorld(fresh);
+  for (const k of Object.keys(world)) delete world[k];
+  Object.assign(world, fresh);
+  bindWorld(world); // rebind tryMate/digAt to the live object
+  ui.resetView();
+  renderer.cam.manual = false; // camera auto-fits the new world
+  acc = 0; // shed any queued ticks from the old world
+  ui.toast(`🌍 New world — seed ${seed} · ${size >= 2 ? 'Large (2×)' : 'Standard (1×)'} · ${world.creatures.length} creatures`);
+};
+
 // v0.14: the possession bridge — Sunny can feel and drive the teacher from
 // chat (or the console), not just the HUD. senses() returns the plain-text
 // serialization; command() auto-possesses and queues a command

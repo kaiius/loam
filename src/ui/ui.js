@@ -2,9 +2,9 @@
 // (select, drag, pet via double-click).
 
 import { screenToWorld, zoomAt, panBy, recenterCamera, followPoint } from '../render/renderer.js';
-import { petCreature, scoldCreature, creatureRadius } from '../sim/creature.js';
+import { petCreature, scoldCreature, creatureRadius, createCreature } from '../sim/creature.js';
 import { ageStage, mood } from '../sim/biochem.js';
-import { layEgg, DAY_LENGTH, LINEAGE_TRAITS, zoneAt, CALL_REF_D, speciesOverview } from '../sim/world.js';
+import { layEgg, DAY_LENGTH, LINEAGE_TRAITS, zoneAt, CALL_REF_D, speciesOverview, recordLineage, uniqueName, genomeHash, addFood } from '../sim/world.js';
 import { strongestBond } from '../sim/social.js';
 import { randomGenome } from '../sim/genome.js';
 import { commandTeacher, setTeacherMode, teacherEat, petTeacher, teacherSenseLines, serializeTeacherSenses, TEACHER_MOTIF } from '../sim/teacher.js';
@@ -37,6 +37,8 @@ export function createUI(canvas, renderer, world) {
     tonguesOpen: false,
     speciesOpen: false, // v0.20 "Species": the living taxonomy panel
     speciesSel: null, // species id the panel shows in detail (null = list)
+    censusOpen: false, // "Census": every living animal, one place
+    showCreatures: true, // "👁": the creature layer (bodies, eggs, groves, teacher)
     evoFocusT: null, // chronicle jump: time marker on the evolution tracker
     treeFocus: null, // creature id the family tree centers on
     treeView: { x: 0, y: 0, w: 760, h: 480 }, // pan/zoom viewport
@@ -45,6 +47,7 @@ export function createUI(canvas, renderer, world) {
     _evoAt: 0,
     _tongueAt: 0, // (was never initialized — the notebook refresh never fired)
     _speciesAt: 0, // v0.20 "Species": throttled panel refresh
+    _censusAt: 0, // Census: throttled panel refresh
   };
 
   const root = document.createElement('div');
@@ -60,6 +63,9 @@ export function createUI(canvas, renderer, world) {
       <button data-speed="4" title="Fast">⏩</button>
       <button id="addEgg" title="Add a wild egg">🥚+</button>
       <button id="dropFoodBtn" title="Place a fruit anywhere (observer)">🍎+ fruit</button>
+      <button id="troopBtn" title="Found a new troop of tanglekins in the jungle canopy">🐒+ troop</button>
+      <button id="censusBtn" title="Census — every living animal, one place">🐾 Census</button>
+      <button id="showBtn" class="active" title="Show / hide the creature layer">👁 🐒</button>
       <button id="treeBtn" title="Family tree">🌳 Tree</button>
       <button id="evoBtn" title="Evolution tracker">📈 Evo</button>
       <button id="chronBtn" title="Chronicle — the world's story">📜 Chronicle</button>
@@ -67,6 +73,7 @@ export function createUI(canvas, renderer, world) {
       <button id="speciesBtn" title="Species — the living taxonomy">🧬 Species</button>
       <button id="soundBtn" title="Toggle sound">🔊</button>
       <button id="teacherBtn" title="Find the Teacher">🧑‍🏫</button>
+      <button id="worldBtn" title="Procedural world generation — roll a fresh world">🌍 New World</button>
     </div>
     <div id="panel" class="hidden"></div>
     <div id="treepanel" class="bigpanel hidden"></div>
@@ -74,6 +81,19 @@ export function createUI(canvas, renderer, world) {
     <div id="chronpanel" class="bigpanel hidden"></div>
     <div id="tonguepanel" class="bigpanel hidden"></div>
     <div id="speciespanel" class="bigpanel hidden"></div>
+    <div id="censuspanel" class="bigpanel hidden"></div>
+    <div id="worldpanel" class="hidden">
+      <div class="wp-cur" id="worldCur"></div>
+      <div class="wp-row"><span>World size</span>
+        <button data-wsize="1" class="wsize active">Standard · 1×</button>
+        <button data-wsize="2" class="wsize">Large · 2×</button>
+      </div>
+      <div class="wp-row"><span>Seed</span>
+        <input id="worldSeed" type="text" inputmode="numeric" autocomplete="off" placeholder="blank = random">
+      </div>
+      <div class="wp-row"><button id="worldGo">🌱 Generate world</button></div>
+      <div class="wp-note">Rolls fresh terrain, waters, and founder creatures from the seed (v0.26 procedural worldgen). The current world is replaced.</div>
+    </div>
     <div id="toasts"></div>
     <div id="hint">Click anything to inspect it · drag creatures & toys · double-click to pet · 🍎+ places fruit · drag background to pan · scroll to zoom · 🧑‍🏫 finds the Teacher</div>
     <div id="camctl">
@@ -91,6 +111,7 @@ export function createUI(canvas, renderer, world) {
   const chronPanel = root.querySelector('#chronpanel');
   const tonguePanel = root.querySelector('#tonguepanel');
   const speciesPanel = root.querySelector('#speciespanel');
+  const censusPanel = root.querySelector('#censuspanel');
   const clockEl = root.querySelector('#clock');
   const censusEl = root.querySelector('#census');
   const toastsEl = root.querySelector('#toasts');
@@ -159,6 +180,52 @@ export function createUI(canvas, renderer, world) {
     refreshPanel(panel, ui);
     toast(toastsEl, `🧑‍🏫 ${world.teacher.mode === 'possessed' ? 'The Teacher is yours — possess it.' : 'The Teacher wanders on its own. Possess it from its panel.'}`);
   });
+  // ---- v0.26 "Procedural worldgen": the New World panel ----
+  // main.js implements the regeneration (ui.onNewWorld); the panel only
+  // collects size + seed. Regenerating swaps the world's contents in
+  // place, so this closure's `world` binding stays valid throughout.
+  ui.toast = (msg) => toast(toastsEl, msg);
+  const worldBtn = root.querySelector('#worldBtn');
+  const worldPanel = root.querySelector('#worldpanel');
+  const worldCur = root.querySelector('#worldCur');
+  const worldSeedInput = root.querySelector('#worldSeed');
+  let pendingWorldSize = 1;
+  const syncWorldPanel = () => {
+    const sz = Math.round((world.width || 4800) / 4800);
+    worldCur.textContent = `Current world — seed ${world.seed} · ${sz >= 2 ? 'Large (2×)' : 'Standard (1×)'} · ${world.width}px wide · ${world.creatures.length} creatures`;
+  };
+  worldBtn.addEventListener('click', () => {
+    const opening = worldPanel.classList.contains('hidden');
+    if (opening) { closeBigPanels(); syncWorldPanel(); }
+    worldPanel.classList.toggle('hidden', !opening);
+    worldBtn.classList.toggle('active', opening);
+  });
+  root.querySelectorAll('[data-wsize]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      pendingWorldSize = Number(btn.dataset.wsize);
+      root.querySelectorAll('[data-wsize]').forEach((b) => b.classList.toggle('active', b === btn));
+    });
+  });
+  const generateWorld = () => {
+    const raw = worldSeedInput.value.trim();
+    const seed = /^-?\d+$/.test(raw) ? (parseInt(raw, 10) | 0) : ((Date.now() % 100000) | 0);
+    worldPanel.classList.add('hidden');
+    worldBtn.classList.remove('active');
+    if (ui.onNewWorld) ui.onNewWorld(seed, pendingWorldSize);
+  };
+  root.querySelector('#worldGo').addEventListener('click', generateWorld);
+  worldSeedInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') generateWorld(); });
+  // A fresh world invalidates every creature reference the UI holds:
+  // clear selection/follow, close panels, drop stale panel foci.
+  ui.resetView = () => {
+    ui.setSelected(null);
+    ui.hover = null; ui.dragging = null; ui.camPan = null; ui.pinch = null;
+    ui.speciesSel = null; ui.treeFocus = null; ui.evoFocusT = null; ui._nextIdx = 0;
+    closeBigPanels();
+    panel.classList.add('hidden');
+    worldPanel.classList.add('hidden');
+    worldBtn.classList.remove('active');
+  };
   // ---- v0.14: family tree + evolution tracker + chronicle panels ----
   const treeBtn = root.querySelector('#treeBtn');
   const evoBtn = root.querySelector('#evoBtn');
@@ -166,18 +233,21 @@ export function createUI(canvas, renderer, world) {
   const tongueBtn = root.querySelector('#tongueBtn');
   const speciesBtn = root.querySelector('#speciesBtn');
   const soundBtn = root.querySelector('#soundBtn');
+  const censusBtn = root.querySelector('#censusBtn');
   const closeBigPanels = () => {
-    ui.treeOpen = ui.evoOpen = ui.chronOpen = ui.tonguesOpen = ui.speciesOpen = false;
+    ui.treeOpen = ui.evoOpen = ui.chronOpen = ui.tonguesOpen = ui.speciesOpen = ui.censusOpen = false;
     treePanel.classList.add('hidden');
     evoPanel.classList.add('hidden');
     chronPanel.classList.add('hidden');
     tonguePanel.classList.add('hidden');
     speciesPanel.classList.add('hidden');
+    censusPanel.classList.add('hidden');
     treeBtn.classList.remove('active');
     evoBtn.classList.remove('active');
     chronBtn.classList.remove('active');
     tongueBtn.classList.remove('active');
     speciesBtn.classList.remove('active');
+    censusBtn.classList.remove('active');
   };
   treeBtn.addEventListener('click', () => {
     ui.treeOpen = !ui.treeOpen;
@@ -229,6 +299,70 @@ export function createUI(canvas, renderer, world) {
       renderSpecies(speciesPanel, ui);
       speciesBtn.classList.add('active');
     } else closeBigPanels();
+  });
+  // ---- Census: every living animal, one place ----
+  censusBtn.addEventListener('click', () => {
+    ui.censusOpen = !ui.censusOpen;
+    if (ui.censusOpen) {
+      closeBigPanels(); ui.censusOpen = true;
+      renderCensus(censusPanel, ui);
+      censusBtn.classList.add('active');
+    } else closeBigPanels();
+  });
+  // Clicking a census row selects and inspects that animal.
+  censusPanel.addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'census-close') {
+      ui.censusOpen = false;
+      censusPanel.classList.add('hidden');
+      censusBtn.classList.remove('active');
+      return;
+    }
+    const row = e.target && e.target.closest ? e.target.closest('[data-census]') : null;
+    if (!row) return;
+    const [kind, id] = row.dataset.census.split(':');
+    const pool = kind === 'creature' ? world.creatures : (world.predators || []);
+    const obj = pool.find((o) => String(o.id) === id);
+    if (!obj) return;
+    ui.setSelected(obj);
+    refreshPanel(panel, ui);
+    const plat = world.platforms[obj.platformIndex];
+    if (plat) followPoint(renderer, world, obj.x, plat.y - 40);
+    else followPoint(renderer, world, obj.x, obj.y - 40);
+  });
+  // ---- 👁: the creature layer, whole ----
+  // One visibility guard for everything the creatures are or make:
+  // bodies, labels, eggs, groves, home ticks, predators, the Teacher.
+  const showBtn = root.querySelector('#showBtn');
+  showBtn.addEventListener('click', () => {
+    ui.showCreatures = ui.showCreatures === false ? true : false;
+    showBtn.classList.toggle('active', ui.showCreatures);
+    toast(toastsEl, ui.showCreatures ? '👁 Creature layer on.' : '👁 Creature layer off — the world, emptied of its animals.');
+  });
+  // ---- 🐒+ troop: found a founder troop in the jungle canopy ----
+  root.querySelector('#troopBtn').addEventListener('click', () => {
+    const zonePlats = (world.layout && world.layout.platformsByZone && world.layout.platformsByZone.jungle) || [];
+    const plat = zonePlats[Math.floor(zonePlats.length / 2)] || world.platforms[2] || world.platforms[0];
+    if (!plat) return;
+    const n = 4;
+    const sexes = ['female', 'male', 'female', 'male'];
+    const born = [];
+    for (let i = 0; i < n; i++) {
+      const genome = randomGenome(world.rng, { pinSub: (world.seed * 31 + 7919 + world.creatures.length * 17 + i * 131) | 0 });
+      const x = Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, (plat.x1 + plat.x2) / 2 + (i - (n - 1) / 2) * 130));
+      const c = createCreature(genome, x, plat.pi !== undefined ? plat.pi : world.platforms.indexOf(plat), world.rng, { name: `troop-${i + 1}` });
+      c.name = uniqueName(world, c.name);
+      c.sex = sexes[i];
+      c.biochem.age = c.pheno.lifespanSec * 0.4; // young adults, like genesis founders
+      recordLineage(world, c);
+      if (world.seenGenomes) world.seenGenomes.add(genomeHash(c.genome));
+      world.creatures.push(c);
+      born.push(c);
+      addFood(world, Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, x + world.rng.range(-60, 60))), c.platformIndex, 'fruit', 1);
+    }
+    ui.setSelected(born[0]);
+    refreshPanel(panel, ui);
+    followPoint(renderer, world, born[0].x, plat.y - 40);
+    toast(toastsEl, `🐒 A new troop founders in the jungle canopy — ${born.map((c) => c.name).join(', ')}.`);
   });
   speciesPanel.addEventListener('click', (e) => {
     if (!e.target || !e.target.closest) return;
@@ -637,6 +771,11 @@ export function createUI(canvas, renderer, world) {
     if (ui.speciesOpen && now - ui._speciesAt > 1500) {
       ui._speciesAt = now;
       renderSpecies(speciesPanel, ui);
+    }
+    // Census: the roster breathes — births, deaths, new arrivals.
+    if (ui.censusOpen && now - ui._censusAt > 1500) {
+      ui._censusAt = now;
+      renderCensus(censusPanel, ui);
     }
   };
 
@@ -1489,6 +1628,64 @@ function predatorsHtml(ov) {
   if (bears) html += `<div class="ch-entry"><div class="ch-icon">🐻</div><div class="ch-text"><b>Bears × ${bears}</b><div class="tdetail">Overheat above ~0.35 ambient heat — confined by heat, not by walls.</div></div></div>`;
   return html;
 }
+// ---- Census: every living animal, one place ----
+// Genome-bearing animals show their hash, expressed values, and traits.
+// Predators (and any critter) carry a set phenotype but no genome — the
+// census says so plainly instead of inventing genetics for them.
+function renderCensus(censusPanel, ui) {
+  const world = ui.world;
+  const num = (v) => (Number.isFinite(v) ? v.toFixed(2) : '—');
+  const creatures = world.creatures.filter((c) => c.alive);
+  const predators = (world.predators || []).filter((p) => p.alive);
+  const critters = (world.critters || []).filter((c) => c.alive);
+  const total = creatures.length + predators.length + critters.length;
+  const creatureRow = (c) => {
+    const p = c.pheno || {};
+    const hue = Number.isFinite(p.hueDeg) ? p.hueDeg.toFixed(0) : '0';
+    const hash = (genomeHash(c.genome) >>> 0).toString(16).padStart(8, '0');
+    return `<button class="can-row" data-census="creature:${c.id}">
+      <span class="can-dot" style="background:hsl(${hue},58%,60%)"></span>
+      <span class="can-body">
+        <span class="can-name">${escapeHtml(c.name)}</span>
+        <span class="can-sub">${ageStage(c.biochem, p)} · ${c.sex || ''} · 📍 ${zoneAt(c.x).name} · ${escapeHtml(c.actionLabel || c.action || '')}</span>
+        <span class="can-gen">🧬 <b>#${hash}</b> · size ${num(p.size)} · fur ${num(p.fur)} · legs ${num(p.legLength)} · eyes ${num(p.eyeSize)} · spikes ${num(p.spikes)}</span>
+        ${c.speciesId ? `<span class="can-genote">Species #${c.speciesId}${c.hybrid ? ` · ⚠️ hybrid (viability ${c.hybrid.viability.toFixed(2)})` : ''} · gen ${c.generation || 0}</span>` : `<span class="can-genote">gen ${c.generation || 0}</span>`}
+        <span class="can-traits">${escapeHtml(temperament(c))}</span>
+      </span>
+    </button>`;
+  };
+  const predatorRow = (p) => {
+    const ph = p.pheno || {};
+    const isShark = p.kind === 'shark';
+    return `<button class="can-row" data-census="predator:${p.id}">
+      <span class="can-dot" style="background:${isShark ? '#5b7f95' : '#8a6f4d'}"></span>
+      <span class="can-body">
+        <span class="can-name">${isShark ? '🦈 Shark' : '🐻 Bear'} #${p.id}</span>
+        <span class="can-sub">predator · 📍 ${zoneAt(p.x).name}${p.submerged ? ' · submerged' : ''}${p.hunting ? ' · 🔴 hunting' : ''}</span>
+        <span class="can-gen"><i>No modeled genome</i> — a set phenotype, not inherited DNA</span>
+        <span class="can-vals">breath ${num(ph.breathTime)}s · swim ${num(ph.swimSpeed)} · coldTol ${num(ph.coldTol)} · heatTol ${num(ph.heatTol)} · fur ${num(ph.furInsulation)}</span>
+      </span>
+    </button>`;
+  };
+  const critterRow = (c) => `<button class="can-row" data-census="critter:${c.id}">
+      <span class="can-dot" style="background:#a8b36a"></span>
+      <span class="can-body">
+        <span class="can-name">${escapeHtml(c.kind || 'critter')} #${c.id}</span>
+        <span class="can-sub">📍 ${zoneAt(c.x).name}</span>
+        <span class="can-gen"><i>No modeled genome</i></span>
+      </span>
+    </button>`;
+  censusPanel.innerHTML = `
+    <div class="bp-head"><h2>🐾 Census — ${total} living animal${total === 1 ? '' : 's'}</h2><button id="census-close">✕</button></div>
+    <div class="can-sec">Tanglekins (${creatures.length})</div>
+    ${creatures.length ? creatures.map(creatureRow).join('') : '<div class="can-note">None alive right now.</div>'}
+    <div class="can-sec">Predators (${predators.length})</div>
+    ${predators.length ? predators.map(predatorRow).join('') : '<div class="can-note">None alive right now.</div>'}
+    ${critters.length ? `<div class="can-sec">Critters (${critters.length})</div>${critters.map(critterRow).join('')}` : ''}
+    <div class="can-note">Rows are live: click one to inspect it. Genetics shown are the animal's expressed phenotype; “no modeled genome” means the engine never gave that animal DNA.</div>`;
+  censusPanel.classList.remove('hidden');
+}
+
 function renderSpecies(speciesPanel, ui) {
   const world = ui.world;
   const ov = speciesOverview(world);

@@ -37,6 +37,32 @@
     padding: 14px; font-size: 13px; pointer-events: auto;
   }
   #panel.hidden { display: none; }
+
+  /* v0.26 "Procedural worldgen": the New World panel */
+  #worldpanel {
+    position: absolute; top: 64px; right: 12px; width: 264px;
+    background: rgba(16, 16, 32, 0.78); backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 14px;
+    padding: 14px; font-size: 13px; pointer-events: auto;
+  }
+  #worldpanel.hidden { display: none; }
+  .wp-cur { opacity: 0.85; margin-bottom: 10px; line-height: 1.5; }
+  .wp-row { display: flex; align-items: center; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+  .wp-row > span { width: 64px; opacity: 0.9; flex: none; }
+  .wp-row button {
+    background: rgba(255,255,255,0.1); color: #fff; border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 9px; padding: 5px 10px; font-size: 13px; cursor: pointer;
+  }
+  .wp-row button:hover { background: rgba(255,255,255,0.22); }
+  .wp-row button.active { background: rgba(140, 200, 255, 0.35); border-color: rgba(140,200,255,0.6); }
+  #worldSeed {
+    flex: 1; min-width: 0; background: rgba(255,255,255,0.08); color: #fff;
+    border: 1px solid rgba(255,255,255,0.16); border-radius: 9px;
+    padding: 6px 9px; font-size: 13px; font-family: inherit;
+  }
+  #worldSeed::placeholder { color: rgba(255,255,255,0.45); }
+  #worldGo { flex: 1; padding: 8px; }
+  .wp-note { opacity: 0.6; font-size: 11px; line-height: 1.5; margin-top: 4px; }
   .p-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .p-head h2 { font-size: 17px; flex: 1; }
   .p-head button { background: none; border: none; color: #aaa; font-size: 14px; cursor: pointer; }

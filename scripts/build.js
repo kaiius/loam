@@ -10,6 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const MODULES = [
   'src/sim/rng.js',
+  'src/sim/worldgen.js', // v0.26 "Procedural worldgen": layout roller — before biomes.js (canonicalLayout) and world.js (rollLayout)
   'src/sim/biomes.js', // v0.18 "Realms": pure geography — before creature.js/world.js/renderer.js (TDZ)
   'src/sim/weather.js', // v0.23 "Weather": climate field — before creature.js/world.js (TDZ)
   'src/sim/genome.js',
@@ -24,6 +25,7 @@ const MODULES = [
   'src/sim/species.js', // founder table (PIN salts) — before creature.js/world.js (TDZ)
   'src/sim/microbes.js', // living decomposer layer — before world.js (TDZ)
   'src/sim/creature.js',
+  'src/sim/ledger.js', // v0.24 "Mass conservation": the ledger — before world.js (initLedger)
   'src/sim/world.js',
   'src/sim/observer.js', // v0.17.1 "Touch": the observer's hands (imports addFood, zoneAt from world.js)
   'src/sim/teacher.js',

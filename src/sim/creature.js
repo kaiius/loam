@@ -12,7 +12,7 @@ import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard,
 import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA } from './evodevo.js';
 // v0.18 "Realms": the biome map — region layout, temperature fields,
 // waters, ground. Pure geography; every call NaN-guarded at use.
-import { biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, groundYAt } from './biomes.js';
+import { biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, groundYAt } from './biomes.js';
 import { windAt, tempAt, cloudAt, seasonSun } from './weather.js';
 
 let nextId = 1;
@@ -2216,6 +2216,15 @@ export function scoldCreature(c) {
 const SHARK_SPEED = 90; // px/s cruise
 const SHARK_TOUCH_RANGE = 30; // px — a bump that kills
 const SHARK_HUNGER_RANGE = 480; // px — scent range
+// "Honest physics" (from the hosted repair): the world's physical
+// constraints as law, not timers. Sharks are confined by the water column
+// itself — a candidate position must be inside a water body deep enough
+// for a shark body (≥ SHARK_MIN_DEPTH px of water; the inspector has
+// always said 90), and dead sharks sink to the seabed instead of hanging
+// where they died.
+const SHARK_MIN_DEPTH = 90; // px — the inspector's promise, now enforced
+const SHARK_BODY_HALF = 13; // px — half the vertical clearance a swimming shark needs
+const CORPSE_SINK = 24; // px/s — a dead shark's descent to the seabed
 // (v0.27: the bear thermal fallback was deleted — bears run tickBiochem now.)
 
 function makeShark(world, x, y) {
@@ -2312,7 +2321,40 @@ export function spawnPredators(world) {
 export function tickPredators(world, dt) {
   if (!world.predators) return;
   for (const p of world.predators) {
-    if (!p.alive) continue;
+    if (!p.alive) {
+      // The dead are kept (the chronicle may need them), but a corpse is
+      // a body, not a floating sign. Dead sharks sink to the seabed and
+      // rest there; dead bears finish their fall to the ground. Nothing
+      // hangs in mid-water or mid-air.
+      const px = cx0(p), py = cy0(p);
+      if (p.kind === 'shark') {
+        let w = null;
+        try { w = waterAt(px, Math.min(py, world.height), world.layout); } catch (e) { w = null; }
+        const floor = w ? w.surfaceY + (waterDepthAt(px, w.surfaceY + 1, world.layout) || 0) : groundYAt(px, world.layout) ?? world.height;
+        const rest = Math.min(Number.isFinite(floor) ? floor : world.height, world.height) - SHARK_BODY_HALF;
+        if (py < rest) p.y = Math.min(rest, py + CORPSE_SINK * dt);
+        p.vx = 0; p.vy = 0;
+      } else if (p.kind === 'bear') {
+        let gy = null;
+        try { gy = groundYAt(px, world.layout); } catch (e) { gy = null; }
+        if (gy === null || gy === undefined || !Number.isFinite(gy)) {
+          for (const pl of world.platforms || []) {
+            if (px < pl.x1 || px > pl.x2 || pl.y <= py) continue;
+            if (gy === null || gy === undefined || pl.y < gy) gy = pl.y;
+          }
+        }
+        const rest = Math.min(Number.isFinite(gy) ? gy : world.height, world.height);
+        if (py < rest) {
+          p.vy = Math.min(MAX_FALL, (p.vy || 0) + GRAVITY * dt);
+          p.y = Math.min(rest, py + p.vy * dt);
+        } else {
+          p.y = rest;
+        }
+        p.vx = 0;
+        if (p.y >= rest) p.vy = 0;
+      }
+      continue;
+    }
     const b = p.biochem;
     if (p.kind === 'shark') {
       // Water state (same literal formula as creatures).
@@ -2337,7 +2379,9 @@ export function tickPredators(world, dt) {
         const d = Math.hypot(cx0(c) - cx0(p), cy0(c) - cy0(p));
         if (d < td) { td = d; target = c; }
       }
-      if (target && inWater) {
+      p.hunting = !!target && inWater; // the honest state reads (inspector/painter)
+      p.target = inWater ? target : null;
+      if (p.hunting) {
         const dx = cx0(target) - cx0(p), dy = cy0(target) - cy0(p);
         const d = Math.hypot(dx, dy) || 1;
         p.vx = dx / d * SHARK_SPEED;
@@ -2351,10 +2395,20 @@ export function tickPredators(world, dt) {
         }
         p.vx = p.wanderDir * SHARK_SPEED * 0.4;
       }
+      // Movement, by regime:
+      // — Out of water: one physics. The shark falls under the same
+      //   gravity as everything else and lands on whatever is below;
+      //   grounded, it rests on the sand while the beaching clock runs.
+      // — Deep water (≥ SHARK_MIN_DEPTH): the water column is a physical
+      //   constraint. The candidate x must stay in water deep enough for
+      //   a shark body, and y is clamped between surface and seabed — no
+      //   sliding over shorelines, no breaching into the air mid-chase.
+      // — Shallow water (ponds, the generated shallows): earth is solid.
+      //   A swimming shark may not enter the earth — not the shore cliff,
+      //   not the seabed, not an island — but where water meets air (a
+      //   pond's edge) it may still beach honestly onto the sand.
+      const cx = cx0(p), cy = cy0(p);
       if (!inWater) {
-        // Beached: one physics for every body. The shark falls under the
-        // same gravity as everything else and lands on whatever is below;
-        // grounded, it rests on the sand while the beaching clock runs.
         if (!p.grounded) {
           integrateGravity(p, world, dt);
         } else {
@@ -2363,34 +2417,63 @@ export function tickPredators(world, dt) {
           if (pl) p.y = pl.y;
         }
       } else {
-        // v0.20: earth is solid for sharks too — one physics. A swimming
-        // shark may not enter the earth: not the shore cliff at the
-        // shallows' west edge (the old bug swam sharks UNDER the desert),
-        // not the seabed, not the archipelago islands. Blocked on an
-        // axis, the shark turns away; the water simply ends at the shore.
-        // (Beaching itself onto the sand above the waterline is still
-        // allowed — that's an honest stranding, and the clock kills it.)
-        let nx = p.x + p.vx * dt;
-        let ny = p.y + p.vy * dt;
-        let gyDest = null, gyHere = null;
-        try { gyDest = groundYAt(nx, world.layout); } catch (e) { gyDest = null; }
-        try { gyHere = groundYAt(p.x, world.layout); } catch (e) { gyHere = null; }
-        const earthAt = (gy) => gy !== null && gy !== undefined && Number.isFinite(gy);
-        if (earthAt(gyDest) && ny > gyDest) {
-          nx = p.x; // hold x, turn around
-          p.vx = -p.vx;
-          p.wanderDir = -p.wanderDir;
-          p.wanderT = Math.max(p.wanderT, 1.5);
+        let depthHere = 0;
+        try { depthHere = waterDepthAt(p.x, cy, world.layout) || 0; } catch (e) { depthHere = 0; }
+        if (depthHere >= SHARK_MIN_DEPTH) {
+          const nx = cx + p.vx * dt;
+          let wNext = null, depthNext = 0;
+          try {
+            wNext = waterAt(nx, cy, world.layout); // at the shark's own depth: the honest probe
+            if (wNext) depthNext = waterDepthAt(nx, cy, world.layout) || 0;
+          } catch (e) { /* containment: the wall is real */ }
+          let solidNx = false;
+          if (wNext) {
+            let gNx = null;
+            try { gNx = groundYAt(nx, world.layout); } catch (e) { gNx = null; }
+            // An archipelago island is solid from its shore to the
+            // seabed; you cannot swim through rock. The channels between
+            // islands only (groundYAt is null out in the channel water).
+            solidNx = gNx !== null && gNx !== undefined && Number.isFinite(gNx) && gNx < cy + SHARK_BODY_HALF;
+          }
+          if (wNext && depthNext >= SHARK_MIN_DEPTH && !solidNx) {
+            p.x = nx;
+          } else {
+            // Water's edge: turn, don't slide. Hunting keeps its target —
+            // the chase resumes once the shark turns back in.
+            p.wanderDir = -Math.sign(p.vx || 1) || 1;
+            p.facing = p.wanderDir;
+            p.vx = 0;
+          }
+          // Vertical: clamped inside the local water column.
+          const top = w.surfaceY + SHARK_BODY_HALF;
+          const bottom = w.surfaceY + depthHere - SHARK_BODY_HALF;
+          let ny = cy + p.vy * dt;
+          if (ny < top) { ny = top; p.vy = 0; }
+          if (ny > bottom && bottom >= top) { ny = bottom; p.vy = 0; }
+          p.y = ny;
+        } else {
+          let nx = p.x + p.vx * dt;
+          let ny = p.y + p.vy * dt;
+          let gyDest = null, gyHere = null;
+          try { gyDest = groundYAt(nx, world.layout); } catch (e) { gyDest = null; }
+          try { gyHere = groundYAt(p.x, world.layout); } catch (e) { gyHere = null; }
+          const earthAt = (gy) => gy !== null && gy !== undefined && Number.isFinite(gy);
+          if (earthAt(gyDest) && ny > gyDest) {
+            nx = p.x; // hold x, turn around
+            p.vx = -p.vx;
+            p.wanderDir = -p.wanderDir;
+            p.wanderT = Math.max(p.wanderT, 1.5);
+          }
+          if (earthAt(gyHere) && ny > gyHere) {
+            ny = p.y; // don't dive through the seabed
+            if (p.vy > 0) p.vy = -p.vy * 0.5;
+          }
+          p.x = nx;
+          p.y = ny;
         }
-        if (earthAt(gyHere) && ny > gyHere) {
-          ny = p.y; // don't dive through the seabed
-          if (p.vy > 0) p.vy = -p.vy * 0.5;
-        }
-        p.x = nx;
-        p.y = ny;
-        if (p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx); }
-        if (p.x > world.width) { p.x = world.width; p.vx = -Math.abs(p.vx); }
       }
+      if (p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx); p.wanderDir = 1; }
+      if (p.x > world.width) { p.x = world.width; p.vx = -Math.abs(p.vx); p.wanderDir = -1; }
       // Contact: the kill. Prey dies; the chronicle records it.
       for (const c of world.creatures || []) {
         if (!c.alive) continue;

@@ -34,7 +34,7 @@ import { createRng } from './rng.js';
 export const ZONE_KEYS = ['arctic', 'mountains', 'jungle', 'plains', 'desert', 'shallows', 'archipelago', 'deep'];
 export const BASE_ZONE_W = 600;
 export const BASE_WORLD_W = 4800;
-export const WORLD_H = 1100;
+const WG_WORLD_H = 1100; // bundle note: biomes.js owns the shared WORLD_H const — one declaration per scope
 export const TERRAIN_COL = 20; // px per elevation column
 
 // Emission order of the painted platform list (NOT west→east — the painted
@@ -381,7 +381,7 @@ export function canonicalLayout(size = 1) {
   }));
   const layout = {
     seed: 0, size, attempt: -1, canonical: true,
-    width: BASE_WORLD_W * size, height: WORLD_H,
+    width: BASE_WORLD_W * size, height: WG_WORLD_H,
     zones, seaY: 800, ground: null, waters: null,
     platforms: null, platformsByZone: null,
   };
@@ -404,7 +404,7 @@ export function generateLayout(seed, size = 1, attempt = 0) {
   }));
   const layout = {
     seed, size, attempt, canonical: false,
-    width: BASE_WORLD_W * size, height: WORLD_H,
+    width: BASE_WORLD_W * size, height: WG_WORLD_H,
     zones, seaY: 0, ground: null, waters: null,
     platforms: null, platformsByZone: null,
   };
