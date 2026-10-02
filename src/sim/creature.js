@@ -7,12 +7,12 @@ import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY, foundCraft, CRAFT_USES, CRAFT_WINDOW, CRAFT_RADIUS } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
-import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, TISSUE_FRACTION, mineralType, addPebble, addStick, ledgerOut, bodyMassOf, releaseBodyMass } from './world.js';
+import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, TISSUE_FRACTION, mineralType, addPebble, addStick, ledgerOut, bodyMassOf, releaseBodyMass, soilAt } from './world.js';
 import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, pushContextWindow, hearerSalientContext, lexiconDistance } from './language.js';
 import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA } from './evodevo.js';
 // v0.18 "Realms": the biome map — region layout, temperature fields,
 // waters, ground. Pure geography; every call NaN-guarded at use.
-import { biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, groundYAt } from './biomes.js';
+import { biomeAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, groundYAt } from './biomes.js';
 import { findRegion } from './worldgen.js';
 import { windAt, tempAt, cloudAt, seasonSun } from './weather.js';
 
@@ -878,7 +878,11 @@ export function doEat(c, world) {
   // NICHE is founder-exact (low instWasteFlee, high immunity, small bites).
   let detritusSoil = null;
   if (!food && !world.noFouling && world.soil) {
-    const soil = world.soil[biomeKeyAt(c.x)];
+    // v0.30 fix: soilAt (region-id keyed in v2 layouts) — the old
+    // world.soil[biomeKeyAt(x)] indexed by region LABEL, which is not a
+    // key in v2, so detritus grazing silently never fired in generated
+    // worlds.
+    const soil = soilAt(world, c.x);
     if (soil && soil.waste >= DETRITUS_WASTE_MIN) {
       detritusSoil = soil;
       food = {
@@ -1613,7 +1617,7 @@ function executeAction(c, world, dt, s) {
             // waste in the wielder's zone, not vanished mass.
             const lost = held.weight * 0.4;
             held.weight *= 0.6; held.hardness *= 0.8; held.wear = 0;
-            const s = world.soil && world.soil[biomeKeyAt(c.x)];
+            const s = soilAt(world, c.x);
             if (s) s.waste += lost;
             else ledgerOut(world, 'toolWear', lost);
             world.events.push({ type: 'toolBroke', creature: c, t: world.time });

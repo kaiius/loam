@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   GENES, CHEM5, CHEM7, SENSE32, SENSE24, ACT20, ACT13,
   PLANT_REALMS_LOCI, REALMS18_KEYS, EVO17_KEYS, HANDS20_KEYS, FALLING20_KEYS,
-  WEB22_KEYS, SEASONS27_KEYS, DAYNIGHT28_KEYS, CHROMOSOMES,
+  WEB22_KEYS, SEASONS27_KEYS, DAYNIGHT28_KEYS, SPECIES30_KEYS, CHROMOSOMES,
   randomGenome, phenotype,
 } from '../src/sim/genome.js';
 import { createBrain, senseVector, ACTIONS, N_IN } from '../src/sim/brain.js';
@@ -226,6 +226,7 @@ test('v0.18: founder main-stream bit-identity with pinSub + a pinned allele', ()
     ...WEB22_KEYS, // v0.22 "Web of Life": instBite rides its own sub-stream pass
     ...SEASONS27_KEYS, // v0.27 "Seasons": pantCapacity rides its own sub-stream pass
     ...DAYNIGHT28_KEYS, // v0.28 "Day and night": activityPhase/instPhaseSleep ride pass 7
+    ...SPECIES30_KEYS, // v0.30 "Species gate": speciesTag rides its own sub-stream pass 8
     ...GENES.filter((g) => g.key.startsWith('lex')).map((g) => g.key)]);
   for (const gene of GENES) {
     if (gene.key === 'legPower' || subKeys.has(gene.key)) continue;

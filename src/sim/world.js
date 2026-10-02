@@ -3,7 +3,7 @@
 
 import { createRng } from './rng.js';
 import { founderGenome } from './species.js';
-import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele } from './genome.js';
+import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele, SPECIES_TAG_CHOICES } from './genome.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
 import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, regionAt, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
@@ -562,6 +562,11 @@ export function tryMate(a, b) {
   const sb = ageStage(b.biochem, b.pheno);
   if (sa !== 'adult' || sb !== 'adult') return false;
   if (a.sex === b.sex || a.mateCooldown > 0 || b.mateCooldown > 0) return false;
+  // v0.30: species-tag mating gate (ECOLOGY_DESIGN §13.2) — prezygotic,
+  // SPECIES-level not tribe-level. Only same-tag pairs breed; a tanglekin
+  // never mates a beetle, but tanglekins from different tribes mate freely.
+  // Default-neutral: within a species nothing changes.
+  if (a.pheno.speciesTag !== b.pheno.speciesTag) return false;
   // Breeding takes energy: malnourished creatures don't reproduce. This is
   // the density-dependent brake — when food is scarce, hunger rises and
   // births stop before the population overshoots into a crash.
@@ -1126,7 +1131,7 @@ export function tickSoil(world, dt) {
     // history, not just chemistry. Noted once per zone per enrichment.
     if (s.fertility >= 1.0 && !s.richNoted) {
       s.richNoted = true;
-      if (world.events) world.events.push({ type: 'soilRich', zone: b.key, t: world.time });
+      if (world.events) world.events.push({ type: 'soilRich', zone: key, t: world.time });
     } else if (s.fertility < 0.8) {
       s.richNoted = false; // lean times reset the record; richness can return
     }
@@ -2081,7 +2086,7 @@ export function populate(world) {
   const starts = [[mx(400), JP(1)], [mx(580), JP(1)], [mx(760), JP(2)], [mx(940), JP(2)]];
   for (let i = 0; i < 4; i++) {
     const [fx, fpi] = starts[i];
-    const c = createCreature(randomGenome(rng), fx, fpi, rng,
+    const c = createCreature(randomGenome(rng, { overrides: { speciesTag: SPECIES_TAG_CHOICES.indexOf('tanglekin') } }), fx, fpi, rng,
       i < 2 ? { name: names[i] } : {});
     c.name = uniqueName(world, c.name);
     // Start them as young adults, not juveniles. The breeding window is
@@ -2594,7 +2599,7 @@ export function populateGenesis(world) {
       // per-founder, not per-biome, so a cohort keeps its sub-stream
       // diversity ("starting variation, never destiny"); the 50% §12.1
       // shifts apply on top.
-      const genome = randomGenome(rng, { pinSub: (seed * 31 + (cl * 8 + bi) * 101 + i * 17) | 0 });
+      const genome = randomGenome(rng, { pinSub: (seed * 31 + (cl * 8 + bi) * 101 + i * 17) | 0, overrides: { speciesTag: SPECIES_TAG_CHOICES.indexOf('tanglekin') } });
       // §12.1: ~50% of each non-control cohort gets biome-suited shifts.
       // Jungle is the control: 100% plain founder stock.
       if (g.key !== 'jungle' && rng.chance(0.5)) {

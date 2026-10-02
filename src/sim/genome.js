@@ -494,6 +494,29 @@ GENES.push(
 // === end GENOME v0.28 loci ==================================================
 export const DAYNIGHT28_KEYS = new Set(GENES.slice(DAYNIGHT28_START).map((g) => g.key));
 
+// === GENOME v0.30 "Species gate": the species tag (append-only) ==============
+// speciesTag: the inherited species identity. kind 'choice' over the species
+// key list — phenotype() expresses it as the species string. Every species
+// founder pins its own tag via species.js overrides (both homologs); the
+// sub-stream draw only matters for unpinned random genomes. Meiosis carries
+// it like any locus, so the tag is genuinely inherited — and a rare
+// choice-mutation can retag a lineage (speciation, not a bug).
+// Rides chromosome 1's morphology block: species is a body-plan fact, and the
+// tag travels with the body plan or meiosis drops it. Draws from its own
+// sub-stream (pass 8) so every earlier RNG sequence stays bit-identical.
+// Read by the v0.30 mating gate (world.tryMate).
+export const SPECIES_TAG_CHOICES = [
+  'tanglekin', 'skimmer', 'scurrier', 'beetle', 'beetle-detritivore', 'minnow',
+  'jungle-cat', 'plains-runner', 'mangrove-croc', 'shark', 'bear', 'vulture',
+  'flutter', 'grub',
+];
+const SPECIES30_START = GENES.length;
+GENES.push(
+  { key: 'speciesTag', kind: 'choice', choices: SPECIES_TAG_CHOICES },
+);
+// === end GENOME v0.30 loci ==================================================
+export const SPECIES30_KEYS = new Set(GENES.slice(SPECIES30_START).map((g) => g.key));
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
@@ -528,7 +551,10 @@ export const CHROMOSOMES = [
    // thermal reader's own loci ride the thermal morphology's chromosome)
    // v0.27: pantCapacity rides the same block — the evaporative-cooling
    // reflex is thermal morphology (or meiosis drops it)
-   'coldTol', 'heatTol', 'pantCapacity'],
+   'coldTol', 'heatTol', 'pantCapacity',
+   // v0.30: speciesTag rides the morphology block — species is a body-plan
+   // fact, and the tag travels with the body plan or meiosis drops it.
+   'speciesTag'],
   // 2 — Metabolism
   ['hungerRate', 'energyDrain', 'lifespan', 'growthRate', 'fertility', 'immunity'],
   // 3 — Neuroarchitecture (+ v2 family B: brain plan, attention gates,
@@ -637,6 +663,7 @@ const PIN_SALT_HANDS = 0x20; // v0.20 hands pass
 const PIN_SALT_WEB22 = 0x22; // v0.22 web-of-life pass (instBite)
 const PIN_SALT_SEASONS = 0x27; // v0.27 seasons pass (pantCapacity)
 const PIN_SALT_DAYNIGHT = 0x28; // v0.28 day/night pass (activityPhase, instPhaseSleep)
+const PIN_SALT_SPECIES30 = 0x30; // v0.30 species pass (speciesTag)
 export function randomGenome(rng, opts = {}) {
   // opts.pinSub (number): when set, the language (v0.16), evo-devo (v0.17),
   // realms (v0.18), hands/falling (v0.20), web-of-life (v0.22) and seasons
@@ -686,7 +713,8 @@ export function randomGenome(rng, opts = {}) {
   const isNewWeb22 = (k) => WEB22_KEYS.has(k);
   const isNew27 = (k) => SEASONS27_KEYS.has(k);
   const isNew28 = (k) => DAYNIGHT28_KEYS.has(k);
-  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k);
+  const isNew30 = (k) => SPECIES30_KEYS.has(k);
+  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k) || isNew30(k);
   for (const gene of GENES) {
     if (gene.key.startsWith('lex') || isNewer(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
@@ -716,7 +744,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h3 = 0x18ea1d;
   for (const gene of GENES) {
-    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key)) continue;
+    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key)) continue;
     for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
   }
   const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
@@ -732,7 +760,7 @@ export function randomGenome(rng, opts = {}) {
   // falling gene draws after the hands genes, deterministically.
   let h4 = 0x20a05;
   for (const gene of GENES) {
-    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key)) continue;
+    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key)) continue;
     for (const a of alleles[gene.key]) h4 = (Math.imul(h4, 31) + Math.floor(a * 1e9)) | 0;
   }
   const handsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_HANDS) : h4 >>> 0);
@@ -745,7 +773,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h5 = 0x22022;
   for (const gene of GENES) {
-    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key)) continue;
+    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key)) continue;
     for (const a of alleles[gene.key]) h5 = (Math.imul(h5, 31) + Math.floor(a * 1e9)) | 0;
   }
   const web22Rng = createRng(pinned ? hashPin(pinSub, PIN_SALT_WEB22) : h5 >>> 0);
@@ -758,7 +786,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h6 = 0x27027;
   for (const gene of GENES) {
-    if (isNew27(gene.key) || isNew28(gene.key)) continue;
+    if (isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key)) continue;
     for (const a of alleles[gene.key]) h6 = (Math.imul(h6, 31) + Math.floor(a * 1e9)) | 0;
   }
   const seasonsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SEASONS) : h6 >>> 0);
@@ -771,13 +799,27 @@ export function randomGenome(rng, opts = {}) {
   // own sub-stream in pass 7 — new loci never shift the main RNG sequence.
   let h7 = 0x28028;
   for (const gene of GENES) {
-    if (isNew28(gene.key)) continue;
+    if (isNew28(gene.key) || isNew30(gene.key)) continue;
     for (const a of alleles[gene.key]) h7 = (Math.imul(h7, 31) + Math.floor(a * 1e9)) | 0;
   }
   const daynightRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_DAYNIGHT) : h7 >>> 0);
   for (const gene of GENES) {
     if (!isNew28(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, daynightRng), randomAllele(gene, daynightRng)];
+    marks[gene.key] = 1.0;
+  }
+  // v0.30 "Species gate": speciesTag draws from its own sub-stream in
+  // pass 8 — new loci never shift the main RNG sequence. Every earlier
+  // pass stays bit-identical to v0.29.
+  let h8 = 0x30030;
+  for (const gene of GENES) {
+    if (isNew30(gene.key)) continue;
+    for (const a of alleles[gene.key]) h8 = (Math.imul(h8, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const speciesRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SPECIES30) : h8 >>> 0);
+  for (const gene of GENES) {
+    if (!isNew30(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, speciesRng), randomAllele(gene, speciesRng)];
     marks[gene.key] = 1.0;
   }
   // v0.18: allele overrides — applied after the draws, so a sweep can pin

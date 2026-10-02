@@ -110,11 +110,13 @@ world. No species labels in sense vectors (§9.4 grep gate).
       numbers); plus a 48h probe where nocturnal-phase founders out-forage
       diurnal ones at night and lose by day.
 - [x] v0.29 — GENERATIVE WORLDGEN v2 (design/worldgen-v2.md, Joshua-approved 2026-10-01; DONE 2026-10-02, tag v0.29): seeded fbm elevation + tectonic ridges + rift basin; quantile sea level (0.55–0.70 land); substrate classification; plateau-gradient Tinit (hot-west/hot-east, bit-stable); Whittaker region labels; constructive canopy generator (founder ≥6 branches, BFS-connected, ≥8 fruit slots); 8 label-preferring cohort finders; viability gate G1–G7; gentle fallback. Migration: biomes/weather/world/creature/painter/ui region-based; soil keyed by region id. Probes: determinism bit-for-bit; viability 100/100 (seeds 1–50 × sizes 1–2); difference metric 81.9× baseline (≥5× req); canopy 20/20; founder spawn 10/10; climate 10/10. Gemini spec review (10 findings, 4 accepted) + diff review (APPROVED). Builder corrections: sea-level quantile inversion fixed; fbm climate wave → plateau-gradient (fbm never hit jungle threshold); beach 25px→12px, founder 700px, mountain ground platforms.
-- [ ] v0.30 — species-tag mating gate (ECOLOGY_DESIGN §13.2): inherited
+- [x] v0.30 — species-tag mating gate (ECOLOGY_DESIGN §13.2): inherited
       species-tag; gate mating on tag match; SPECIES-level not tribe-level
       (tanglekin × tanglekin across tribes must succeed); new loci from own
       sub-stream; default-neutral so viability battery passes unchanged.
       Probe: forced tanglekin×beetle fails, tanglekin×tanglekin succeeds.
+      DONE 2026-10-02 (tag v0.30). 451 tests, 391 pass, 60 fail (all
+      pre-existing on v0.29).
 - [ ] v0.31 — morsel retirement (design §5, §13.8: retired, not kept
       alongside): morsels no longer spawn/tick; drop 'morsel' from
       MEAT_KINDS. CHECK FIRST: scavenger guild food supply — carrion must
@@ -183,6 +185,23 @@ source: ~/workspace/paul-review/wildcode-v019-review.md)
       non-failure.
 
 ## Design queue (after lexicon v0.21) — design-first, not build stream
+- Biome vertical structure + congruent world (Joshua's direction 2026-10-02,
+      design: design/biome-vertical-structure.md — his verdict on the v0.29
+      world: "not in awe... patchwork that doesn't quite fit together rather
+      than a congruent world"): jungle gets a REAL canopy — large trees whose
+      branches form canopy levels, creatures climb vines or move branches as
+      ramps, NOT jumping (jumping reduced as locomotion); mountains get
+      level-like rock shelves/ledges; other biomes deliberately level-less
+      (flatlands, islands, cave/dirt regions) so tribes radiate — diggers/
+      burrowers in dirt/caves, swimmers/rafters on islands, climbers in
+      jungle/mountains. Worldgen v3: emergent canopy from flora (not the
+      v0.29 platform generator), ecotones and geological coherence instead
+      of quilted labels. Sequencing: solid terrain + diggable strata first
+      (already queued below), then climb/vine/branch-ramp mechanics, then
+      the radiation itself is left to selection and measured by v0.37's
+      tribe-divergence instrument. Proposed split when renumbered:
+      (a) worldgen v3 congruent biomes, (b) solid terrain + strata,
+      (c) climb mechanics + jumping reduced, (d) radiation measured.
 - Solid terrain under land (Joshua-requested 2026-10-01): v0.26 worldgen
       leaves voids beneath landmasses that creatures fall into. Land must
       extend downward as solid ground — terrain columns, not floating slabs.

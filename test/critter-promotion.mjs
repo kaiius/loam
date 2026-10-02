@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createWorld, bindWorld, populate, populateGenesis, tickWorld,
-  tickPollination, platformIndexAt,
+  tickPollination, platformIndexAt, soilAt,
 } from '../src/sim/world.js';
 import {
   SPECIES, speciesKeys, founderGenome, founderPheno,
@@ -67,7 +67,7 @@ test('v0.22.2: grub founder-exactness — the prey base, soft and fearful', () =
 });
 
 test('v0.22.2: no new loci — GENES stays 230', () => {
-  assert.equal(GENES.length, 232, 'promotion adds values, not loci (232 = 230 + v0.28 activityPhase/instPhaseSleep)');
+  assert.equal(GENES.length, 233, 'promotion adds values, not loci (233 = 232 + v0.30 speciesTag)');
 });
 
 test('v0.22.2: starter sets + caps cover the promoted', () => {
@@ -115,11 +115,13 @@ test('v0.22.2: grub grazes detritus — the v0.22 detritivory path, smaller', ()
   const c = createCreature(founderGenome('grub', createRng(11)), 1500, 0, world.rng);
   c._senses = { _food: null };
   c.biochem.illness = 0;
-  world.soil.jungle.waste = 3.0;
-  const wasteBefore = world.soil.jungle.waste;
+  // v2: soil is keyed by region id, not zone label — soilAt resolves it.
+  const soil = soilAt(world, 1500);
+  soil.waste = 3.0;
+  const wasteBefore = soil.waste;
   const ateBefore = c._ate || 0;
   assert.ok(doEat(c, world), 'grub eats with no food item present');
-  assert.ok(world.soil.jungle.waste < wasteBefore, 'waste left the soil');
+  assert.ok(soil.waste < wasteBefore, 'waste left the soil');
   assert.ok((c._ate || 0) > ateBefore, 'nutrition entered the body');
   assert.equal(c.actionLabel, 'grazing detritus');
 });

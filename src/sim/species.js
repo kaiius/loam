@@ -22,7 +22,7 @@
 // and test/species.mjs checks them. A founder that can't fly on day one
 // is a broken promise, not a tuning issue.
 
-import { randomGenome, phenotype } from './genome.js';
+import { randomGenome, phenotype, SPECIES_TAG_CHOICES } from './genome.js';
 
 // pinSub salts: distinct per species so the pinned sub-stream alleles
 // (language, evo-devo, realms, hands, web-of-life) differ per founder
@@ -253,6 +253,20 @@ export const SPECIES = {
       'dark hue (bodyHue ~0.05) — the old bug, recognizable'],
   },
 };
+
+// v0.30: every SPECIES key must have a tag choice — the mating gate reads
+// the tag, so an untaggable species would be sterile by construction.
+// The founder's tag is pinned on both homologs via overrides (applied after
+// the sub-stream draws). The tag is inherited, not assigned: children of two
+// tanglekins are tanglekins because meiosis says so, not because a table
+// says so.
+for (const key of Object.keys(SPECIES)) {
+  if (!SPECIES_TAG_CHOICES.includes(key)) {
+    throw new Error(`v0.30 species gate: no tag choice for species '${key}'`);
+  }
+  const sp = SPECIES[key];
+  sp.overrides = { ...(sp.overrides || {}), speciesTag: SPECIES_TAG_CHOICES.indexOf(key) };
+}
 
 // The founder genome: same loci, pinned sub-streams, overridden values.
 // rng supplies the main-stream draws; pinSub fixes the sub-stream passes
