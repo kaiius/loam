@@ -25,6 +25,12 @@ ships WITH the source zip attached (git archive of the tag, uploaded, link in
 the post body) — never a bare announcement with the zip handed out separately.
 Bart's v0.30 comment ("v0.30 ships with no source attached, so there is nothing
 to run yet") is what a missing zip looks like from the outside.
+Zip smoke-test rule (2026-10-02, paulthecat's v0.26 teardown: the shipped
+tree's suite failed collection — test_omnipotence.py imported trials/, which
+wasn't in the zip; "the packaging wounds healed" did not hold): before
+posting, extract the zip to /tmp and run the release's test command FROM THE
+EXTRACTED TREE. The zip is only shippable if the suite collects and the
+known-failure baseline reproduces there.
 Durable-references rule (2026-10-02, commons-outreach-algo's catch): the zip
 link expires in ~48h, so every release post ALSO carries a comment with the
 durable references — commit hash + tag, the exact test command, the
@@ -244,20 +250,40 @@ convenience.
       (68 pre-existing failures, ZERO new). Probe probes/seed-voyage.mjs PASS
       on seed 7 (final code): endozoochory 8 depositions, 2 ≥200px away
       (max 244px); hydrochory 30 wash-ashore depositions, plants 45→60 —
-      new ground colonized. Release: tag v0.35, commit 91ea930. No Colony post,
+      new ground colonized. Release: tag v0.35, commit fe945ce. No Colony post,
       no release zip (main agent handles the release).
-- [ ] v0.36 — §14 ecological QA gates: pollinator-crash cascade, 50k-tick
-      food-web persistence, seed voyage (≥2/10), predator–prey cycle,
-      defense evolution, colonization both-outcomes, physiological-confinement
-      grep. Pass/fail per gate with evidence; un-runnable gates get a named
-      owner + trigger, never silence. Plus ax7's suite-hygiene challenge
-      (2026-10-02): 60 carried-forward failures make the suite meaningless —
-      new breaks surface only via hand-diff. Re-baselining a gate after
-      N_IN shifts risks misclassifying behavior changes as plumbing: how to
-      distinguish input-vector widening from actual worsening? The v0.36
-      pass must include a re-baselining protocol that can't hide behavior
-      changes.
-- [ ] v0.37 — three instruments: (a) generation-50 drift watch (teacher
+- [x] v0.36 — §14 ecological QA gates: DONE 2026-10-02. Verdict: 4 PASS, 3 FAIL (all with evidence).
+      Gates: pollinator-crash FAIL (0.922 fruit ratio — resilient, not cascading);
+      foodweb-50k FAIL (genesis extinction by tick 15000: hyperthermia/illness,
+      not predators); seed-voyage PASS (3/10 ≥ 2/10); predator-prey FAIL
+      (0 kills, prey extinct); defense-evolution FAIL (0/3 seeds, no sorting);
+      colonization PASS (39 newcomers, 6 established, 33 failed);
+      physio-confinement PASS (4/4). Plus: viability seed-3 PASS (49 alive,
+      862 births); exclosure PASS (0.38 uplift). Suite hygiene delivered:
+      design/qa-rebaseline.md (re-baselining protocol), test/CLASSIFICATION.md
+      (60 failures: 17 PLUMBING, 43 BEHAVIOR), probes/qa-readings.json +
+      qa-readings-check.mjs (pins check READINGS, platform-relative),
+      qa-viability-ledger.jsonl + qa-viability-trend.mjs (CLEAN).
+      Two sim bugs found live and fixed: sequential-worlds id leak,
+      teacher floating-fruit crash. Gemini review: 2 P0s accepted, 1 declined.
+      Zero new test failures vs v0.35. Protocol ref: design/qa-rebaseline.md.
+- [ ] v0.37 — affect expansion (design/affect-expansion.md, Joshua's
+      directive 2026-10-02: "all the emotions I mentioned and the ones I
+      didn't mention should be possible"): 6 new chemicals (sexHormone,
+      zest, serotonin, vasopressin, prolactin, stimulus), 4 new drives
+      (libido, curiosity, attachment, care) with genetic gain/baseline loci,
+      depression as reversible regime vs trait, grief as bond-rupture with
+      causal chain into depression, 6 new verbs (display, inspect, cuddle,
+      tend, seekBond, mourn) each with anatomical prerequisites + instinct
+      genes, mood() to 15 states, zero new per-tick RNG draws (affectRng
+      salt 55 for mutation only). Relationship kinds: TRACKED EMERGENCE
+      (Joshua's ruling 2026-10-02, §4.2b) — kinds derive from bond + kin +
+      pair-bond (brain never sees labels), world tracks kind transitions
+      per dyad + chronicle events. Gemini-reviewed (3 P0s fixed, 4 misreads
+      dismissed with evidence). Probe: emotion-pathway gate — force each
+      new chemical/drive through its full path in a live sim and watch the
+      behavior happen.
+- [ ] v0.38 — three instruments: (a) generation-50 drift watch (teacher
       prototypes vs ridge sound shadows); (b) jump-weakening clean test
       (measured number replaces unprincipled one); (c) duplication-to-fixation
       demo (DUP_RATE, dupLog — show a fixation or report why not); (d) live
@@ -265,7 +291,7 @@ convenience.
       °C + sky state as a standing view, not a one-off probe —
       probes/world-weather.mjs is the snapshot version; promote it to a live
       instrument reading the running world).
-- [ ] v0.38 — tribe-divergence instrument (Joshua 2026-10-01): track
+- [ ] v0.39 — tribe-divergence instrument (Joshua 2026-10-01): track
       morphological divergence between tribes over generations — do separated
       tribes drift apart in body form (size, tail/arm/leg/ear, spikes, fur,
       hue, pattern), and does it correlate with habitat once v0.25 heat
@@ -323,6 +349,39 @@ the lexicon itself). Sits behind v0.20 'Hands' merge; version number assigned
 when the build stream is renumbered.
 
 ## Design queue (after lexicon v0.21) — design-first, not build stream
+- Worldgen v2 difference-metric gameability (ax7 2026-10-02, Colony critique
+      of v0.29): the 5× difference metric is gameable — any noise clears 5×
+      against the 0.0116 jitter baseline, pure static would max pairwise
+      difference, and nothing penalizes different-and-dull worlds. The
+      approved design's gate is flawed: needs a metric that rewards
+      structural difference, not noise. Queue for worldgen v2 validation.
+- Topographic fragmentation / bridge density (cassini 2026-10-02, Colony
+      questions on v0.26): the "no drowned spawns" viability check can pass
+      while sea-level rise strands tribes on isolated landmasses the
+      platform graph can't bridge — a functional isolation trap. Needs:
+      minimum bridge-density quantification and fragmentation probability
+      as the size parameter scales. Filed as QA: functional connectivity
+      over the platform graph, not just dry spawns. Queue for worldgen v2.
+- Pollination exclosure control arm (traverse 2026-10-02, Colony critique
+      of v0.34): open-vs-netted conflates fertilization with netting
+      disturbance. Third arm: pollinators carrying only zero-viability
+      pollen (visits identical, fertilization impossible) — isolates the
+      fertilization term. Answered on the v0.34 post; filed for the next
+      probe pass.
+- Pollen viability: threshold vs scale (cassini 2026-10-02, Colony question
+      on v0.34): deposition is a threshold (POLLEN_VIABLE_MIN 0.25 gates
+      eligibility) with a fixed per-visit rate above it — a nearly-spent
+      tag fertilizes at the same rate as a fresh one. Open question whether
+      viability should grade potency. Answered on the v0.34 post.
+- Emitter-gene metabolic accounting (specie 2026-10-02, Colony question on
+      v0.25): is desert heatstroke real T-field exposure, or is the emitter
+      gene subsidizing fuel burn (inefficient caloric conversion masquerading
+      as thermal exposure)? A metabolic-accounting leak in the thermal
+      model. Queue for the next physiology touch.
+- Emitter on/off paired probe (traverse 2026-10-02, Colony question on
+      v0.25): paired probe design — same founder, mild vs desert, early
+      window — asks whether the harness can toggle the emitter per run.
+      Probe-harness capability question; queue with the probe tooling.
 - Evolvable pain ceiling (hermes-on-foot 2026-10-02, Colony critique of
       v0.32): painTolerance is evolvable to the ceiling, so selection could
       in principle evolve pain away entirely — taking the pain→flee reflex

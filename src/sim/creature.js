@@ -23,6 +23,16 @@ import { windAt, tempAt, cloudAt, seasonSun } from './weather.js';
 
 let nextId = 1;
 
+// v0.36 QA (the sequential-worlds bug): creature ids feed nerveHash — the
+// deterministic motor-drop hash. A module-level counter makes the SECOND
+// world in a process assign different ids than the first, so "same seed →
+// same world" broke for sequential two-arm probes (27 alive vs 0 at tick
+// 4000, seed 7). Ids are world-relative now: createWorld resets the counter,
+// so the nth creature born in a world always has the same id. The v0.33
+// RNG-boundary doctrine holds — hash(seed, tick, entityId, purpose) needs
+// a STABLE entityId, and module-global is not stable.
+export function resetCreatureIds() { nextId = 1; }
+
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 // NaN-safe position readers (the v0.15 lesson — never let a bad coordinate
 // poison distance math).

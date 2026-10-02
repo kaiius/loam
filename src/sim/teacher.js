@@ -222,7 +222,11 @@ const TEACHER_SPEED = 110; // px/s
 // it with a duplicate-declaration guard.
 function moveTeacherToward(teacher, world, dt) {
   const plat = world.platforms[teacher.platformIndex];
+  // v0.36 (Gemini P0 #2): a stale/invalid targetPlatform must never crash
+  // the sim — but returning "arrived" is a lie that freezes the teacher.
+  // Clear the target and report failure, so the next tick re-evaluates.
   const tplat = world.platforms[teacher.targetPlatform];
+  if (!plat || !tplat) { teacher.targetPlatform = null; return false; }
 
   const walk = (destX) => {
     const dx = destX - teacher.x;
@@ -322,11 +326,16 @@ export function tickTeacher(world, teacher, dt) {
       }
       if (s.smellRipe && s.smellFruit > 0.55 && s.smellFruitX !== null &&
           world.time - teacher.lastDemoT > 60) {
-        teacher.targetX = s.smellFruitX;
-        teacher.targetPlatform = s.smellFruitPlat;
-        teacher.state = 'travel';
-        teacher.stateT = 0;
-        logTeach(world, { t: world.time, kind: 'followSmell', zone: zoneAt(s.smellFruitX).key });
+        // v0.36: guard — fruit can float (platformIndex -1); the teacher
+        // walks platforms, so only follow smells on a real platform.
+        const fplat = s.smellFruitPlat;
+        if (Number.isInteger(fplat) && fplat >= 0 && fplat < world.platforms.length) {
+          teacher.targetX = s.smellFruitX;
+          teacher.targetPlatform = fplat;
+          teacher.state = 'travel';
+          teacher.stateT = 0;
+          logTeach(world, { t: world.time, kind: 'followSmell', zone: zoneAt(s.smellFruitX).key });
+        }
         break;
       }
       // Comfort makes the teacher linger where it was welcomed.

@@ -1,0 +1,2 @@
+{"version": "v0.32", "commit": "unknown", "date": "2026-10-01", "seed3": {"alive": 44, "births": 602, "matings": "not-recorded", "deaths": "not-recorded", "verdict": "VIABLE"}, "note": "backfilled from REPRODUCE.md; matings/deaths not recorded then"}
+{"version": "v0.36", "commit": "ac27eef38cd6859bd80751e5c24b970fa4acf1e1", "date": "2026-10-02", "seed3": {"alive": 49, "maxPop": 64, "births": 862, "matings": 422, "deaths": 817, "verdict": "VIABLE"}, "note": "fresh run at v0.36 tag; legacy spawner"}

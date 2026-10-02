@@ -5,7 +5,7 @@ import { createRng } from './rng.js';
 import { founderGenome } from './species.js';
 import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele, SPECIES_TAG_CHOICES } from './genome.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
-import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
+import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators, resetCreatureIds } from './creature.js';
 import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, regionAt, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
 import { createClimate, initClimateFromPainted, initClimateFromPhysical, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, seasonBreedMul, WEATHER_COL_W, NC } from './weather.js';
 import { rollLayout, canonicalLayout, computeClimbLinks, findRegion, ZONE_KEYS } from './worldgen.js';
@@ -34,6 +34,10 @@ export const DAY_TICKS_DEFAULT = 3000; // ticks per day at the canonical 10 tick
 
 export function createWorld(seed = 1, opts = {}) {
   const rng = createRng(seed);
+  resetCreatureIds(); // v0.36: ids are world-relative (see creature.js) — the
+  // nth creature born always has the same id, so nerveHash and every other
+  // id-derived draw are stable across sequential worlds in one process.
+  resetObjectIds(); // v0.36 (Gemini P0 #1): plant/herb/food ids too.
   // v0.26 "Procedural worldgen": the layout is rolled (and viability-gated)
   // BEFORE anything else — every spawner below reads it. The worldgen
   // stream is its own (never world.rng), so founder genomes and the main
@@ -257,6 +261,11 @@ let nextObjId = 1;
 function oid() {
   return nextObjId++;
 }
+
+// v0.36 QA (Gemini P0 #1): like creature ids, object ids (plants, herbs,
+// foods) must be world-relative for "same seed → same world" to hold
+// across sequential worlds in one process.
+export function resetObjectIds() { nextObjId = 1; }
 
 // v0.18 "Realms": ZONES/zoneAt are a legacy alias over the biome map.
 // The old three zone keys became the biome cores: verdant→jungle,

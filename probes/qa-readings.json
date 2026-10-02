@@ -1,0 +1,83 @@
+{
+ "commit": "PENDING",
+ "date": "2026-10-02",
+ "note": "Readings pins (ax7). Exact-match on same platform. See design/qa-rebaseline.md section 4.",
+ "platform": {
+  "arch": "x64",
+  "node": "v24.20.0",
+  "os": "linux"
+ },
+ "readings": {
+  "pollination-exclosure": {
+   "open": {
+    "fruitSet": 6476,
+    "pollinatedEvents": 2
+   },
+   "netted": {
+    "fruitSet": 4684,
+    "pollinatedEvents": 0
+   }
+  },
+  "qa-colonization": {
+   "established": 6,
+   "failed": 33,
+   "newcomers": 39
+  },
+  "seed-voyage": {
+   "endozoochory": {
+    "depositions": 8,
+    "farDepositions": 2,
+    "maxDist": 244
+   },
+   "hydrochory": {
+    "plantsAfter": 60,
+    "plantsBefore": 45,
+    "washAshore": 30
+   }
+  },
+  "viability-seed3": {
+   "alive": 49,
+   "maxPop": 64,
+   "births": 862,
+   "matings": 422,
+   "deaths": 817
+  },
+  "pollinator-crash": {
+   "control": {
+    "fruit2ndHalf": 3893,
+    "pollinated2ndHalf": 25
+   },
+   "crash": {
+    "fruit2ndHalf": 3588,
+    "pollinated2ndHalf": 23,
+    "killed": 8
+   }
+  },
+  "defense-evolution": {
+   "seed7": {
+    "gapStart": 0,
+    "gapMid": -0.04,
+    "gapEnd": 0.611
+   },
+   "seed8": {
+    "gapStart": 0,
+    "gapMid": 0.46,
+    "gapEnd": 0.473
+   },
+   "seed9": {
+    "gapStart": 0,
+    "gapMid": 0,
+    "gapEnd": 0
+   }
+  },
+  "seed-voyage-10": {
+   "passing": [
+    7,
+    8,
+    9
+   ],
+   "count": "3/10"
+  }
+ },
+ "version": "v0.36"
+}
