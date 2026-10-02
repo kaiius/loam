@@ -48,9 +48,10 @@ Design only. No code changes. The builder assigns the release number.
 
 Draw order on the stream is load-bearing (documented here, never reordered):
 landFrac target → noise frequencies (o1,o2,o3) → ridge count/params →
-rift params → climate-wave (A, λ, φ) → founder canopy params (west→east,
+rift params → climate-wave (w1,s1,A) → founder canopy params (west→east,
 bottom-up) → secondary canopies (west→east) → other-region platforms
-(west→east) → pond positions.
+(west→east) → pond positions. (`thermalEquatorX` is computed from Tinit,
+not drawn.)
 
 ## 2. Elevation
 Keeps `TERRAIN_COL = 20`, ground baseline `Y0 = 800`, `WORLD_H = 1100`.
@@ -104,7 +105,9 @@ Per-column classification from elevation, slope, and water — Paul's
 | ALPINE | y < 540 | 0.55 | 0.9 | 0.4 | 0.05 |
 | SOIL | else | 0.22 | 1.0 | 0.7 | 1.0 |
 
-Slope = `|e[i+1] − e[i−1]| / (2 × TERRAIN_COL)`.
+Slope = `|e[i+1] − e[i−1]| / (2 × TERRAIN_COL)`, computed on the
+PRE-ROUNDING erosion field (Gemini spec review P2, accepted — rounding
+first would stairstep the rock/soil transitions).
 
 These properties feed the physics **directly** (Paul's rule: the atmosphere
 reads materials, never biome names):
@@ -115,11 +118,22 @@ reads materials, never biome names):
   land fast, rock slightly slower than soil. (This also closes the bug class
   Gemini caught twice: every term that moves T must respect thermal mass;
   now the mass itself is generated, not painted.)
-- **v0.27 seasons**: per-column seasonal amplitude from heatcap —
-  deep water 0.20, shallow 0.25, sand 0.65, soil 0.55, rock 0.60, alpine 0.50.
-  v0.27's "desert swings hard, rainforest mild" becomes an emergent
-  consequence (deserts are sand → high amplitude; wet forest soil → low),
-  not a painted table. `SEASON_AMP_BY_BIOME` is retired.
+- **v0.27 seasons**: per-column seasonal *target* amplitude from material —
+  deep water 0.20, shallow 0.25, sand 0.65, soil 0.55, rock 0.55, alpine 0.45
+  (ordered: higher heatcap → lower target amplitude). Honest physics note
+  (Gemini spec review, accepted): the v0.27 seasonal model relaxes T toward
+  a prescribed target (`c.T += (target − c.T) · dt·0.02/thermalMass`), so
+  the *target* amplitude is parameterized per material — it encodes how
+  strongly the material couples to seasonal insolation, and the table is
+  keyed by generated material rather than painted biome. What IS emergent:
+  the geography of amplitude (where sand vs water appears), and the
+  *realized* amplitude, which thermalMass damps through phase lag
+  (for a sinusoidal target, realized amplitude = target/√(1+(ωτ)²), τ ∝
+  thermalMass — water's wave is smaller AND later, from physics, not paint).
+  No heat pump: the forcing integrates to zero over the year and the
+  v0.27 exit probe verified annual-mean-T stability; the prescription is
+  in the target, the damping is in the mass. `SEASON_AMP_BY_BIOME` is
+  retired, replaced by `SEASON_AMP_BY_SUBSTRATE`.
 - **Flora**: plant growth reads substrate fertility alongside `floraFor`
   yield.
 
@@ -133,12 +147,21 @@ shallows, archipelago, deep`) — the whole sim reads them (`floraFor`,
 changes is where they come from: computed from climate, not painted.
 
 **Initial temperature** (worldgen-time, before the climate field exists):
-`Tinit(x) = clamp01(0.52 + A·sin(2π·x/λ + φ) − lapse(y)·0.30)`,
-with per-world seeded `A = 0.12 + gen.range(0, 0.18)`,
-`λ = width × gen.range(1.0, 2.0)`, `φ = gen.range(0, 2π)`,
-`lapse(y) = max(0, 800 − y)/550` (the existing lapse factor).
-Every world gets a distinct thermal character: hot-west, hot-east, or
-flat — plus elevation-driven cold. Cached on `layout.Tinit`.
+`Tinit(x) = clamp01(0.52 + W(x) − lapse(y)·0.30)`, where `W(x)` is the
+per-world climate wave. **Bit-stability note** (Gemini spec review,
+accepted): the wave MUST NOT use `Math.sin` — transcendental precision is
+implementation-defined and differs between JS engines (V8 vs JavaScriptCore),
+which would break same-seed → same-world across the headless sim and the
+browser bundle. Instead `W(x) = (fbm(x·w1, s1) − 0.5)·2·A`, reusing the
+existing bit-stable `hash01/vnoise/fbm` (integer hash + IEEE basic ops only):
+per-world seeded `w1 = (2π/width)·gen.range(0.5, 1.0)` (one full thermal
+wave across 1–2 world widths), `s1 = gen.int(1, 1e9)`, `A = 0.12 +
+gen.range(0, 0.18)`. Every world gets a distinct thermal character
+(hot-west, hot-east, or flat) — plus elevation-driven cold — with zero
+transcendentals. Cached on `layout.Tinit`.
+**Thermal equator**: `layout.thermalEquatorX` = the x of maximum smoothed
+`Tinit` (argmax over columns after a 5-column box smooth; deterministic,
+no draws). Exported for the wind field (§14.1).
 
 **Classifier** (per column, then merged into contiguous runs):
 ```
@@ -166,7 +189,7 @@ from edges never reaches it) → `'shallows'` water columns = lakes.
 | `biomeKeyAt(x,y,world)` | Whittaker on live climate, else painted key | unchanged with climate; without, returns emergent label from `layout.regions`. Water-ness from `waterAt`, not zone index ≥ 5. |
 | `ambientCold/Heat/Temp` | painted rules (arctic=1, desert interior ramp…) | physical: `ambientTemp = clamp01(colT(x) − lapse(y)×0.30)`; `ambientHeat = clamp01((tempC−24)/11)`; `ambientCold = clamp01((2−tempC)/12)`. Same signatures, optional `world` param; pure-geography calls read `layout.Tinit`. |
 | `floraFor(key)` | per-biome table | UNCHANGED — keyed by emergent labels. |
-| `world.soil[key]` | 8 painted-zone slots | kept, keyed by the 8 labels. Two jungle regions share the `'jungle'` soil community — documented as habitat-type microbiome, not a bug. |
+| `world.soil[key]` | 8 painted-zone slots | **keyed by region id** (`world.soil[regionId] = { waste, fertility, bacteria, label }`) — Gemini spec review P1, accepted: `waste`/`fertility` are MASS pools (excretion deposits, decomposition withdraws); keying by label would teleport nutrients between distant same-label regions. `biomeKeyAt(x)` resolves x → region → `soil[region.id}`. The "habitat-type microbiome" idea is preserved as shared *initial* fertility per label, not shared pools. |
 | `zoneStress`, fruit multipliers | fixed x-ranges/keys | label lookup at x (replaces fixed ranges). |
 | `biomeCenterX(i)` | painted zone center | center of the largest region with label i; absent → world center, neutral T. |
 | `microbes.zoneTempK` | via `biomeCenterX` | unchanged (rides the migration above). |
@@ -178,6 +201,13 @@ truth, kept as `PAINTED_BIOMES` for `canonicalLayout` only. `biomeAt` keeps
 its name/signature and returns the emergent label. `canonicalLayout` stays
 byte-identical — the painted world remains the default view and the
 coordinate-pinned test fixture.
+**Static vs dynamic labels** (Gemini spec review, clarified): labels are
+PINNED at worldgen for all spawning (`floraFor`, `GENESIS_COHORTS`,
+cohort targets — they read `layout.regions`), and DYNAMIC during the sim
+via the existing Whittaker-on-live-climate path in `biomeKeyAt` (unchanged
+pattern from v0.26: painted-then-Whittaker becomes emergent-then-Whittaker).
+Trees don't move when the climate shifts; labels do. This matches v0.26
+semantics exactly.
 
 ## 6. The canopy generator (the heart)
 Platforms are no longer instantiated from per-zone templates. They are
@@ -192,7 +222,12 @@ verifies rather than hopes.
    with width ≥ 900px. Fallback: largest SOIL run ≥ 700px. (Gate §8 rejects
    worlds where even the fallback fails.)
 2. Ground tier: terrain-following ground segments across the region, split
-   where slope changes by > 0.5; segments < 200px dropped.
+   where slope changes by > 0.5; segments < 200px dropped. (If slope drops
+   every segment — e.g., the region sits entirely on a steep ridge flank —
+   there are no tier-0 anchors, no branches get placed, and G1 fails: the
+   gate rejects the attempt. This is handled, not a silent break. Note
+   steep flanks usually classify as ROCK anyway, so jungle-soil regions are
+   rarely uniformly steep.)
 3. Branch tiers: 3 tiers (the painted canopy's count). Branches per tier =
    `min(4, 2 + floor(regionWidth / 600))` — a 900px region yields 3/tier,
    9 branches, matching the painted density.
@@ -334,9 +369,12 @@ viability battery runs at 1× and 2× to confirm, per the standing lesson
 ## 14. Open questions (unresolved, with recommendations)
 1. **Wind regimes.** v0.23 pins westerlies west of x=1500, easterly trades
    east (the ITCZ design win). A generative world has no fixed x=1500.
-   *Recommendation:* keep x-pinned for v2 (it's an initial condition; the
-   field evolves and same-seed determinism holds). Derive regimes from the
-   climate wave's thermal equator as a follow-up.
+   *Recommendation (revised per Gemini spec review, accepted):* derive the
+   transition from the generated world — the wind reversal sits at
+   `layout.thermalEquatorX` (the Tinit peak, §5), so the convergence zone
+   tracks the thermal equator as it does on Earth. Deterministic (computed
+   from the layout, no extra draws); the weather init reads it off the
+   layout. The x=1500 pin is retired with the painted zones.
 2. **Ocean at the world edge.** v0.26 always put deep water east. Should v2
    require it? *Recommendation:* no — inland seas are fine and interesting;
    the land-fraction + landmass gates handle playability. `deep` labels any
