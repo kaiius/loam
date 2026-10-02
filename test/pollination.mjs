@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createWorld, bindWorld, populateGenesis, tickWorld,
-  tickPollination, disperseSeed,
+  tickPollination, disperseSeed, tickGutSeeds,
 } from '../src/sim/world.js';
 import { founderGenome } from '../src/sim/species.js';
 import { createRng } from '../src/sim/rng.js';
@@ -98,13 +98,19 @@ test('v0.34: outcrossing — a pollinated flower bears mom × donor seed', () =>
   const fruitFood = { plantId: mom.id, dadGenome: donorGenome };
   const before = world.plants.length;
   // Force the dispersal roll to succeed: call disperseSeed with a fruit food.
+  // v0.35: disperseSeed loads the gut; the seedling appears only after gut
+  // transit (tickGutSeeds), deposited at the creature's position.
   const c = world.creatures.find((x) => x.alive);
-  let child = null;
-  for (let attempt = 0; attempt < 200 && !child; attempt++) {
+  for (let attempt = 0; attempt < 200 && !(c.gutSeeds && c.gutSeeds.length); attempt++) {
     disperseSeed(world, c, fruitFood);
+  }
+  assert.ok(c.gutSeeds && c.gutSeeds.length > 0, 'seed loaded into the gut');
+  let child = null;
+  for (let t = 0; t < 800 && !child; t++) {
+    tickGutSeeds(world, c);
     if (world.plants.length > before) child = world.plants[world.plants.length - 1];
   }
-  assert.ok(child, 'a seedling dispersed');
+  assert.ok(child, 'a seedling dispersed after gut transit');
   const got = child.genome.alleles[firstKey];
   // mom is [0,0], donor is [1,1] — a selfed child would be [0,0]; an
   // outcrossed child carries a 1 from dad (mutation could flip, vanishingly
@@ -137,11 +143,16 @@ test('v0.34: unvisited flowers still self (wind/selfing baseline)', () => {
   mom.genome.alleles[firstKey] = [0, 0];
   const c = world.creatures.find((x) => x.alive);
   const before = world.plants.length;
+  // v0.35: disperseSeed loads the gut; the seedling appears after gut transit.
   let child = null;
-  for (let attempt = 0; attempt < 200 && !child; attempt++) {
+  for (let attempt = 0; attempt < 200 && !(c.gutSeeds && c.gutSeeds.length); attempt++) {
     disperseSeed(world, c, { plantId: mom.id });
+  }
+  assert.ok(c.gutSeeds && c.gutSeeds.length > 0, 'seed loaded into the gut');
+  for (let t = 0; t < 800 && !child; t++) {
+    tickGutSeeds(world, c);
     if (world.plants.length > before) child = world.plants[world.plants.length - 1];
   }
-  assert.ok(child, 'a seedling dispersed');
+  assert.ok(child, 'a seedling dispersed after gut transit');
   assert.deepEqual(child.genome.alleles[firstKey], [0, 0], 'unvisited flower selfs');
 });

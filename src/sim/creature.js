@@ -12,7 +12,7 @@ import {
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY, foundCraft, CRAFT_USES, CRAFT_WINDOW, CRAFT_RADIUS } from './culture.js';
 import { pedigreeKin, getBond, nudgeBond } from './social.js';
-import { climbLinksFrom, disperseSeed, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, TISSUE_FRACTION, mineralType, addPebble, addStick, ledgerOut, bodyMassOf, releaseBodyMass, soilAt } from './world.js';
+import { climbLinksFrom, disperseSeed, tickGutSeeds, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, TISSUE_FRACTION, mineralType, addPebble, addStick, ledgerOut, bodyMassOf, releaseBodyMass, soilAt } from './world.js';
 import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, pushContextWindow, hearerSalientContext, lexiconDistance } from './language.js';
 import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA } from './evodevo.js';
 // v0.18 "Realms": the biome map — region layout, temperature fields,
@@ -166,6 +166,9 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     // v0.14 "Voices": the waste cycle — the gut holds what digestion
     // didn't take. Excretion (in updateCreature) returns it to the soil.
     gut: 0,
+    // v0.35 "Seed vectors": endozoochory — seeds riding the gut.
+    // [{plantId, momGenome, dadGenome, kind, timer, xEaten, tEaten}].
+    gutSeeds: [],
     flinchT: 0, // seconds since last injury — drives the flinch flash
     clashCooldown: 0, // per-creature refractory so spikes can't machine-gun
     // v0.20 "Hands": the hand. held is null or { material, weight,
@@ -990,7 +993,9 @@ export function doEat(c, world) {
     const isDetritus = kind === 'detritus';
     c.actionLabel = isDetritus ? 'grazing detritus' : (isScrap ? 'picking at scraps' : `eating ${kind === 'fruit' ? 'fruit' : kind}`);
     c.reward += (isDetritus ? 0.2 : isScrap ? 0.25 : 0.6) * palatability; // bitter meals reinforce less
-    // v0.13: seed dispersal — the eaten fruit's plant may ride along.
+    // v0.35: seed dispersal — the eaten fruit's seed loads into the gut
+    // (endozoochory) and deposits GUT_TRANSIT_TICKS later, away from
+    // the parent. Gravity-only dispersal is over.
     disperseSeed(world, c, food);
   }
   // v0.14: disgust's honest cost — food eaten on fouled ground carries
@@ -1848,6 +1853,11 @@ export function updateCreature(c, world, dt) {
   // v0.14: the waste cycle — bodies excrete whether awake, asleep, or
   // dragged. Proportional clearance into the current zone's soil.
   excrete(c, world, dt);
+
+  // v0.35: endozoochory — the gut clock. Seeds ride GUT_TRANSIT_TICKS then
+  // deposit where the creature is. Passive (not a verb): no anatomical
+  // prerequisite beyond the mouth that ate the fruit.
+  tickGutSeeds(world, c);
 
   // While held by the player's hand: body chemistry continues, mind pauses.
   if (c.dragged) {

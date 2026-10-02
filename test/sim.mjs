@@ -13,7 +13,7 @@ import { groundYAt, waterAt } from '../src/sim/biomes.js';
 import { PLANT_MASS, LITTER_FRAC } from '../src/sim/ledger.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
-import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams, speciesOverview, dropWindfall, WINDFALL_P, WINDFALL_ROT, heatStressMul, soilAt } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, tickGutSeeds, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams, speciesOverview, dropWindfall, WINDFALL_P, WINDFALL_ROT, heatStressMul, soilAt } from '../src/sim/world.js';
 import { tempAt } from '../src/sim/weather.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
@@ -2135,9 +2135,17 @@ test('v0.13: seed dispersal — eaten fruit can plant a seedling', () => {
   // Force-feed: put a fruit from this plant at the creature's mouth.
   addFood(world, c.x, c.platformIndex, 'fruit', 1, 0, { plantId: parent.id, bitterness: 0, nutrition: 1 });
   const food = world.foods[world.foods.length - 1];
-  let dispersed = false;
-  for (let i = 0; i < 40 && !dispersed; i++) {
+  // v0.35: disperseSeed loads the gut; the seedling appears only after gut
+  // transit (tickGutSeeds) — gravity-only immediate dispersal ended in v0.35.
+  let loaded = false;
+  for (let i = 0; i < 40 && !loaded; i++) {
     disperseSeed(world, c, food);
+    loaded = !!(c.gutSeeds && c.gutSeeds.length);
+  }
+  assert.ok(loaded, 'seed loaded into the gut');
+  let dispersed = false;
+  for (let t = 0; t < 800 && !dispersed; t++) {
+    tickGutSeeds(world, c);
     dispersed = world.plants.length > before;
   }
   assert.ok(dispersed, 'a seedling sprouted from dispersed seed');

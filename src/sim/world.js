@@ -100,6 +100,14 @@ export function createWorld(seed = 1, opts = {}) {
     // sub-stream — deterministic per seed, never the decor stream, and the
     // main sequence stays bit-identical (genome.js sub-stream precedent).
     pebbleRng: createRng((seed * 7919 + 17) >>> 0),
+    // v0.35 "Seed vectors": dispersal draws are CAUSAL (a seedling's
+    // location is selection-visible — where it grows determines its fate),
+    // so they get their own pinned sub-stream (pebbleRng precedent). The
+    // current field itself is pure geometry (no draws — worldgen order is
+    // load-bearing).
+    disperseRng: createRng((seed * 7919 + 35) >>> 0),
+    driftSeeds: [], // v0.35 hydrochory: seeds riding the water [{x, y, ...}]
+    currents: buildCurrents(layout), // v0.35: per-water-body current field
     // v0.13 "Roots":
     seenGenomes: new Set(), // genome hashes ever born — the beautiful-mutant watch
     novelParents: new Set(), // ids of living creatures with novel genomes
@@ -389,6 +397,27 @@ function groundBelow(world, x, y) {
   return best;
 }
 
+// v0.35 "Seed vectors": the water current field — one current per water
+// body, derived PURELY from geometry (no RNG draws; worldgen order is
+// load-bearing). Flow runs downhill: toward the end whose neighboring
+// ground is lower, or toward open water (the sea) when adjacent. Salt
+// water drifts slow; rivers run faster with length.
+function buildCurrents(layout) {
+  if (!layout || !layout.waters) return [];
+  return layout.waters.map((w) => {
+    const eL = groundYAt(w.x0 - 60, layout); // null = open water
+    const eR = groundYAt(w.x1 + 60, layout);
+    let dir;
+    if (eL == null && eR == null) dir = 1;
+    else if (eL == null) dir = -1; // drains to the sea on the left
+    else if (eR == null) dir = 1;  // drains to the sea on the right
+    else dir = eL <= eR ? 1 : -1;  // downhill (larger y = lower ground)
+    const len = w.x1 - w.x0;
+    const speed = w.salt ? 12 : 20 + Math.min(25, len / 40);
+    return { x0: w.x0, x1: w.x1, surfaceY: w.surfaceY, salt: !!w.salt, dir, speed };
+  });
+}
+
 // v0.20 "Falling": an expired canopy fruit falls to the understory instead
 // of vanishing. Leaves still compost in place (the detritus layer); fruit
 // becomes floor food — the below is a place with an economy, not a plane.
@@ -408,7 +437,17 @@ export function dropWindfall(world, f, rng) {
   if (f.foodKind === 'leaf') { compost(f.amount); return; } // the detritus layer
   if (!rng.chance(WINDFALL_P)) { compost(f.amount); return; } // rots where it hangs
   const gi = groundBelow(world, f.x, f.y || 0);
-  if (gi < 0) { compost(f.amount); return; } // over open water: sinks to the lakebed
+  // v0.35: landing in water — the flesh composts to the lakebed (mass
+  // conserved, as before); a fruit's seed joins the drift (hydrochory).
+  // Water presence is read from the current field, not from the lakebed:
+  // a lakebed platform exists UNDER the water, so gi >= 0 even mid-lake.
+  const wet = (world.currents || []).find((r) => f.x >= r.x0 && f.x <= r.x1);
+  if (wet) {
+    compost(f.amount);
+    if (f.foodKind === 'fruit' && f.plantId) spawnDriftSeed(world, f.x, f);
+    return;
+  }
+  if (gi < 0) { compost(f.amount); return; } // void: sinks out of the world
   if (world.foods.length > 80) { compost(f.amount); return; } // force-rot: the floor can't stockpile
   const jx = f.x + (rng ? rng.range(-24, 24) : 0);
   addFood(world, jx, gi, f.foodKind, f.amount, WINDFALL_ROT, {
@@ -417,50 +456,165 @@ export function dropWindfall(world, f, rng) {
   });
 }
 
-// v0.13 "Roots": seed dispersal — the coevolution loop. When a creature
-// eats fruit, the parent plant's genes may ride along: a seed is deposited
-// at the creature's position and sprouts into a seedling carrying a selfed
-// child genome (crossover + mutation). High-yield plants get eaten more and
-// spread; bitter plants are avoided and persist uneaten; arid selects for
-// waterRet, highland for coldTol. Called from doEat.
+// v0.35 "Seed vectors": ENDOZOCHORY — the gut as a dispersal vector.
+// Gravity-only dispersal ends here. When a creature eats fruit, the seed
+// loads into the gut (probability as before) and rides for GUT_TRANSIT_TICKS
+// while the creature moves — then deposits WHERE THE CREATURE IS, away from
+// the parent. No new action, no anatomical prerequisite: dispersal is
+// passive (gut transit), not a verb the creature performs. Called from doEat.
+export const GUT_TRANSIT_TICKS = 400;
+export const GUT_SEED_CAP = 6; // gut capacity — seeds are bulk
 export function disperseSeed(world, c, food) {
   if (!food.plantId) return;
   const parent = world.plants.find((p) => p.id === food.plantId);
   if (!parent || !parent.genome) return;
   const pYield = parent.pheno ? parent.pheno.yield : 0.5;
-  if (!world.rng.chance(0.15 + 0.3 * pYield)) return;
-  // Cap the flora: oldest seedlings are culled first — and their tissue
+  if (!world.rng.chance(0.15 + 0.3 * pYield)) return; // eat-time roll, main stream (unchanged)
+  c.gutSeeds = c.gutSeeds || [];
+  if (c.gutSeeds.length >= GUT_SEED_CAP) return;
+  const drng = world.disperseRng || world.rng;
+  c.gutSeeds.push({
+    plantId: food.plantId,
+    momGenome: parent.genome,
+    dadGenome: food.dadGenome || parent.genome, // v0.34: the dad rides the fruit
+    kind: parent.kind,
+    timer: GUT_TRANSIT_TICKS + drng.range(0, 200),
+    xEaten: c.x, tEaten: world.time,
+  });
+}
+
+// v0.35: plant one seedling from mom×dad genomes at (x, platformIndex).
+// Shared by endozoochory (gut deposition) and hydrochory (wash-ashore).
+// The flora cap + seedling-culling transfer are the v0.13 rules, unchanged;
+// the seedling's initial tissue is the parent's labeled investment
+// (ledgerIn 'parental'), never mass from nothing.
+function plantSeedling(world, x, platformIndex, seed, vector) {
+  // Flora cap (v0.13): oldest seedlings are culled first — and their tissue
   // composts to the zone's soil (v0.24, Paul's seed-cap splice fix: culling
-  // is a transfer, not a deletion).
+  // is a transfer, not a deletion). v0.35 (Gemini review): if NO seedlings
+  // exist, the old code returned without planting — a permanent sterility
+  // deadlock once 60 plants are all mature (mature plants never die).
+  // Fallback: cull the oldest mature plant (lowest id = first born; gap
+  // dynamics — an old tree falls, a seedling takes its place). Seedlings
+  // are still always preferred.
   if (world.plants.length >= 60) {
     const seedlings = world.plants.filter((p) => p.growth < 1);
-    if (seedlings.length > 0) {
-      const oldest = seedlings[0];
-      world.plants.splice(world.plants.indexOf(oldest), 1);
-      const s = world.soil && world.soil[oldest.zone];
-      const culled = (Math.max(0, oldest.growth || 0) + (oldest._litterAcc || 0)) * PLANT_MASS;
+    const victim = seedlings.length > 0 ? seedlings[0]
+      : world.plants.slice().sort((a, b) => a.id - b.id)[0];
+    if (victim) {
+      world.plants.splice(world.plants.indexOf(victim), 1);
+      const s = world.soil && world.soil[victim.zone];
+      const culled = (Math.max(0, victim.growth || 0) + (victim._litterAcc || 0)) * PLANT_MASS;
       if (s) s.waste += culled;
       else ledgerOut(world, 'lost', culled); // no soil entry: labeled, never silent
-    } else return;
+    } else return null;
   }
-  const plat = world.platforms[c.platformIndex];
-  if (!plat) return;
-  const x = Math.max(plat.x1 + 10, Math.min(plat.x2 - 10, c.x + world.rng.range(-40, 40)));
-  // v0.34 — outcrossing: the fruit carries its dad (stamped at fruit set from
-  // the donor genome deposited during bloom); unvisited flowers self as
-  // before (plantgenome.js noted this as the future pressure — it arrives
-  // here). The dad rides the fruit, not the plant — a later bloom can't
-  // rewrite this fruit's parentage.
-  const dadGenome = food.dadGenome || parent.genome;
-  const childGenome = inheritPlant(parent.genome, dadGenome, world.rng);
-  if (parent.kind === 'herb') addHerb(world, x, c.platformIndex, childGenome);
-  else addPlant(world, x, c.platformIndex, childGenome);
+  const plat = platformIndex === -1 ? null : world.platforms[platformIndex];
+  if (platformIndex !== -1 && !plat) return null;
+  const px = plat ? Math.max(plat.x1 + 10, Math.min(plat.x2 - 10, x)) : x;
+  // v0.34 outcrossing preserved: the dad rode the fruit (endozoochory) or
+  // the drift (hydrochory) — a later bloom can't rewrite this seed's parentage.
+  const drng = world.disperseRng || world.rng;
+  const childGenome = inheritPlant(seed.momGenome, seed.dadGenome || seed.momGenome, drng);
+  if (seed.kind === 'herb') addHerb(world, px, platformIndex, childGenome);
+  else addPlant(world, px, platformIndex, childGenome);
   const seedling = world.plants[world.plants.length - 1];
   seedling.growth = 0.05; // a true seedling — must mature before fruiting
-  // v0.24: the seedling's initial tissue is the parent's investment —
-  // a labeled parental input, not mass from nothing.
   ledgerIn(world, 'parental', 0.05 * PLANT_MASS);
-  world.events.push({ type: 'seedDispersed', plant: seedling, parentId: parent.id, t: world.time });
+  world.events.push({
+    type: 'seedDispersed', vector, plant: seedling, parentId: seed.plantId,
+    dist: Math.abs(px - (seed.xEaten != null ? seed.xEaten : px)), t: world.time,
+  });
+  return seedling;
+}
+
+// v0.35: the gut clock. Called beside excrete() in the creature tick —
+// timers count ticks (dt-independent). On expiry the seed deposits at the
+// creature's CURRENT position; over water (no platform) it joins the drift
+// instead of being lost.
+export function tickGutSeeds(world, c) {
+  if (!c.gutSeeds || c.gutSeeds.length === 0) return;
+  for (let i = c.gutSeeds.length - 1; i >= 0; i--) {
+    const s = c.gutSeeds[i];
+    s.timer -= 1;
+    if (s.timer > 0) continue;
+    c.gutSeeds.splice(i, 1);
+    depositSeed(world, c.x, c.platformIndex, s, 'endozoochory');
+  }
+}
+
+function depositSeed(world, x, platformIndex, seed, vector) {
+  const plat = (platformIndex !== undefined && platformIndex >= 0) ? world.platforms[platformIndex] : null;
+  if (plat) return plantSeedling(world, x, platformIndex, seed, vector);
+  // Over open water (or void) — hydrochory takes the seed.
+  const rect = (world.currents || []).find((r) => x >= r.x0 && x <= r.x1);
+  if (!rect) {
+    // Mass-neutral: parental input is only booked at planting, so an
+    // unplantable seed simply ends. Labeled, never silent.
+    world.events.push({ type: 'seedLost', vector, parentId: seed.plantId, t: world.time });
+    return null;
+  }
+  const drng = world.disperseRng || world.rng;
+  world.driftSeeds.push({
+    x, y: rect.surfaceY,
+    momGenome: seed.momGenome, dadGenome: seed.dadGenome, kind: seed.kind,
+    plantId: seed.plantId, xEaten: seed.xEaten,
+    ttl: 1500 + drng.range(0, 1000), rect,
+  });
+  world.events.push({ type: 'seedAdrift', parentId: seed.plantId, t: world.time });
+  return null;
+}
+
+// v0.35: a windfall fruit over water launches its seed into the drift.
+function spawnDriftSeed(world, x, food) {
+  const parent = world.plants.find((p) => p.id === food.plantId);
+  if (!parent || !parent.genome) return;
+  if (world.driftSeeds.length >= 40) return; // bounded flotsam
+  const drng = world.disperseRng || world.rng;
+  if (!drng.chance(0.5)) return;
+  const rect = (world.currents || []).find((r) => x >= r.x0 && x <= r.x1);
+  if (!rect) return;
+  world.driftSeeds.push({
+    x, y: rect.surfaceY,
+    momGenome: parent.genome, dadGenome: food.dadGenome || parent.genome,
+    kind: parent.kind, plantId: food.plantId, xEaten: x,
+    ttl: 1500 + drng.range(0, 1000), rect,
+  });
+  world.events.push({ type: 'seedAdrift', parentId: food.plantId, t: world.time });
+}
+
+// v0.35: HYDROCHORY — drift seeds ride their rect's current. At the rect's
+// edge the seed washes ashore: ground at the exit point → germinate there
+// (new ground colonized); neighboring water → keep drifting; ttl expiry →
+// sinks (no mass was ever booked for a drifting seed, so the sinking is
+// mass-neutral; the event keeps it labeled).
+export function tickDriftSeeds(world, dt) {
+  if (!world.driftSeeds || world.driftSeeds.length === 0) return;
+  for (let i = world.driftSeeds.length - 1; i >= 0; i--) {
+    const s = world.driftSeeds[i];
+    s.ttl -= 1;
+    if (s.ttl <= 0) {
+      world.driftSeeds.splice(i, 1);
+      world.events.push({ type: 'seedSunk', parentId: s.plantId, t: world.time });
+      continue;
+    }
+    const cur = s.rect;
+    s.x += cur.dir * cur.speed * dt;
+    if (s.x < cur.x0 || s.x > cur.x1) {
+      world.driftSeeds.splice(i, 1);
+      const exitX = Math.max(0, Math.min(world.width, s.x));
+      const gi = groundBelow(world, exitX, cur.surfaceY);
+      const nrect = (world.currents || []).find((r) => r !== cur && exitX >= r.x0 && exitX <= r.x1);
+      if (gi >= 0) {
+        plantSeedling(world, exitX, gi, s, 'hydrochory'); // wash-ashore zone
+      } else if (nrect) {
+        s.rect = nrect; s.x = exitX;
+        world.driftSeeds.push(s);
+      } else {
+        world.events.push({ type: 'seedSunk', parentId: s.plantId, t: world.time });
+      }
+    }
+  }
 }
 
 // v0.22.2 — addCritter is retired. The butterfly and the bug were promoted
@@ -1809,6 +1963,9 @@ export function tickWorld(world, dt) {
   shedLitter(world, dt);
   tickMicrobes(world, dt);
   tickSoil(world, dt);
+
+  // v0.35: hydrochory — drift seeds ride the water current field.
+  tickDriftSeeds(world, dt);
 
   // v0.14.1: rot composts — see compostRot. (Only nest-cache fruit, scraps,
   // and carcass meat carry timers; plant fruit is eaten or it hangs.)

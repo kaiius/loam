@@ -337,7 +337,10 @@ function present(world) {
     if (e.type === 'seedDispersed') {
       if (seeds >= 2) continue;
       seeds++;
-      els.push(entry(world, { t: e.t, icon: '🌰', text: `A seedling took root, far from its parent.` }));
+      const how = e.vector === 'hydrochory' ? 'washed ashore far from its parent'
+        : e.vector === 'endozoochory' ? 'carried in a gut far from its parent'
+        : 'far from its parent';
+      els.push(entry(world, { t: e.t, icon: '🌰', text: `A seedling took root, ${how}.` }));
       continue;
     }
     if (e.type === 'soilRich') {

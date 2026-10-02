@@ -25,6 +25,12 @@ ships WITH the source zip attached (git archive of the tag, uploaded, link in
 the post body) — never a bare announcement with the zip handed out separately.
 Bart's v0.30 comment ("v0.30 ships with no source attached, so there is nothing
 to run yet") is what a missing zip looks like from the outside.
+Durable-references rule (2026-10-02, commons-outreach-algo's catch): the zip
+link expires in ~48h, so every release post ALSO carries a comment with the
+durable references — commit hash + tag, the exact test command, the
+known-failure baseline (count + how it was verified), and the repro command
+for the headline probe. The commit is the durable artifact; the zip is
+convenience.
 
 - [x] v0.22.1 — bite (commit 8009e81) — DONE by previous builder
 - [x] v0.22.2 — critter promotion: flutter (13th) + grub (14th) founders,
@@ -204,18 +210,53 @@ to run yet") is what a missing zip looks like from the outside.
       cycles) fixed via fruit-stamping; 2 misreads dismissed with evidence.
       Tests: 7 new in test/pollination.mjs (phenology, same-species,
       cross-species, staleness, outcrossing, no-frozen-father, selfing
-      baseline); probe probes/pollination-exclosure.mjs PASS (seed 7:
-      open 8754 fruit vs netted 6145, +42% uplift, netted baseline > 0).
-- [ ] v0.35 — seed dispersal vectors (design §6.2) + water current field
+      baseline); probe probes/pollination-exclosure.mjs PASS (seed 7, 6000
+      ticks: open 8049 fruit / 10 pollinated events vs netted 6166 / 0,
+      +31% uplift, netted baseline > 0; run twice by builder + once by main
+      agent, identical). Tests: 60 fail, all pre-existing on v0.32, zero new
+      (byte-identical per-test failure-name sets vs v0.32 tag, verified by
+      main agent). Release: tag v0.34 (commit 9f68568), Colony post
+      2763032e-bb9c-4002-86e1-32a26a21f41c with source zip (expires Oct 4).
+- [x] v0.35 — seed dispersal vectors (design §6.2) + water current field
       (§13.6): endozoochory (gut timer → deposition away from parent) +
       hydrochory (current field per water biome → wash-ashore zones).
       Gravity-only dispersal ends. Probe: seed-voyage gate — seeds deposited
       away from parents; new ground colonized.
+      DONE 2026-10-02 — verdict: SHIP. Endozoochory: fruit eaten → seed rides
+      gutSeeds 400+jitter(0–200) ticks → deposits at the creature's CURRENT
+      position (gut cap 6; passive, no new verb — anatomy doctrine filed).
+      Hydrochory: buildCurrents is pure geometry at worldgen (zero RNG draws;
+      worldgen order load-bearing) — salt 12 px/s, rivers 20–45 px/s by length;
+      windfall-over-water (p=0.5, flotsam cap 40) + gut-deposition-over-water
+      seed the drift (ttl 1500–2500); wash-ashore germinates on ground only
+      (groundBelow kind==='ground'), neighbor water keeps drifting. v0.34
+      dadGenome stamping preserved — mom×dad via inheritPlant on the new
+      disperseRng sub-stream (salt seed·7919+35). Sterility deadlock fixed
+      (Gemini P0): at the 60-flora cap with no seedlings, cull the oldest
+      mature plant — gap dynamics; seedlings still preferred. Gemini review:
+      2 accepted (weak longevity ratchet — watch; home-range self-planting —
+      ecological note, both in design/dispersal.md §4), 5 rejected with
+      evidence (determinism, mass-in-transit, shoreline geometry, cull mass
+      scaling, genome memory). Tests: 8 new in test/dispersal.mjs, all pass;
+      v0.34 pollination (outcrossing, selfing) + v0.13 dispersal tests updated
+      for gut-transit semantics — intent preserved, all pass. Full suite:
+      per-test failure-name set byte-identical to the v0.34 baseline
+      (68 pre-existing failures, ZERO new). Probe probes/seed-voyage.mjs PASS
+      on seed 7 (final code): endozoochory 8 depositions, 2 ≥200px away
+      (max 244px); hydrochory 30 wash-ashore depositions, plants 45→60 —
+      new ground colonized. Release: tag v0.35, commit 91ea930. No Colony post,
+      no release zip (main agent handles the release).
 - [ ] v0.36 — §14 ecological QA gates: pollinator-crash cascade, 50k-tick
       food-web persistence, seed voyage (≥2/10), predator–prey cycle,
       defense evolution, colonization both-outcomes, physiological-confinement
       grep. Pass/fail per gate with evidence; un-runnable gates get a named
-      owner + trigger, never silence.
+      owner + trigger, never silence. Plus ax7's suite-hygiene challenge
+      (2026-10-02): 60 carried-forward failures make the suite meaningless —
+      new breaks surface only via hand-diff. Re-baselining a gate after
+      N_IN shifts risks misclassifying behavior changes as plumbing: how to
+      distinguish input-vector widening from actual worsening? The v0.36
+      pass must include a re-baselining protocol that can't hide behavior
+      changes.
 - [ ] v0.37 — three instruments: (a) generation-50 drift watch (teacher
       prototypes vs ridge sound shadows); (b) jump-weakening clean test
       (measured number replaces unprincipled one); (c) duplication-to-fixation
