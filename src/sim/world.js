@@ -29,7 +29,8 @@ export { tickMicrobes, decompMultiplier, sterilizeZone, bacteriaOf };
 import { initLedger, ledgerIn, ledgerOut, ledgerSeal, ledgerDrift, ledgerPools, ledgerTotal, bodyMassOf, eggMassForGenome, PLANT_MASS, MINERAL_FRAC, FRUIT_MINERAL, LITTER_FRAC } from './ledger.js';
 export { ledgerIn, ledgerOut, ledgerSeal, ledgerDrift, ledgerPools, ledgerTotal, bodyMassOf, eggMassForGenome };
 
-export const DAY_LENGTH = 300; // seconds per full day/night cycle
+export const DAY_LENGTH = 300; // seconds per full day/night cycle (legacy; the live parameter is world.dayTicks)
+export const DAY_TICKS_DEFAULT = 3000; // ticks per day at the canonical 10 ticks/s — the v0.28 world parameter
 
 export function createWorld(seed = 1, opts = {}) {
   const rng = createRng(seed);
@@ -40,9 +41,17 @@ export function createWorld(seed = 1, opts = {}) {
   // 1 = the painted 4800px); zone widths and cluster counts scale with it.
   const size = opts.size || 1;
   const { layout } = rollLayout(seed, size);
+  // v0.28 "Day and night": DAY length as a world parameter (ticks per day,
+  // reported). Default 3000 = the historical 300s day at 10 ticks/s.
+  const dayTicks = (opts.dayTicks > 0 ? opts.dayTicks : DAY_TICKS_DEFAULT) | 0;
   const world = {
     rng,
     time: DAY_LENGTH * 0.32, // start mid-morning
+    // v0.28: the integer tick clock — the day phase derives from this, never
+    // from float time (phase drift at millions of ticks breaks determinism).
+    // Initialized to match time's mid-morning start.
+    tick: Math.round(0.32 * dayTicks),
+    dayTicks, // v0.28: the world parameter — ticks per full day/night cycle
     light: 1,
     layout, // v0.26: the generated geography — zones, terrain, waters, platforms
     width: layout.width, // v0.26: 4800 × size — the layout owns the extent
@@ -183,14 +192,27 @@ export function climbLinksFrom(world, pi) {
 }
 
 export function timeOfDay(world) {
-  return (world.time / DAY_LENGTH) % 1;
+  // v0.28: integer-tick phase — (tick % dayTicks) / dayTicks. Floating-point
+  // world.time accumulates rounding over millions of ticks; the integer
+  // count never drifts, so same seed → same light forever.
+  const d = (world.dayTicks > 0 ? world.dayTicks : DAY_TICKS_DEFAULT) | 0;
+  const t = ((world.tick | 0) % d + d) % d;
+  return t / d;
 }
 
-// Smooth daylight: 1 at noon, ~0.12 at midnight.
-export function updateLight(world) {
-  const a = (timeOfDay(world) - 0.25) * Math.PI * 2;
+// The shared daylight curve: 0 at midnight, 1 at noon. One clock drives
+// world.light AND the seasonal T forcing's daylight gate (weather.js) —
+// light and heat can never disagree about what time it is.
+export function daylightCurve(phase) {
+  const a = (phase - 0.25) * Math.PI * 2;
   const s = Math.sin(a) * 0.5 + 0.5;
-  world.light = 0.12 + 0.88 * s * s * (3 - 2 * s);
+  return s * s * (3 - 2 * s); // smootherstep
+}
+
+// Smooth daylight: 1 at noon, ~0.02 at midnight (v0.28: true night — the
+// old 0.12 floor was perpetual twilight, and vision needs real darkness).
+export function updateLight(world) {
+  world.light = 0.02 + 0.98 * daylightCurve(timeOfDay(world));
 }
 
 let nextObjId = 1;
@@ -1462,6 +1484,7 @@ export function tickPollination(world, dt) {
 
 export function tickWorld(world, dt) {
   world.time += dt;
+  world.tick = (world.tick | 0) + 1; // v0.28: the integer clock — day phase derives from this
   // v0.23 "Weather": the sky ticks FIRST — clouds shade the light below.
   if (world.climate) tickClimate(world, dt, world.climateGeo);
   updateLight(world);

@@ -20,6 +20,7 @@
 // as the climate evolves; creatures read experienced T/M, not labels.
 
 import { createRng } from './rng.js';
+import { timeOfDay, daylightCurve } from './world.js'; // v0.28: the shared integer-tick day clock
 
 export const WEATHER_COL_W = 100;
 export const WEATHER_COLS = 48; // WORLD_W 4800 / 100
@@ -123,6 +124,12 @@ export function seasonPhase(world) {
   return (((world.time % Y) + Y) % Y) / Y;
 }
 export function seasonSin(world) { return Math.sin(seasonPhase(world) * Math.PI * 2); }
+// v0.28 "Day and night": the daylight-gated seasonal forcing — exported for
+// testability. amp = per-column T-unit amplitude (seasonAmp × SEASON_AMP_MAX),
+// sSin = the seasonal sine (−1..1), dayCurve = the shared daylight curve
+// (0 at midnight, 1 at noon). Summer lifts the afternoon; midnight is
+// untouched in every season.
+export function seasonalForcing(amp, sSin, dayCurve) { return amp * sSin * dayCurve; }
 // Basking insolation factor: 1.0 at summer solstice, 0.2 at winter solstice.
 // (v0.27: else creatures bypass winter by basking.)
 export function seasonSun(world) { return 0.6 + 0.4 * seasonSin(world); }
@@ -344,8 +351,14 @@ export function tickClimate(world, dt, geo) {
   const cl = world.climate;
   const rng = cl.rng;
   const sdt = Math.sqrt(dt);
-  const tod = (world.time / 300) % 1; // DAY_LENGTH = 300
-  const diurnal = Math.sin(tod * Math.PI * 2 - Math.PI / 2) * 0.04; // warm afternoon
+  // v0.28 "Day and night": the day phase is integer-tick analytic —
+  // timeOfDay(world) = (tick % dayTicks) / dayTicks, never float time.
+  // The diurnal ripple rides the reversion target through the thermal-mass
+  // divisor (a flux-shaped forcing, never an absolute ΔT — the v0.25/v0.27
+  // heat-pump lesson). Amplitude ±0.04, small vs the seasonal wave.
+  const tod = timeOfDay(world);
+  const dayCurve = daylightCurve(tod); // 0 at midnight, 1 at noon
+  const diurnal = (dayCurve - 0.5) * 0.08; // warm afternoon
   // v0.27 "Seasons": one clock for the whole year — the T forcing and the
   // water-cycle modulation below both read this sine, so wet/dry can never
   // creep out of alignment with warm/cold (there is no separate weather
@@ -382,7 +395,15 @@ export function tickClimate(world, dt, geo) {
     // amplitude (desert ±0.30, jungle ±0.12). Annual mean of the forcing is
     // zero by construction; diffusion still conserves; vents are a separate
     // term and stay season-exempt.
-    const seasonal = (cl.seasonAmp ? cl.seasonAmp[i] : 0.4) * SEASON_AMP_MAX * sSin;
+    // v0.28 "Day and night": the seasonal wave is DAYLIGHT-GATED. An
+    // additive seasonal term warms winter nights and cools summer nights
+    // with energy that has no sun behind it (the "midnight sun" bug);
+    // multiplying by the daylight curve makes the season modulate the
+    // insolation that actually exists — summer raises the afternoon, never
+    // the midnight. Annual mean unchanged (the sine still integrates to
+    // zero over the year); thermal mass still divides the reversion.
+    const seasonal = seasonalForcing(
+      (cl.seasonAmp ? cl.seasonAmp[i] : 0.4) * SEASON_AMP_MAX, sSin, dayCurve);
     const target = clamp01(cl.baseT[i] + diurnal + seasonal);
     c.T += (target - c.T) * Math.min(1, dt * 0.02 / cl.thermalMass[i]);
     c.T += rng.range(-1, 1) * 0.006 * sdt;

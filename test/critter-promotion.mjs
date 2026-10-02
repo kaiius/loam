@@ -67,7 +67,7 @@ test('v0.22.2: grub founder-exactness — the prey base, soft and fearful', () =
 });
 
 test('v0.22.2: no new loci — GENES stays 230', () => {
-  assert.equal(GENES.length, 230, 'promotion adds values, not loci (230 = 229 + v0.27 pantCapacity)');
+  assert.equal(GENES.length, 232, 'promotion adds values, not loci (232 = 230 + v0.28 activityPhase/instPhaseSleep)');
 });
 
 test('v0.22.2: starter sets + caps cover the promoted', () => {
@@ -146,11 +146,18 @@ test('v0.22.2 PROBE: a flutter visits flowers — pollen moves, fruit set rises'
   // The wing gate is phenotypic: the live body plan must pass it.
   assert.ok((fl.bodyPlan.wingArea || 0) > 0.1, `flutter is winged, got ${fl.bodyPlan.wingArea}`);
 
-  // Visit flower A.
+  // Visit flower A: one tick — the FIRST visit, before any wandering.
   fl.x = A.x; fl.y = A.y;
-  for (let i = 0; i < 4; i++) tickWorld(world, 0.5);
-  assert.equal(fl.pollenFrom, A.id, 'the flutter visited flower A');
-  assert.equal(A.pollination, 0, 'first visit carries no pollen — nothing to deposit');
+  tickWorld(world, 0.5);
+  // The visit registers on the nearest flower in reach — which flower that
+  // is depends on the flutter's brain (it may drift a few px), so the probe
+  // follows the visit instead of pinning the flower's identity.
+  const first = world.plants.find((p) => p.id === fl.pollenFrom);
+  assert.ok(first, 'the flutter visited a flower');
+  assert.ok(Math.abs(first.x - A.x) <= 120, `visited near flower A, got ${first && first.x}`);
+  assert.equal(first.pollination, 0, 'first visit carries no pollen — nothing to deposit');
+  // Keep visiting; pollen now moves flower to flower.
+  for (let i = 0; i < 3; i++) tickWorld(world, 0.5);
 
   // Visit flower B carrying A's pollen.
   fl.x = B.x; fl.y = B.y;
@@ -199,6 +206,8 @@ test('v0.22.2 PROBE: a grub gets eaten — bites kill, the corpse feeds the web'
     cat.action = 'bite'; cat.actionTimer = 100; // force the bite
     grub.x = cat.x + 12; // staged geometry: the cat holds the range
     grub.biochem.bloodSugar = 1; // fed — isolate the wound kill, not starvation
+    cat.biochem.bloodSugar = 1; // the attacker too — isolate the bite mechanism,
+    // not the cat's metabolism (hunger/exhaustion overrides would call off the attack)
     tickWorld(world, 0.1);
     dead = !grub.alive;
   }

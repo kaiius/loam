@@ -105,6 +105,7 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
     sailDump: cf01(ctx.sailDump, 0),
     cloud: cf01(ctx.cloud, 0), // v0.25 "Heat": overcast shades the basker
     seasonSun: cf(ctx.seasonSun, 1), // v0.27 "Seasons": seasonal insolation 0.2..1
+    daySun: cf(ctx.daySun, 1), // v0.28 "Day and night": diurnal insolation 0..1
   };
   // --- chemistry ---------------------------------------------------------
   // Fuel: eating fills the tank, living drains it. A full belly lasts a
@@ -247,10 +248,13 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   // summer solstice, 0.2 at winter (else creatures bypass winter by basking).
   // Defaults to 1 when the caller passes no season (unit probes).
   const seasonSunFrac = ctx.seasonSun ?? 1;
+  // v0.28 "Day and night": basking gain follows the diurnal sun — 1.0 at noon,
+  // ~0 at midnight (else creatures bypass night by basking). Defaults to 1.
+  const daySunFrac = ctx.daySun ?? 1;
   b.coreTemp = clamp01(b.coreTemp
     + driftK * (ambientEff - b.coreTemp) * dt
     + metabolic * dt
-    + basking01 * 0.008 * warmthFrac * sunFrac * seasonSunFrac * dt
+    + basking01 * 0.008 * warmthFrac * sunFrac * seasonSunFrac * daySunFrac * dt
     - sailDump01 * 0.01 * dt
     - pant01 * PANT_COOL_K * dt);
   // Hypothermia: health drains, fatigue accumulates 2×. Hyperthermia:

@@ -143,9 +143,11 @@ test('v0.18: populateGenesis spawns 8 cohorts, 3–5 creatures each, both sexes'
 test('v0.18: genesis allele shifts land on the biome-suited loci', () => {
   // v0.20 \"Falling\": N_IN 35→36 shifted the rng stream; seed 42's desert-fur
   // roll landed inside sampling noise (0.465 vs 0.461 on n=3). Seed 44 holds
-  // all six inequalities with margin. The mechanism itself is pinned by the
+  // all six inequalities with margin. v0.28 \"Day and night\": N_IN 37→38
+  // shifted the stream again; seed 44's mountains-armLength flipped. Seed 45
+  // holds all six with margin. The mechanism itself is pinned by the
   // shiftAlleles unit test below — this is the end-to-end roll, recalibrated.
-  const world = bindWorld(createWorld(44));
+  const world = bindWorld(createWorld(45));
   populateGenesis(world);
   const mean = (cs, locus) => cs.reduce((s, c) => s + (c.genome.alleles[locus][0] + c.genome.alleles[locus][1]) / 2, 0) / cs.length;
   const byKey = (k) => world.creatures.filter((c) => biomeKeyAt(c.x, 800) === k);

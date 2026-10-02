@@ -51,7 +51,7 @@ export const ACTIONS = [
   // spikeArmor; fatigue-billed; spikes retaliate. No prey-finding cheats.
 ];
 
-export const N_IN = 37; // 36 senses + bias... see senseVector
+export const N_IN = 38; // 37 senses + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -80,6 +80,7 @@ export function senseVector(s) {
     s.objectNear || 0, s.heldWeight || 0, // v0.20: the hands senses
     s.falling || 0, // v0.20 "Falling": the vestibular sense — appended, never renumbered
     s.creatureSize || 0, // v0.22 "Web of Life": relative mass of nearest creature, no identity
+    s.phaseSleepiness || 0, // v0.28 "Day and night": the phase-sleepiness sense — appended, never renumbered
     1,
   ];
 }

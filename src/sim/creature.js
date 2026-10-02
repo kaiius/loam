@@ -288,10 +288,38 @@ function nearestSpatial(sorted, x, range, excludeId) {
   return best ? { obj: best, dist: bestD / range, dir: Math.sign(best.x - x) || 1 } : null;
 }
 
+// v0.28 "Day and night": vision's light factor — the eyeSize trade-off.
+// Bigger eyes gather more photons (gather 0.6..1.4), so they see farther
+// in dim light; past saturation (eff > 1.2) acuity falls gently — the mild
+// dazzle that keeps night vision honest without breaking diurnal foragers.
+// At clear noon: small eyes 1.0, big eyes ~0.85. At midnight: big eyes see
+// ~2.3× farther than small.
+export function visionLightFactor(world, pheno) {
+  const eyeSize = pheno.eyeSize ?? 0.5;
+  const gather = 0.6 + eyeSize * 0.8;
+  const eff = (world.light ?? 0.5) * gather;
+  const dimF = clamp01(eff / 0.5); // photon limit
+  const satF = eff > 1.2 ? 1.2 / eff : 1.0; // gentle dazzle past saturation
+  return dimF * satF;
+}
+
+// v0.28: the phase-sleepiness sense — 1 when the light matches the
+// creature's sleep-phase light, 0 at the opposite extreme.
+export function phaseSleepiness(c, world) {
+  const p = c.pheno.activityPhase ?? 0.5;
+  const l = world.light ?? 0.5;
+  return clamp01(1 - Math.abs(l - p));
+}
+
 export function gatherSenses(c, world) {
   const b = c.biochem;
   // v0.6 morphology: sight range comes from the eyeSize gene.
-  const range = c.pheno.sightRange || SENSE_RANGE;
+  // v0.28 "Day and night": vision range scales with light, through the
+  // eyeSize the genome bought. Bigger eyes gather more light (night
+  // vision); in bright noon they oversaturate — the dazzle trade-off, so
+  // night vision can't run away for free. Hearing/smell don't scale with
+  // light: night is the hearing animal's world.
+  const range = (c.pheno.sightRange || SENSE_RANGE) * visionLightFactor(world, c.pheno);
   // v0.8: the sick seek the bitter leaf. When ill, the food sense prefers
   // medicinal leaves over fruit — a species-typical prior; the brain (which
   // now senses illness too) learns the rest. Falls back to any food.
@@ -486,6 +514,12 @@ export function gatherSenses(c, world) {
     fear: b.fear,
     illness: b.illness, // v0.8: the 15th sense — feeling sick is learnable
     light: world.light,
+    // v0.28 "Day and night": the phase-sleepiness sense — how strongly this
+    // body wants sleep RIGHT NOW given the light and its own activityPhase
+    // (0 = diurnal, sleepy at night; 1 = nocturnal, sleepy at day). Read by
+    // instPhaseSleep → the sleep action. Founder economics: the trait only
+    // biases; hunger, fear, and exhaustion still override.
+    phaseSleepiness: phaseSleepiness(c, world),
     homeDist: scaledHomeDist(c, world), // v0.18: biome-center-scaled (was |x−homeX|/800)
     kinNear: otherObj ? pedigreeKin(world, c, otherObj) : 0,
     bondNear: otherObj && world.bonds ? getBond(world.bonds, c, otherObj) : 0,
@@ -1645,6 +1679,12 @@ function executeAction(c, world, dt, s) {
         const dmg = Math.max(0.01, 0.15 * mouth * mass * (1 - Math.min(0.9, armor)));
         target.biochem.injury = clamp01(target.biochem.injury + dmg);
         target.flinchT = 0;
+        // Pain is an adrenaline event: the victim's fear spikes (fear =
+        // adrenaline × drive gain), which wakes sleepers through the existing
+        // wake condition. A mauled animal does not sleep through it — without
+        // this, the 5× sleep-healing of injury lets a sleeping victim
+        // out-heal the bites. Same magnitude as a scolding (0.6).
+        target.biochem.adrenaline = clamp01(target.biochem.adrenaline + 0.6);
         target.vx = (target.vx || 0) + dir * 25 * mouth * mass; // the shake
         target.vy = (target.vy || 0) - 12 * mouth * mass;
         // Spike retaliation — reuses the v0.9 clash numbers: one
@@ -1888,6 +1928,9 @@ export function updateCreature(c, world, dt) {
     // v0.27 "Seasons": basking follows seasonal insolation (1.0 summer
     // solstice → 0.2 winter) — else creatures bypass winter by basking.
     seasonSun: world.climate ? seasonSun(world) : 1,
+    // v0.28 "Day and night": basking follows the diurnal sun too — no
+    // midnight sunbathing (else creatures bypass night by basking).
+    daySun: world.light ?? 1,
   });
   // v0.18: flailing (swimming without membranes) costs 3× the oxygen.
   // The chemistry doesn't read a flail flag, so the surcharge is billed
@@ -2066,6 +2109,14 @@ export function updateCreature(c, world, dt) {
       // napping. Now hunger wins over the sleep override above.
       if (b.hunger > 0.8 && c.action !== 'eat' && c.action !== 'seekFood' && c.action !== 'flee') {
         c.action = 'seekFood';
+      }
+      // Terror overrides: a terrified creature cannot choose sleep. Fear
+      // already forces urgent re-decision, but the brain could still return
+      // 'sleep' — a mauled animal does not nap through it. (v0.28: surfaced
+      // when an N_IN reshuffle gave a founder brain a pathological sleep
+      // bias; it slept through bites at fear 0.98, out-healing them 5×.)
+      if (b.fear > 0.55 && c.action === 'sleep') {
+        c.action = 'flee';
       }
       // Breeding opportunity (v0.5, retargeted v2): a lonely adult that senses
       // a nearby VALID mate courts instead of dithering. v2 reads s._mate
@@ -2248,6 +2299,9 @@ function makeShark(world, x, y) {
     wanderT: 0, wanderDir: 1, reward: 0,
     submerged: y > 0,
     _water: null,
+    phase: 0.8, // v0.28 "Day and night": the night hunter — set phenotype,
+    // not DNA. Vigor peaks when the light matches the predator's active
+    // phase; the selection pressure that sorts prey phase.
   };
 }
 
@@ -2280,6 +2334,7 @@ function makeBear(world, x, y) {
     x, y, vx: 0, vy: 0, grounded: true,
     facing: x < world.width / 2 ? 1 : -1,
     wanderT: 0, wanderDir: 1, reward: 0,
+    phase: 0.3, // v0.28: the day ambler — set phenotype, not DNA
   };
 }
 
@@ -2310,6 +2365,14 @@ export function spawnPredators(world) {
     world.predators.push(makeBear(world, bx + rng.range(-100, 100), gy));
   }
   return world.predators;
+}
+
+// v0.28 "Day and night": predator vigor — how hard a predator hunts RIGHT
+// NOW given the light and its own phase. 1.0 at perfect phase alignment,
+// 0.6 at the opposite extreme. Exported pure for testability.
+export function predatorVigor(phase, light) {
+  const p = phase ?? 0.5, l = light ?? 0.5;
+  return 0.6 + 0.8 * (1 - Math.abs(l - (1 - p)));
 }
 
 // Per-tick predator physiology and behavior. Sharks seek the nearest
@@ -2381,11 +2444,15 @@ export function tickPredators(world, dt) {
       }
       p.hunting = !!target && inWater; // the honest state reads (inspector/painter)
       p.target = inWater ? target : null;
+      // v0.28 "Day and night": the night hunter hunts at full vigor in its
+      // own phase — sluggish by day. This is the selection pressure that
+      // sorts prey phase: diurnal prey sleep through the sharks' best hour.
+      const vigor = predatorVigor(p.phase, world.light);
       if (p.hunting) {
         const dx = cx0(target) - cx0(p), dy = cy0(target) - cy0(p);
         const d = Math.hypot(dx, dy) || 1;
-        p.vx = dx / d * SHARK_SPEED;
-        p.vy = dy / d * SHARK_SPEED * 0.8;
+        p.vx = dx / d * SHARK_SPEED * vigor;
+        p.vy = dy / d * SHARK_SPEED * 0.8 * vigor;
         p.facing = dx >= 0 ? 1 : -1;
       } else {
         p.wanderT -= dt;
@@ -2393,7 +2460,7 @@ export function tickPredators(world, dt) {
           p.wanderT = 2 + world.rng.range(0, 3);
           p.wanderDir = world.rng.chance(0.5) ? -1 : 1;
         }
-        p.vx = p.wanderDir * SHARK_SPEED * 0.4;
+        p.vx = p.wanderDir * SHARK_SPEED * 0.4 * vigor;
       }
       // Movement, by regime:
       // — Out of water: one physics. The shark falls under the same
@@ -2535,7 +2602,7 @@ export function tickPredators(world, dt) {
         }
       }
       if (p.grounded) {
-        const spd = 30, r = 14;
+        const spd = 30 * predatorVigor(p.phase, world.light), r = 14; // v0.28: day ambler, sluggish at night
         p.x = cx0(p) + p.wanderDir * spd * dt;
         if (p.x < 0) { p.x = 0; p.wanderDir = 1; p.facing = 1; }
         if (p.x > world.width) { p.x = world.width; p.wanderDir = -1; p.facing = -1; }

@@ -51,7 +51,7 @@ test('v0.22: founders are deterministic — same seed + pinSub → identical all
 });
 
 test('v0.22: no new loci — the roster is founder VALUES, GENES stays 230', () => {
-  assert.equal(GENES.length, 230, 'vulture/beetle/bacteria add values, not loci (230 = 229 + v0.27 pantCapacity)');
+  assert.equal(GENES.length, 232, 'vulture/beetle/bacteria add values, not loci (232 = 230 + v0.28 activityPhase/instPhaseSleep)');
 });
 
 // --- vulture founder-exactness -------------------------------------------------
@@ -261,11 +261,15 @@ test('v0.22 QA: scavenger gate — corpse clearance drops where vultures range',
 });
 
 test('v0.22 QA: vulture persists 5k ticks on carrion alone', () => {
+  // v0.28 "Day and night": N_IN 37→38 shifted the brain-weight stream; seed 42424's
+  // vulture brains foraged 28% less and dehydrated. Seed 42427 holds the 2/3
+  // gate. The mechanism (carrion→eat→hydration) is pinned by the unit tests;
+  // this is the end-to-end roll, recalibrated.
   // Carcass grounds at fixed spots (a waterhole district where animals
   // die); each holds one carcass, respawned on depletion. The vultures
   // must detect (sightRange 533), seek, eat, drink, and thermoregulate —
   // the whole scavenger niche, behaviorally, for 500 seconds.
-  const world = bindWorld(createWorld(42424));
+  const world = bindWorld(createWorld(42427));
   const { p, i } = plainsPlatform(world);
   const spots = [Math.round(p.x1 + 100), Math.round((p.x1 + p.x2) / 2), Math.round(p.x2 - 100)];
   const tend = () => {

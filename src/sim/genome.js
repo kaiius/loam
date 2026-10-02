@@ -133,6 +133,9 @@ export const SENSE32 = [
   'falling', // v0.20 "Falling": the vestibular sense — appended, never renumbered
   'creatureSize', // v0.22 "Web of Life": relative body mass of the nearest
   // creature (−1..1, no identity — the tick never tells anyone who's who)
+  'phaseSleepiness', // v0.28 "Day and night": how strongly the body wants
+  // sleep RIGHT NOW given the light and its own activityPhase — appended,
+  // never renumbered
 ];
 // The pre-v0.17 vocabulary — family-C genes name senses against these
 // indices, which are never renumbered.
@@ -474,6 +477,23 @@ GENES.push(
 // === end GENOME v0.27 loci ==================================================
 export const SEASONS27_KEYS = new Set(GENES.slice(SEASONS27_START).map((g) => g.key));
 
+// === GENOME v0.28 "Day and night": the activity-phase trait (append-only) ===
+const DAYNIGHT28_START = GENES.length;
+GENES.push(
+  // activityPhase: the diurnal↔nocturnal axis. 0 = day-active (sleeps at
+  // night), 1 = night-active (sleeps at day). Founder 0.5 ± 0.25 — the
+  // founder population spans the axis, and selection sorts it. Read by the
+  // phaseSleepiness sense (brain.js), weighted by instPhaseSleep.
+  _f('activityPhase', 0.5),
+  // instPhaseSleep: the phase-sleepiness sense (36) → sleep (2). Founder
+  // 0.65: the reflex works on day one (the phase-divergence exit probe
+  // needs it), and evolution tunes it both ways. Rides the instinct
+  // chromosome or meiosis drops it.
+  { key: 'instPhaseSleep', kind: 'float', sense: 36, action: 2, founder: 0.65 },
+);
+// === end GENOME v0.28 loci ==================================================
+export const DAYNIGHT28_KEYS = new Set(GENES.slice(DAYNIGHT28_START).map((g) => g.key));
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
@@ -535,6 +555,8 @@ export const CHROMOSOMES = [
    'instBite',
    // v0.22.1: the hunger gate for the strike — hunger → bite
    'instHungerBite',
+   // v0.28 "Day and night": the activity-phase trait + its sleep instinct
+   'activityPhase', 'instPhaseSleep',
    ..._chrS],
   // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
   [..._chrD, ..._chrC],
@@ -614,6 +636,7 @@ const PIN_SALT_REALMS = 0x18; // v0.18 realms pass
 const PIN_SALT_HANDS = 0x20; // v0.20 hands pass
 const PIN_SALT_WEB22 = 0x22; // v0.22 web-of-life pass (instBite)
 const PIN_SALT_SEASONS = 0x27; // v0.27 seasons pass (pantCapacity)
+const PIN_SALT_DAYNIGHT = 0x28; // v0.28 day/night pass (activityPhase, instPhaseSleep)
 export function randomGenome(rng, opts = {}) {
   // opts.pinSub (number): when set, the language (v0.16), evo-devo (v0.17),
   // realms (v0.18), hands/falling (v0.20), web-of-life (v0.22) and seasons
@@ -662,7 +685,8 @@ export function randomGenome(rng, opts = {}) {
   const isNewFalling = (k) => FALLING20_KEYS.has(k);
   const isNewWeb22 = (k) => WEB22_KEYS.has(k);
   const isNew27 = (k) => SEASONS27_KEYS.has(k);
-  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k);
+  const isNew28 = (k) => DAYNIGHT28_KEYS.has(k);
+  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k);
   for (const gene of GENES) {
     if (gene.key.startsWith('lex') || isNewer(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
@@ -692,7 +716,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h3 = 0x18ea1d;
   for (const gene of GENES) {
-    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key)) continue;
+    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key)) continue;
     for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
   }
   const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
@@ -708,7 +732,7 @@ export function randomGenome(rng, opts = {}) {
   // falling gene draws after the hands genes, deterministically.
   let h4 = 0x20a05;
   for (const gene of GENES) {
-    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key)) continue;
+    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key)) continue;
     for (const a of alleles[gene.key]) h4 = (Math.imul(h4, 31) + Math.floor(a * 1e9)) | 0;
   }
   const handsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_HANDS) : h4 >>> 0);
@@ -721,7 +745,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h5 = 0x22022;
   for (const gene of GENES) {
-    if (isNewWeb22(gene.key) || isNew27(gene.key)) continue;
+    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key)) continue;
     for (const a of alleles[gene.key]) h5 = (Math.imul(h5, 31) + Math.floor(a * 1e9)) | 0;
   }
   const web22Rng = createRng(pinned ? hashPin(pinSub, PIN_SALT_WEB22) : h5 >>> 0);
@@ -734,13 +758,26 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h6 = 0x27027;
   for (const gene of GENES) {
-    if (isNew27(gene.key)) continue;
+    if (isNew27(gene.key) || isNew28(gene.key)) continue;
     for (const a of alleles[gene.key]) h6 = (Math.imul(h6, 31) + Math.floor(a * 1e9)) | 0;
   }
   const seasonsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SEASONS) : h6 >>> 0);
   for (const gene of GENES) {
     if (!isNew27(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, seasonsRng), randomAllele(gene, seasonsRng)];
+    marks[gene.key] = 1.0;
+  }
+  // v0.28 "Day and night": activityPhase + instPhaseSleep draw from their
+  // own sub-stream in pass 7 — new loci never shift the main RNG sequence.
+  let h7 = 0x28028;
+  for (const gene of GENES) {
+    if (isNew28(gene.key)) continue;
+    for (const a of alleles[gene.key]) h7 = (Math.imul(h7, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const daynightRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_DAYNIGHT) : h7 >>> 0);
+  for (const gene of GENES) {
+    if (!isNew28(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, daynightRng), randomAllele(gene, daynightRng)];
     marks[gene.key] = 1.0;
   }
   // v0.18: allele overrides — applied after the draws, so a sweep can pin
