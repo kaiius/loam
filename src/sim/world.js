@@ -8,7 +8,7 @@ import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.j
 import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
 import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, regionAt, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
 import { createClimate, initClimateFromPainted, initClimateFromPhysical, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, seasonBreedMul, WEATHER_COL_W, NC } from './weather.js';
-import { rollLayout, computeClimbLinks, findRegion, ZONE_KEYS } from './worldgen.js';
+import { rollLayout, canonicalLayout, computeClimbLinks, findRegion, ZONE_KEYS } from './worldgen.js';
 
 // v0.18: the biome map is the world's geography now — re-export its API so
 // world.js stays the sim's facade.
@@ -39,8 +39,11 @@ export function createWorld(seed = 1, opts = {}) {
   // stream is its own (never world.rng), so founder genomes and the main
   // stream's sequence are untouched. opts.size scales the world (default
   // 1 = the painted 4800px); zone widths and cluster counts scale with it.
+  // opts.canonical: use the v1 painted layout (for tests pinning v1 behavior).
   const size = opts.size || 1;
-  const { layout } = rollLayout(seed, size);
+  const { layout } = opts.canonical
+    ? { layout: canonicalLayout(size) }
+    : rollLayout(seed, size);
   // v0.28 "Day and night": DAY length as a world parameter (ticks per day,
   // reported). Default 3000 = the historical 300s day at 10 ticks/s.
   const dayTicks = (opts.dayTicks > 0 ? opts.dayTicks : DAY_TICKS_DEFAULT) | 0;
@@ -1063,8 +1066,7 @@ export const LITTER_RATE = 0.004; // soil-waste per second per plant at growthRa
 // is the creature agent's file; the switch achieves the neutralization here.
 export function wasteOdorOf(world, x) {
   if (world.noFouling) return 0;
-  const soil = world.soil;
-  const s = soil && soil[biomeKeyAt(x)];
+  const s = soilAt(world, x);
   return s ? Math.min(1, s.waste / WASTE_ODOR_SCALE) : 0;
 }
 
@@ -1081,12 +1083,12 @@ export function excrete(c, world, dt) {
 export function tickSoil(world, dt) {
   if (world.noFouling) return; // §13.7: the contamination-neutralize switch
   if (!world.soil) return;
-  // v2: soil pools keyed by region id — iterate the pools directly.
+  // v2: soil pools keyed by region id — iterate entries (key, pool).
   // v1: keyed by the 8 biome keys.
-  const pools = (world.layout && !world.layout.canonical)
-    ? Object.values(world.soil)
-    : BIOMES.map((b) => world.soil[b.key]).filter(Boolean);
-  for (const s of pools) {
+  const entries = (world.layout && !world.layout.canonical)
+    ? Object.entries(world.soil)
+    : BIOMES.map((b) => [b.key, world.soil[b.key]]).filter(([, s]) => s);
+  for (const [key, s] of entries) {
     // Decomposition: raw waste becomes fertility — at the rate the
     // zone's bacteria set (v0.22 "Web of Life": the decomposer layer is
     // living; at founder biomass the multiplier is exactly 1.0, so all
@@ -1094,7 +1096,7 @@ export function tickSoil(world, dt) {
     // v0.24: the conversion is lossy (SOIL_CONV_EFF) — the remainder is
     // respired as CO2, a LABELED boundary loss (Paul's 70/30 compost split,
     // generalized). Nothing vanishes unlabeled.
-    const conv = Math.min(s.waste, s.waste * SOIL_DECAY * decompMultiplier(world, b.key) * dt);
+    const conv = Math.min(s.waste, s.waste * SOIL_DECAY * decompMultiplier(world, key) * dt);
     s.waste -= conv;
     const fertAdd = conv * SOIL_CONV_EFF;
     const fertSpace = Math.max(0, SOIL_FERT_MAX - s.fertility);
@@ -1173,7 +1175,20 @@ export function shedLitter(world, dt) {
 // Plant growth multiplier from soil fertility. Exported for tests and UI.
 export function soilGrowthMul(world, zoneKey) {
   const soil = world.soil || {};
-  const s = soil[zoneKey];
+  // v2: zoneKey may be a label ('jungle') — resolve to the largest region
+  // with that label. v1: zoneKey is the biome key directly.
+  let key = zoneKey;
+  if (world.layout && !world.layout.canonical && typeof zoneKey === 'string') {
+    let best = null, bestW = -1;
+    for (const r of world.layout.regions) {
+      if (r.label === zoneKey) {
+        const w = r.x1 - r.x0;
+        if (w > bestW) { bestW = w; best = r; }
+      }
+    }
+    if (best) key = best.id;
+  }
+  const s = soil[key];
   const f = s ? s.fertility : 0.5;
   return 0.7 + 0.6 * f;
 }

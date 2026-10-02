@@ -29,7 +29,8 @@ function climWorld(seed = 7, nPlants = 0) {
 }
 
 test('v0.23: initial climate reproduces the painted map (the migration pin)', () => {
-  const world = climWorld(7);
+  // v1 pin: uses the canonical painted layout.
+  const world = bindWorld(createWorld(7, { canonical: true }));
   for (let i = 0; i < 8; i++) {
     const cx = biomeCenterX(i);
     const painted = BIOMES[i].key;
@@ -103,11 +104,17 @@ test('v0.23: jungle out-rains desert on ≥2/3 seeds (Paul §5.2 shape)', () => 
     // 12 sim-hours of sky: 300 ticks × 1s... use 600 × 2s for speed parity.
     for (let t = 0; t < 600; t++) tickClimate(world, 2, world.climateGeo);
     const cl = world.climate;
+    // v2: sum rain over actual jungle/desert regions (v1: hardcoded ranges).
+    const inLabel = (cx, label) => {
+      if (world.layout.canonical) return label === 'jungle' ? (cx >= 1200 && cx < 1800) : (cx >= 2400 && cx < 3000);
+      const r = world.layout.regions.find(r => cx >= r.x0 && cx < r.x1);
+      return r && r.label === label;
+    };
     let jungleRain = 0, desertRain = 0;
     for (let i = 0; i < WEATHER_COLS; i++) {
       const cx = (i + 0.5) * WEATHER_COL_W;
-      if (cx >= 1200 && cx < 1800) jungleRain += cl.cols[i].rain;
-      if (cx >= 2400 && cx < 3000) desertRain += cl.cols[i].rain;
+      if (inLabel(cx, 'jungle')) jungleRain += cl.cols[i].rain;
+      if (inLabel(cx, 'desert')) desertRain += cl.cols[i].rain;
     }
     if (jungleRain > desertRain * 1.5) jungleWins++;
   }
@@ -228,7 +235,10 @@ test('v0.25: volcanic vents are seeded heat sources with distance falloff', () =
   assert.equal(a.climate.vents.length, VENT_COUNT, `${VENT_COUNT} vents per world`);
   for (const v of a.climate.vents) {
     assert.ok(a.climateGeo.waterFrac(v.x) < 0.25, `vent @${v.x.toFixed(0)} sits on land`);
-    assert.ok(v.x >= 60 && v.x <= 1140, `vent @${v.x.toFixed(0)} in the geothermal zone (arctic/mountains)`);
+    // v2: vents in arctic/mountains regions (v1: x 60-1140).
+    const vr = a.layout.regions.find(r => v.x >= r.x0 && v.x < r.x1);
+    const inGeo = a.layout.canonical ? (v.x >= 60 && v.x <= 1140) : (vr && (vr.label === 'arctic' || vr.label === 'mountains'));
+    assert.ok(inGeo, `vent @${v.x.toFixed(0)} in the geothermal zone (arctic/mountains)`);
     assert.ok(v.dT > 0.2 && v.dT < 0.35, `vent dT sane: ${v.dT}`);
   }
   // Heating with falloff: flat field, vents on.

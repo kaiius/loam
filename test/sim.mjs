@@ -13,7 +13,7 @@ import { groundYAt, waterAt } from '../src/sim/biomes.js';
 import { PLANT_MASS, LITTER_FRAC } from '../src/sim/ledger.js';
 import { SvgCtx } from './svg-shim.mjs';
 import { drawCreature } from '../src/render/painter.js';
-import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams, speciesOverview, dropWindfall, WINDFALL_P, WINDFALL_ROT, heatStressMul } from '../src/sim/world.js';
+import { createWorld, bindWorld, populate, populateGenesis, tickWorld, addFood, layEgg, addPebble, addStick, addPlant, addHerb, disperseSeed, recordLineage, LINEAGE_TRAITS, zoneAt, ZONES, biomeKeyAt, BIOMES, BIOME_FRUIT_MUL, climbLinksFrom, genomeHash, checkNovelGenome, recordFounderMeans, computeDivergence, DIVERGENCE_CREATURE_TRAITS, emitCall, callsHeardBy, soundOcclusion, RIDGE_SHADOW, computeSpecies, hybridViability, HYBRID_THRESHOLD, SPECIES_DIST, excrete, tickSoil, soilGrowthMul, wasteOdorOf, WASTE_FRACTION, EXCRETE_RATE, SOIL_DECAY, SOIL_LEACH, SOIL_FERT_MAX, WASTE_ODOR_SCALE, CONTAM_ILLNESS, compostRot, shedLitter, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, LITTER_RATE, MINERAL_TYPES, addMineral, noteDeath, CORPSE_ROT, platformIndexAt, digAt, spawnBuriedFood, spawnMobileFood, pinSubStreams, speciesOverview, dropWindfall, WINDFALL_P, WINDFALL_ROT, heatStressMul, soilAt } from '../src/sim/world.js';
 import { tempAt } from '../src/sim/weather.js';
 import {
   createMemory, writeEpisode, shouldWrite, recall, consolidate,
@@ -158,11 +158,13 @@ test('v0.19: ridge sound shadow — solid earth eats the ray that punches throug
   const foot = groundYAt((ridge.x1 + ridge.x2) / 2, world.layout) ?? ridge.y + 120;
   const ry = (ridge.y + foot) / 2;
   // Ground-level ray across the ridge: passes through the body → shadowed.
-  const shadowed = soundOcclusion(world, 1900, ry, 2300, ry);
+  // v2: aim at the ridge's actual x-range (v1: hardcoded 1900,2300).
+  const rx1 = ridge.x1 - 100, rx2 = ridge.x2 + 100;
+  const shadowed = soundOcclusion(world, rx1, ry, rx2, ry);
   // Same ray with the solid flag lifted: only slab/foliage apply → louder.
   const wasSolid = ridge.solid;
   ridge.solid = false;
-  const open = soundOcclusion(world, 1900, ry, 2300, ry);
+  const open = soundOcclusion(world, rx1, ry, rx2, ry);
   ridge.solid = wasSolid;
   assert.ok(shadowed < open, `ridge shadows the ray (${shadowed.toFixed(3)} < ${open.toFixed(3)})`);
   assert.ok(Math.abs(shadowed - open * RIDGE_SHADOW) < 1e-9, `shadow factor is exactly RIDGE_SHADOW (${RIDGE_SHADOW})`);
@@ -183,11 +185,14 @@ test('v0.19: no shadow when the caller stands on the ridge — the ray leaves al
 test('v0.19: desert rock outcrops cast shadows too', () => {
   const world = bindWorld(createWorld(7));
   const rocks = world.platforms.filter((p) => p.solid && p.kind === 'rock');
-  assert.equal(rocks.length, 3, 'three solid outcrops in the desert');
-  // Ray across the middle outcrop (x 2650–2800, top 700, foot 830) at y=820.
-  const shadowed = soundOcclusion(world, 2600, 820, 2900, 820);
+  // v1: three solid outcrops in the desert. v2: at least one rock.
+  assert.ok(rocks.length >= 1, `solid outcrops exist (found ${rocks.length})`);
+  // Ray across the first outcrop at mid-body height.
+  const rk = rocks[0];
+  const ry = rk.y + 80;
+  const shadowed = soundOcclusion(world, rk.x1 - 50, ry, rk.x2 + 50, ry);
   for (const r of rocks) r.solid = false;
-  const open = soundOcclusion(world, 2600, 820, 2900, 820);
+  const open = soundOcclusion(world, rk.x1 - 50, ry, rk.x2 + 50, ry);
   for (const r of rocks) r.solid = true;
   assert.ok(shadowed < open, `outcrop shadows the ray (${shadowed.toFixed(3)} < ${open.toFixed(3)})`);
 });
@@ -1442,21 +1447,25 @@ test('v0.11: plants are tagged with their biome zone', () => {
   for (const p of world.plants) {
     assert.ok(keys.has(p.zone), `plant zone ${p.zone}`);
   }
-  // The legacy battery spawns in the jungle — all flora carries the jungle key.
-  assert.ok(world.plants.every((p) => p.zone === 'jungle'), 'legacy flora is jungle-tagged');
+  // The legacy battery spawns in the founder region — all flora carries
+  // the founder label (v1: jungle; v2: the founder region's label).
+  const flabel = world.layout.canonical ? 'jungle' : world.layout.regions[world.layout.founder.regionId].label;
+  assert.ok(world.plants.every((p) => p.zone === flabel), `legacy flora is ${flabel}-tagged`);
 });
 
 test('v0.11: arid fruiting is slower than verdant (scarcity is zonal)', () => {
   const world = bindWorld(createWorld(52));
-  // Two mature plants, one per zone, forced to fruit now. v0.18: the old
-  // verdant/arid cores are jungle/desert at the mapped coordinates.
+  // Two mature plants, one per zone, forced to fruit now. v2: find actual
+  // jungle and desert regions (v1: the mapped coordinates).
   world.plants.length = 0;
+  const jx = world.layout.canonical ? 1400 : (world.layout.regions.find(r => r.label === 'jungle')?.cx ?? 1400);
+  const dx = world.layout.canonical ? 2700 : (world.layout.regions.find(r => r.label === 'desert')?.cx ?? 2700);
   const mk = (x) => {
-    const p = { kind: 'plant', id: 1, x, platformIndex: 0, y: 800, growth: 1, fruitTimer: 0, sway: 0, zone: biomeKeyAt(x) };
+    const p = { kind: 'plant', id: 1, x, platformIndex: 0, y: 800, growth: 1, fruitTimer: 0, sway: 0, zone: biomeKeyAt(x, 800, { layout: world.layout }) };
     world.plants.push(p);
     return p;
   };
-  const v = mk(1400), a = mk(2700);
+  const v = mk(jx), a = mk(dx);
   // Sample the interval the tick assigns: run one tick and read fruitTimer.
   tickWorld(world, 0.1);
   // Both fruited (timer reset to a fresh interval); arid interval must be larger.
@@ -3132,13 +3141,12 @@ test('v0.14: excretion moves gut waste into the zone soil', () => {
   const world = bindWorld(createWorld(14102));
   populate(world);
   const c = addTestCreature(world, 200); // verdant zone
-  const zone = zoneAt(c.x).key;
-  const soilBefore = world.soil[zone].waste;
+  const soilBefore = soilAt(world, c.x).waste;
   c.gut = 1;
   excrete(c, world, 1.0);
   const expected = Math.min(1, 1 * EXCRETE_RATE * 1.0);
   assert.ok(Math.abs(c.gut - (1 - expected)) < 1e-9, `gut drained proportionally, got ${c.gut}`);
-  assert.ok(world.soil[zone].waste - soilBefore > 0, 'soil waste grew');
+  assert.ok(soilAt(world, c.x).waste - soilBefore > 0, 'soil waste grew');
   // Full clearance never overshoots — the gut can't go negative.
   c.gut = 0.01;
   excrete(c, world, 1000);
@@ -3147,7 +3155,7 @@ test('v0.14: excretion moves gut waste into the zone soil', () => {
 
 test('v0.14: decomposition converts waste to fertility; leaching relaxes it', () => {
   const world = bindWorld(createWorld(14103));
-  const s = world.soil.jungle;
+  const s = soilAt(world, world.layout.regions.find(r => r.label === 'jungle').cx);
   s.waste = 10; s.fertility = 0.5;
   tickSoil(world, 10); // dt=10s: conv = 10 * min(1, 0.03*10) = 3 (v0.24: smaller dt — fast leaching would erase the signal in one 100s tick)
   assert.ok(s.waste < 10, `waste decomposed, now ${s.waste.toFixed(3)}`);
@@ -3162,9 +3170,10 @@ test('v0.14: decomposition converts waste to fertility; leaching relaxes it', ()
 test('v0.14: fertility scales plant growth around a neutral baseline', () => {
   const world = bindWorld(createWorld(14104));
   assert.equal(soilGrowthMul(world, 'jungle'), 1.0, '0.5 fertility is neutral');
-  world.soil.jungle.fertility = 0;
+  const jr = world.layout.regions.filter(r => r.label === 'jungle').sort((a,b) => (b.x1-b.x0)-(a.x1-a.x0))[0];
+  soilAt(world, jr.cx).fertility = 0;
   assert.ok(soilGrowthMul(world, 'jungle') < 1.0, 'exhausted soil stalls growth');
-  world.soil.jungle.fertility = SOIL_FERT_MAX;
+  soilAt(world, jr.cx).fertility = SOIL_FERT_MAX;
   assert.ok(soilGrowthMul(world, 'jungle') > 1.0, 'rich soil speeds growth');
 });
 
@@ -3184,7 +3193,7 @@ test('v0.14: the full loop — a meal eventually feeds the plants', () => {
   const growthBefore = world.plants.filter(p => p.zone === zone).reduce((a, p) => a + (p.growth || 0), 0);
   // Let the cycle run: excretion → soil waste → decomposition → fertility → plant growth.
   for (let i = 0; i < 600; i++) tickWorld(world, 0.5);
-  const s = world.soil[zone];
+  const s = soilAt(world, c.x);
   assert.ok(s.waste > 0 || s.fertility > 0, `soil received the waste (waste ${s.waste.toFixed(3)}, fertility ${s.fertility.toFixed(3)})`);
   // v0.24: growth is donor-limited — the plants drink the fertility, so the
   // assertion is that they GREW (the meal fed them), not that fertility
@@ -3201,10 +3210,10 @@ test('v0.14: disgust — wasteOdor sense smells the soil', () => {
   const c = addTestCreature(world, 200);
   const clean = gatherSenses(c, world);
   assert.equal(clean.wasteOdor, 0, 'clean ground has no odor');
-  world.soil[zoneAt(c.x).key].waste = WASTE_ODOR_SCALE / 2;
+  soilAt(world, c.x).waste = WASTE_ODOR_SCALE / 2;
   const half = gatherSenses(c, world);
   assert.ok(Math.abs(half.wasteOdor - 0.5) < 1e-9, `half stink reads 0.5, got ${half.wasteOdor}`);
-  world.soil[zoneAt(c.x).key].waste = WASTE_ODOR_SCALE * 3;
+  soilAt(world, c.x).waste = WASTE_ODOR_SCALE * 3;
   const full = gatherSenses(c, world);
   assert.equal(full.wasteOdor, 1, 'odor saturates at 1');
 });
@@ -3247,7 +3256,7 @@ test('v0.14: disgust — food eaten on fouled ground contaminates', () => {
   const world = bindWorld(createWorld(14112));
   populate(world);
   const c = addTestCreature(world, 200);
-  world.soil[zoneAt(c.x).key].waste = WASTE_ODOR_SCALE; // full stink
+  soilAt(world, c.x).waste = WASTE_ODOR_SCALE; // full stink
   addFood(world, c.x, c.platformIndex, 'fruit', 1, 0, { plantId: 0, bitterness: 0, nutrition: 1 });
   c._senses = { _food: world.foods[world.foods.length - 1] };
   c.biochem.illness = 0;
@@ -3268,7 +3277,7 @@ test('v0.14: disgust — medicinal leaves still heal on fouled ground', () => {
   const world = bindWorld(createWorld(14114));
   populate(world);
   const c = addTestCreature(world, 200);
-  world.soil[zoneAt(c.x).key].waste = WASTE_ODOR_SCALE; // full stink
+  soilAt(world, c.x).waste = WASTE_ODOR_SCALE; // full stink
   addFood(world, c.x, c.platformIndex, 'leaf', 1, 0, {});
   c._senses = { _food: world.foods[world.foods.length - 1] };
   c.biochem.illness = 0.8;
@@ -3427,9 +3436,9 @@ test('chronicle: an empty young world builds without crashing', () => {
 test('v0.14.1: rot composts — expired food mass enters the soil, not the void', () => {
   const world = bindWorld(createWorld(14110));
   populate(world);
-  const x = 2700; // desert — plant and rot in the same biome
-  const zone = biomeKeyAt(x);
-  const s = world.soil[zone];
+  const desertR = world.layout.regions.find(r => r.label === 'desert');
+  const x = desertR ? desertR.cx : 2700; // desert — plant and rot in the same biome
+  const s = soilAt(world, x);
   s.waste = 0; s.fertility = 0.5;
   // A corpse: 1.2 of remains at nutrition 1, rotting now.
   addFood(world, x, 26, 'corpse', 1.2, 0.01, { nutrition: 1 });
