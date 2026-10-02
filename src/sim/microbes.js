@@ -40,10 +40,10 @@ function clamp(v, lo, hi) {
 
 // Temperature pace per zone: 0.15 (arctic) → 1.0 (desert interior).
 // Uses the zone center at y=500, where the soil lives.
-export function zoneTempK(zoneKey) {
+export function zoneTempK(zoneKey, layout = null) {
   const i = BIOMES.findIndex((b) => b.key === zoneKey);
   if (i < 0) return 0.5;
-  const T = ambientTemp(biomeCenterX(i), 500); // 0..1
+  const T = ambientTemp(biomeCenterX(i, layout), 500, layout); // 0..1
   return 0.15 + 0.85 * T;
 }
 
@@ -73,7 +73,7 @@ export function tickMicrobes(world, dt) {
     const s = world.soil[b.key];
     if (!s) continue;
     if (s.bacteria === undefined) s.bacteria = BACT_FOUNDER; // old saves / stub worlds
-    const T = zoneTempK(b.key);
+    const T = zoneTempK(b.key, world.layout);
     const waste = s.waste || 0;
     // Monod growth on waste, temperature-scaled maintenance, and a slow
     // rain of immigrant spores — sterilized soil recolonizes, eventually.

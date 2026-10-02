@@ -210,13 +210,13 @@ export function refreshWaterState(c, world) {
   const cx = cx0(c);
   const cy = Number.isFinite(c.y) ? c.y : 800;
   let w = null;
-  try { w = waterAt(cx, cy); } catch (e) { w = null; }
+  try { w = waterAt(cx, cy, world.layout); } catch (e) { w = null; }
   c._water = w;
   c.submerged = !!w && Number.isFinite(w.surfaceY) && cy > w.surfaceY + SUBMERGE_MARGIN;
   let near = !!w;
   if (!near) {
     try {
-      near = !!waterAt(cx - WATER_NEAR_RANGE, cy) || !!waterAt(cx + WATER_NEAR_RANGE, cy);
+      near = !!waterAt(cx - WATER_NEAR_RANGE, cy, world.layout) || !!waterAt(cx + WATER_NEAR_RANGE, cy, world.layout);
     } catch (e) { near = false; }
   }
   c._waterNear = near;
@@ -240,8 +240,8 @@ export function scaledHomeDist(c, world) {
   let dist = 0;
   let ok = false;
   try {
-    const hb = biomeAt(c.homeX, Number.isFinite(c.y) ? c.y : 800);
-    const bcx = biomeCenterX(hb);
+    const hb = biomeAt(c.homeX, Number.isFinite(c.y) ? c.y : 800, world.layout);
+    const bcx = biomeCenterX(hb, world.layout);
     if (Number.isFinite(bcx)) { dist = Math.abs(cx - bcx); ok = true; }
   } catch (e) { ok = false; }
   if (!ok || !Number.isFinite(dist)) return clamp01(base);
@@ -1468,7 +1468,7 @@ function executeAction(c, world, dt, s) {
       if (w) {
         adjacent = c.y >= w.surfaceY - DRINK_REACH;
       } else {
-        try { adjacent = !!waterAt(c.x, c.y + DRINK_REACH); } catch (e) { adjacent = false; }
+        try { adjacent = !!waterAt(c.x, c.y + DRINK_REACH, world.layout); } catch (e) { adjacent = false; }
       }
       if (adjacent) {
         c._drank = 1; // consumed by tickBiochem as ctx.drank
@@ -1836,8 +1836,8 @@ export function updateCreature(c, world, dt) {
   // basking were set by this tick's action; sailDump is the body plan.
   let ambTemp = 0.5, ambHeat = 0;
   try {
-    ambTemp = ambientTemp(c.x, c.y);
-    ambHeat = ambientHeat(c.x, c.y);
+    ambTemp = ambientTemp(c.x, c.y, world.layout);
+    ambHeat = ambientHeat(c.x, c.y, world.layout);
   } catch (e) { /* chemistry defaults cover it */ }
   // v0.23 "Weather": the creature feels the GENERATED temperature field, not
   // the painted biome map. tempAt is on the same 0..1/0.5-neutral scale the
@@ -2269,19 +2269,19 @@ export function spawnPredators(world) {
   const sharkBiomes = [7, 7, 7, 6, 5]; // deep×3, archipelago, shallows
   for (const bi of sharkBiomes) {
     let sx = null;
-    try { sx = biomeCenterX(bi); } catch (e) { sx = null; }
+    try { sx = biomeCenterX(bi, world.layout); } catch (e) { sx = null; }
     if (!Number.isFinite(sx)) sx = [4500, 4400, 4600, 3900, 3300][sharkBiomes.indexOf(bi)] || 4500;
     let w = null;
-    try { w = waterAt(sx, 800); } catch (e) { w = null; }
+    try { w = waterAt(sx, 800, world.layout); } catch (e) { w = null; }
     const sy = w && Number.isFinite(w.surfaceY) ? w.surfaceY + 120 : 980;
     world.predators.push(makeShark(world, sx + rng.range(-80, 80), sy));
   }
   for (let i = 0; i < 2; i++) {
     let bx = null;
-    try { bx = biomeCenterX(0); } catch (e) { bx = null; }
+    try { bx = biomeCenterX(0, world.layout); } catch (e) { bx = null; }
     if (!Number.isFinite(bx)) bx = 300;
     let gy = 800;
-    try { gy = groundYAt(bx, 800); } catch (e) { gy = 800; }
+    try { gy = groundYAt(bx, world.layout); } catch (e) { gy = 800; }
     if (!Number.isFinite(gy)) gy = 800;
     world.predators.push(makeBear(world, bx + rng.range(-100, 100), gy));
   }
@@ -2302,7 +2302,7 @@ export function tickPredators(world, dt) {
     if (p.kind === 'shark') {
       // Water state (same literal formula as creatures).
       let w = null;
-      try { w = waterAt(cx0(p), cy0(p)); } catch (e) { w = null; }
+      try { w = waterAt(cx0(p), cy0(p), world.layout); } catch (e) { w = null; }
       p._water = w;
       const inWater = !!w && p.y > w.surfaceY - 4;
       p.submerged = !!w && p.y > w.surfaceY + SUBMERGE_MARGIN;
@@ -2358,8 +2358,8 @@ export function tickPredators(world, dt) {
         let nx = p.x + p.vx * dt;
         let ny = p.y + p.vy * dt;
         let gyDest = null, gyHere = null;
-        try { gyDest = groundYAt(nx); } catch (e) { gyDest = null; }
-        try { gyHere = groundYAt(p.x); } catch (e) { gyHere = null; }
+        try { gyDest = groundYAt(nx, world.layout); } catch (e) { gyDest = null; }
+        try { gyHere = groundYAt(p.x, world.layout); } catch (e) { gyHere = null; }
         const earthAt = (gy) => gy !== null && gy !== undefined && Number.isFinite(gy);
         if (earthAt(gyDest) && ny > gyDest) {
           nx = p.x; // hold x, turn around
@@ -2393,7 +2393,7 @@ export function tickPredators(world, dt) {
       }
       // Physiology: the full chemistry context, sharks included.
       let ambTemp = 0.5;
-      try { ambTemp = ambientTemp(p.x, p.y); } catch (e) { /* default */ }
+      try { ambTemp = ambientTemp(p.x, p.y, world.layout); } catch (e) { /* default */ }
       if (!Number.isFinite(ambTemp)) ambTemp = 0.5;
       const before = b.health;
       tickBiochem(b, p.pheno, dt, {
@@ -2460,7 +2460,7 @@ export function tickPredators(world, dt) {
       // (0.5+fur)×(1.2−heatTol). Arctic (ambient 0) → load 0, survives;
       // jungle (0.55) → dead ~133s; desert (1.0) → dead ~24s.
       let ambTemp = 0.5;
-      try { ambTemp = ambientTemp(p.x, p.y); } catch (e) { /* default */ }
+      try { ambTemp = ambientTemp(p.x, p.y, world.layout); } catch (e) { /* default */ }
       if (!Number.isFinite(ambTemp)) ambTemp = 0.5;
       const fur = p.pheno.furInsulation ?? 0;
       if (fur >= 1) {

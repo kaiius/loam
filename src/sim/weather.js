@@ -23,6 +23,7 @@ import { createRng } from './rng.js';
 
 export const WEATHER_COL_W = 100;
 export const WEATHER_COLS = 48; // WORLD_W 4800 / 100
+export function NC(climate) { return (climate && climate.ncols) || WEATHER_COLS; }
 
 // Canonical climate per painted biome — the INITIAL condition only.
 // T is on the biochem's ambient scale (0..1, 0.5 neutral): the experienced
@@ -44,20 +45,24 @@ export const CLIMATE_SEED = {
 
 // --- field construction -------------------------------------------------
 
-export function createClimate(seed) {
+// v0.26: the column count scales with world size (100px columns across the
+// generated width). climate.ncols is the live count; the NC() helper reads
+// it with a fallback to WEATHER_COLS for hand-built climates.
+export function createClimate(seed, ncols = WEATHER_COLS) {
   const cols = [];
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < ncols; i++) {
     const cx = (i + 0.5) * WEATHER_COL_W;
     cols.push({ T: 0.5, vapor: 0.3, cloud: 0.2, soil: 0.4, windU: baseWindU(cx), rain: 0 });
   }
   return {
     cols,
+    ncols,
     // v0.9 decorRng lesson, v0.14 teacherRng lesson: the sky draws from its
     // OWN pinned sub-stream. Weather must never shift the main stream's
     // sequence (founder genomes, brain rolls, etc.).
     rng: createRng((seed * 1009 + 5) >>> 0),
-    baseT: new Array(WEATHER_COLS).fill(0.5), // slow climate baseline per column
-    wet: new Array(WEATHER_COLS).fill(1.0),   // biome wetness factor (saturation)
+    baseT: new Array(ncols).fill(0.5), // slow climate baseline per column
+    wet: new Array(ncols).fill(1.0),   // biome wetness factor (saturation)
     lightning: [], // { x, t } — physical events, chronicle-logged
     runoff: 0,     // labeled boundary sink: rain runoff to the sea
     drainage: 0,   // labeled boundary sink: soil drainage to the water table
@@ -85,27 +90,31 @@ export function createClimate(seed) {
 // the cloud/wind realization, not the physics). Deterministic per seed.
 //
 // Placement (a founder-economics decision): vents live in the GEOTHERMAL
-// ZONE — arctic + mountains, x < 1200 (biomeAt(x) = floor(x/600): 0 =
-// arctic, 1 = mountains — the volcanic arc and the geothermal north,
-// physically where vents belong). The lowland founder biomes
-// (jungle/plains/desert) stay vent-free: the v0.22 QA pins establish the
-// plains as the vultures' thermal home (ambient 0.6), and a vent in the
+// ZONE — arctic + mountains (the volcanic arc and the geothermal north,
+// physically where vents belong). v0.26: the zone is read from the
+// generated layout (60px insets, verbatim at size 1); the lowland founder
+// biomes (jungle/plains/desert) stay vent-free: the v0.22 QA pins establish
+// the plains as the vultures' thermal home (ambient 0.6), and a vent in the
 // middle of a founder platform would rewrite that biome's thermal regime.
 // Land only (waterFrac < 0.25), ≥500px apart, 2 per world.
 export const VENT_COUNT = 2;
 export const VENT_SIGMA = 250; // px — the warm apron around a vent
 export const VENT_MIN_SEP = 500;
-const VENT_ZONE_LO = 60, VENT_ZONE_HI = 1140;
 const VENT_SEED_XOR = 0x9e3779b9;
 
 export function placeVents(world) {
   const cl = world.climate;
   const rng = createRng((world.seed >>> 0) ^ VENT_SEED_XOR);
   const geo = world.climateGeo;
+  // v0.26: geothermal zone = arctic + mountains from the layout.
+  const lz = world.layout ? world.layout.zones : null;
+  const size = world.layout ? world.layout.size : 1;
+  const lo = lz ? lz[0].x0 + 60 * size : 60;
+  const hi = lz ? lz[1].x1 - 60 * size : 1140;
   cl.vents = [];
   let guard = 0;
   while (cl.vents.length < VENT_COUNT && guard++ < 300) {
-    const x = VENT_ZONE_LO + rng.next() * (VENT_ZONE_HI - VENT_ZONE_LO);
+    const x = lo + rng.next() * (hi - lo);
     if (geo && geo.waterFrac && geo.waterFrac(x) >= 0.25) continue;
     if (cl.vents.some((v) => Math.abs(v.x - x) < VENT_MIN_SEP)) continue;
     cl.vents.push({ x, dT: 0.22 + rng.next() * 0.08, sigma: VENT_SIGMA });
@@ -122,7 +131,7 @@ export function placeVents(world) {
 export const THERMAL_DIFF_D = 0.004; // /s — slow
 
 export function diffuseT(climate, dt) {
-  const n = WEATHER_COLS;
+  const n = NC(climate);
   const k = Math.min(0.4, THERMAL_DIFF_D * dt);
   const d = new Array(n).fill(0);
   for (let i = 0; i < n; i++) {
@@ -137,7 +146,7 @@ export function diffuseT(climate, dt) {
 // keyAt). After this, physics owns the field.
 export function initClimateFromPainted(climate, keyAt) {
   const rng = climate.rng;
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(climate); i++) {
     const cx = (i + 0.5) * WEATHER_COL_W;
     const k = keyAt(cx, 800) || 'jungle';
     const s = CLIMATE_SEED[k] || CLIMATE_SEED.jungle;
@@ -155,7 +164,7 @@ export function initClimateFromPainted(climate, keyAt) {
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
 export function colAt(climate, x) {
-  const i = Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(x / WEATHER_COL_W)));
+  const i = Math.max(0, Math.min(NC(climate) - 1, Math.floor(x / WEATHER_COL_W)));
   return climate.cols[i];
 }
 
@@ -236,9 +245,9 @@ export function tickClimate(world, dt, geo) {
   const diurnal = Math.sin(tod * Math.PI * 2 - Math.PI / 2) * 0.04; // warm afternoon
 
   // Biomass per column for evapotranspiration ∝ biomass.
-  const biomass = new Array(WEATHER_COLS).fill(0);
+  const biomass = new Array(NC(cl)).fill(0);
   for (const p of world.plants) {
-    const i = Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(p.x / WEATHER_COL_W)));
+    const i = Math.max(0, Math.min(NC(cl) - 1, Math.floor(p.x / WEATHER_COL_W)));
     biomass[i] += (p.growth || 0);
   }
 
@@ -252,12 +261,12 @@ export function tickClimate(world, dt, geo) {
   // once from geography (deterministic, no rng draws).
   if (!cl.thermalMass) {
     cl.thermalMass = [];
-    for (let i = 0; i < WEATHER_COLS; i++) {
+    for (let i = 0; i < NC(cl); i++) {
       const wf = geo && geo.waterFrac ? geo.waterFrac((i + 0.5) * WEATHER_COL_W) : 0;
       cl.thermalMass.push(1 + 4 * wf); // open water: 5× the thermal inertia
     }
   }
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
     const target = clamp01(cl.baseT[i] + diurnal);
     c.T += (target - c.T) * Math.min(1, dt * 0.02 / cl.thermalMass[i]);
@@ -271,7 +280,7 @@ export function tickClimate(world, dt, geo) {
   // — physics, not a paint job. No volcanic biome exists: the Whittaker
   // lookup reads whatever T results, same as any other warm column.
   if (cl.vents.length) {
-    for (let i = 0; i < WEATHER_COLS; i++) {
+    for (let i = 0; i < NC(cl); i++) {
       const cx = (i + 0.5) * WEATHER_COL_W;
       let src = 0;
       for (const v of cl.vents) {
@@ -291,7 +300,7 @@ export function tickClimate(world, dt, geo) {
   // it never sits in the vapor pool waiting for saturation. Without this,
   // the vapor equilibrates just below saturation and it never rains.
   const CONV_FRAC = 0.5;
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
     const cx = (i + 0.5) * WEATHER_COL_W;
     const rate = (EVAP_BASE + EVAP_WARM * c.T) * (geo.waterFrac(cx) * WATER_EVAP_K + biomass[i] * BIO_EVAP_K);
@@ -302,14 +311,14 @@ export function tickClimate(world, dt, geo) {
   }
 
   // 3. Saturation, condensation, orographic lift, rain.
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
     const cx = (i + 0.5) * WEATHER_COL_W;
     // Linearized Clausius–Clapeyron: warm air holds more (Paul §1).
     const sat = (0.30 + 0.55 * c.T) * (0.75 + 0.25 * Math.min(1.5, cl.wet[i]));
     // Orographic lift: wind blowing INTO rising terrain forces condensation;
     // the lee side dries (rain shadow) via the warmed, descended air.
-    const j = Math.max(0, Math.min(WEATHER_COLS - 1, i + Math.sign(c.windU)));
+    const j = Math.max(0, Math.min(NC(cl) - 1, i + Math.sign(c.windU)));
     const dElev = geo.terrainElev((j + 0.5) * WEATHER_COL_W) - geo.terrainElev(cx);
     if (dElev > 0 && Math.abs(c.windU) > 1) {
       const lift = dElev * Math.abs(c.windU) * LIFT_K * c.vapor * dt;
@@ -340,7 +349,7 @@ export function tickClimate(world, dt, geo) {
 
   // 3b. Caps never delete (v0.24, Paul's cap rule): supersaturated vapor
   // condenses to cloud; cloud overflow rains out immediately (85/15).
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
     if (c.vapor > 1.15) { c.cloud += c.vapor - 1.15; c.vapor = 1.15; }
     if (c.cloud > 1.2) {
@@ -362,15 +371,15 @@ export function tickClimate(world, dt, geo) {
   // (The old sign-carrying formula went backwards on westward wind and drove
   // the upwind column's vapor negative — the ledger caught the phantom mass
   // the 3b clamp then fabricated.)
-  const flux = new Array(WEATHER_COLS).fill(0);
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  const flux = new Array(NC(cl)).fill(0);
+  for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
     const j = i + Math.sign(c.windU);
-    if (j < 0 || j >= WEATHER_COLS || c.windU === 0) continue;
+    if (j < 0 || j >= NC(cl) || c.windU === 0) continue;
     const f = Math.abs(c.windU) * ADVECT_K * dt * c.vapor;
     flux[i] = Math.min(f, c.vapor); // donor-limited
   }
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(cl); i++) {
     if (flux[i] === 0) continue;
     const j = i + Math.sign(cl.cols[i].windU);
     cl.cols[i].vapor -= flux[i];
@@ -378,7 +387,7 @@ export function tickClimate(world, dt, geo) {
   }
 
   // 5. Soil drainage ≈5%/day to the water table (LABELED boundary sink).
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
     const drain = c.soil * DRAIN_K * dt;
     c.soil -= drain;
@@ -386,7 +395,7 @@ export function tickClimate(world, dt, geo) {
   }
 
   // 6. Wind: slow walk, √dt kicks, dt reversion to the ITCZ baseline.
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
     const cx = (i + 0.5) * WEATHER_COL_W;
     c.windU += (baseWindU(cx) - c.windU) * Math.min(1, dt * 0.005);
@@ -397,7 +406,7 @@ export function tickClimate(world, dt, geo) {
   // 7. Lightning: convective storms discharge. Position + timestamp, logged —
   // the ignition source future Ember (v0.24 'Making') will read. Fire is NOT
   // built here: a strike is a physical event, nothing more.
-  for (let i = 0; i < WEATHER_COLS; i++) {
+  for (let i = 0; i < NC(cl); i++) {
     const c = cl.cols[i];
     if (c.cloud > 0.75 && c.T > 0.6) {
       const p = LIGHTNING_P * dt * (c.cloud - 0.75) * 4 * c.T;
@@ -410,7 +419,7 @@ export function tickClimate(world, dt, geo) {
     }
   }
 
-  cl.meanCloud = cloudSum / WEATHER_COLS;
+  cl.meanCloud = cloudSum / NC(cl);
   cl.tick++;
 }
 

@@ -7,7 +7,8 @@ import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele 
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
 import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
-import { createClimate, initClimateFromPainted, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, WEATHER_COL_W, WEATHER_COLS } from './weather.js';
+import { createClimate, initClimateFromPainted, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, WEATHER_COL_W, NC } from './weather.js';
+import { rollLayout, computeClimbLinks, ZONE_KEYS } from './worldgen.js';
 
 // v0.18: the biome map is the world's geography now — re-export its API so
 // world.js stays the sim's facade.
@@ -31,13 +32,21 @@ export { ledgerIn, ledgerOut, ledgerSeal, ledgerDrift, ledgerPools, ledgerTotal,
 
 export const DAY_LENGTH = 300; // seconds per full day/night cycle
 
-export function createWorld(seed = 1) {
+export function createWorld(seed = 1, opts = {}) {
   const rng = createRng(seed);
+  // v0.26 "Procedural worldgen": the layout is rolled (and viability-gated)
+  // BEFORE anything else — every spawner below reads it. The worldgen
+  // stream is its own (never world.rng), so founder genomes and the main
+  // stream's sequence are untouched. opts.size scales the world (default
+  // 1 = the painted 4800px); zone widths and cluster counts scale with it.
+  const size = opts.size || 1;
+  const { layout } = rollLayout(seed, size);
   const world = {
     rng,
     time: DAY_LENGTH * 0.32, // start mid-morning
     light: 1,
-    width: WORLD_W, // v0.18 "Realms": 4800×1100 — eight biomes, west → east
+    layout, // v0.26: the generated geography — zones, terrain, waters, platforms
+    width: layout.width, // v0.26: 4800 × size — the layout owns the extent
     height: WORLD_H,
     groundY: 800, // legacy field: the jungle floor (biome 2); groundYAt(x) is the real map
     seed, // v0.18: the world's seed, for pinned sub-streams (§13.7)
@@ -51,78 +60,7 @@ export function createWorld(seed = 1) {
     // shrinks every overlap by 0.375, but every old climb link's overlap was
     // ≥200px (scaled ≥75px > the 60px link threshold), so the link topology
     // recomputes identically — and the viability battery is the real gate.
-    platforms: [
-      // --- Emerald Jungle (indices 0–8): the founder 9, scaled ---
-      { x1: 1200, x2: 1800, y: 800, kind: 'ground' }, // jungle floor
-      { x1: 1222.5, x2: 1395, y: 650, kind: 'branch' },   // lower branches
-      { x1: 1380, x2: 1567.5, y: 640, kind: 'branch' },
-      { x1: 1552.5, x2: 1777.5, y: 650, kind: 'branch' },
-      { x1: 1275, x2: 1462.5, y: 470, kind: 'branch' },   // mid branches
-      { x1: 1447.5, x2: 1642.5, y: 460, kind: 'branch' },
-      { x1: 1620, x2: 1785, y: 470, kind: 'branch' },
-      { x1: 1320, x2: 1522.5, y: 290, kind: 'branch' },   // upper branches
-      { x1: 1507.5, x2: 1687.5, y: 280, kind: 'branch' },
-      // --- Arctic Wastes (9–14): full-width ice + 5 broad shelves ---
-      { x1: 0, x2: 600, y: 800, kind: 'ground' },
-      { x1: 30, x2: 330, y: 786, kind: 'shelf' },
-      { x1: 230, x2: 530, y: 782, kind: 'shelf' },
-      { x1: 110, x2: 410, y: 791, kind: 'shelf' },
-      { x1: 350, x2: 570, y: 787, kind: 'shelf' },
-      { x1: 60, x2: 260, y: 795, kind: 'shelf' },
-      // --- Skyreach Mountains (15–23): partial ground + 7-shaft vertical chain ---
-      { x1: 600, x2: 760, y: 800, kind: 'ground' },  // foothill shelf
-      { x1: 1040, x2: 1200, y: 800, kind: 'ground' }, // east shelf
-      { x1: 600, x2: 760, y: 700, kind: 'branch' },
-      { x1: 660, x2: 820, y: 608, kind: 'branch' },
-      { x1: 720, x2: 880, y: 517, kind: 'branch' },
-      { x1: 780, x2: 940, y: 425, kind: 'branch' },
-      { x1: 840, x2: 1000, y: 333, kind: 'branch' },
-      { x1: 900, x2: 1060, y: 242, kind: 'branch' },
-      { x1: 960, x2: 1120, y: 150, kind: 'branch' },
-      // --- Whispering Plains (24–25): open ground + one low ridge ---
-      { x1: 1800, x2: 2400, y: 820, kind: 'ground' },
-      // v0.19 "Language": the ridge is a solid mass of earth (top y=700,
-      // body down to the ground) — it casts a sound shadow. solid:true
-      // marks acoustic mass; the slab band alone would leak sound through.
-      { x1: 1950, x2: 2250, y: 700, kind: 'ridge', solid: true },
-      // --- Sunscorch Desert (26–29): ground + 3 rock outcrops ---
-      { x1: 2400, x2: 3000, y: 830, kind: 'ground' },
-      { x1: 2450, x2: 2600, y: 705, kind: 'rock', solid: true },
-      { x1: 2650, x2: 2800, y: 700, kind: 'rock', solid: true },
-      { x1: 2800, x2: 2950, y: 710, kind: 'rock', solid: true },
-      // --- Mangrove Shallows (30–35): walkable seabed + 5 root platforms over water ---
-      { x1: 3000, x2: 3600, y: 950, kind: 'ground' },
-      { x1: 3020, x2: 3200, y: 770, kind: 'branch' },
-      { x1: 3220, x2: 3400, y: 765, kind: 'branch' },
-      { x1: 3420, x2: 3580, y: 770, kind: 'branch' },
-      { x1: 3050, x2: 3220, y: 778, kind: 'branch' },
-      { x1: 3280, x2: 3440, y: 772, kind: 'branch' },
-      // --- The Archipelago (36–41): 3 islands × 2 platforms.
-      // Deviation from the design's "6 islands": a 600px span cannot hold
-      // six islands with 200–400px water gaps (5×200 > 600). The selection
-      // reader is preserved — a 200px channel (3860→4060) between island
-      // groups that demands jump, glide, or swim.
-      { x1: 3600, x2: 3720, y: 780, kind: 'ground' },
-      { x1: 3620, x2: 3700, y: 700, kind: 'branch' },
-      { x1: 3740, x2: 3860, y: 780, kind: 'ground' },
-      { x1: 3760, x2: 3840, y: 700, kind: 'branch' },
-      { x1: 4060, x2: 4180, y: 780, kind: 'ground' },
-      { x1: 4080, x2: 4160, y: 700, kind: 'branch' },
-      // --- Azure Deep (42–44): 3 driftwood floes, no ground ---
-      { x1: 4250, x2: 4400, y: 690, kind: 'floe' },
-      { x1: 4450, x2: 4600, y: 690, kind: 'floe' },
-      { x1: 4650, x2: 4750, y: 690, kind: 'floe' },
-      // --- v0.20 "One physics" fills (45–46, appended — earlier indices
-      // never shift): the mountains' [760,1040] gap and the archipelago
-      // [3720,3740] seam were holes straight to the world floor. Creatures
-      // fell through the ground, then the stale-platform snap teleported
-      // them back up to hover mid-air — the bug Joshua watched happen.
-      // Ground is continuous now. The archipelago's 200px channel
-      // (3860→4060) stays open water by design (jump, glide, or swim),
-      // and the Azure Deep stays groundless for the same reason.
-      { x1: 760, x2: 1040, y: 800, kind: 'ground' },  // mountains foothill fill
-      { x1: 3720, x2: 3740, y: 780, kind: 'ground' },  // archipelago seam fill
-    ],
+    platforms: layout.platforms, // v0.26: generated — the template lives in worldgen.js
     plants: [],
     foods: [],
     toys: [],
@@ -187,18 +125,18 @@ export function createWorld(seed = 1) {
     // sub-stream. Initialized from the painted biome map (the initial
     // condition only); the field then evolves by physics and biome labels
     // drift via the Whittaker lookup (biomeKeyAt with a world).
-    climate: createClimate(seed),
+    climate: createClimate(seed, Math.round(layout.width / WEATHER_COL_W)),
   };
-  initClimateFromPainted(world.climate, (x, y) => BIOMES[biomeAt(x, y)].key);
+  initClimateFromPainted(world.climate, (x, y) => BIOMES[biomeAt(x, y, layout)].key);
   // Per-column terrain elevation (ground/rock/ridge/shelf only — branches are
   // not terrain) for orographic lift, and open-water fraction for evaporation.
   // Computed once at worldgen — the land doesn't move.
   world.climate.terrainElev = [];
   world.climate.waterFrac = [];
   {
-    const waters = waterRects();
+    const waters = waterRects(layout);
     const TERRAIN = new Set(['ground', 'rock', 'ridge', 'shelf']);
-    for (let i = 0; i < WEATHER_COLS; i++) {
+    for (let i = 0; i < NC(world.climate); i++) {
       const x0 = i * WEATHER_COL_W, x1 = x0 + WEATHER_COL_W;
       let elev = 0;
       for (const p of world.platforms) {
@@ -212,8 +150,8 @@ export function createWorld(seed = 1) {
     }
   }
   world.climateGeo = {
-    terrainElev: (x) => world.climate.terrainElev[Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(x / WEATHER_COL_W)))],
-    waterFrac: (x) => world.climate.waterFrac[Math.max(0, Math.min(WEATHER_COLS - 1, Math.floor(x / WEATHER_COL_W)))],
+    terrainElev: (x) => world.climate.terrainElev[Math.max(0, Math.min(NC(world.climate) - 1, Math.floor(x / WEATHER_COL_W)))],
+    waterFrac: (x) => world.climate.waterFrac[Math.max(0, Math.min(NC(world.climate) - 1, Math.floor(x / WEATHER_COL_W)))],
   };
   // v0.25 "Heat": volcanic vents — explicit worldgen heat sources (the
   // climate's own sub-stream; after the painted-seed draws, so worldgen
@@ -223,29 +161,18 @@ export function createWorld(seed = 1) {
   // vertical gap is climbable (60–240px). Computed once at worldgen —
   // the canopy's vertical roads.
   world.climbLinks = computeClimbLinks(world.platforms);
-  world.teacher = createTeacher(world, 1500, 0); // jungle floor — the ancestral ground
+  // v0.26: the teacher stands on the generated jungle floor (cluster 0).
+  const _jf = layout.platformsByZone.jungle[0];
+  world.teacher = createTeacher(world, (_jf.x1 + _jf.x2) / 2, _jf.pi); // the ancestral ground
   initLedger(world); // v0.24: the mass ledger starts with the world
   return world;
 }
 
-// Two platforms are climb-linked if their spans overlap and the gap is
-// within reach — close enough to scramble between, far enough to matter.
-export function computeClimbLinks(platforms) {
-  const links = [];
-  for (let a = 0; a < platforms.length; a++) {
-    for (let b = a + 1; b < platforms.length; b++) {
-      const pa = platforms[a];
-      const pb = platforms[b];
-      const overlap = Math.min(pa.x2, pb.x2) - Math.max(pa.x1, pb.x1);
-      const gap = Math.abs(pa.y - pb.y);
-      if (overlap > 60 && gap >= 60 && gap <= 240) {
-        links.push({ a, b, x1: Math.max(pa.x1, pb.x1), x2: Math.min(pa.x2, pb.x2) });
-      }
-    }
-  }
-  return links;
-}
+// v0.26: climb-link computation lives in worldgen.js (the viability gate
+// needs it); re-exported here so world.js stays the sim's facade.
+export { computeClimbLinks };
 
+// Platform indices reachable by climbing from platform pi.
 // Platform indices reachable by climbing from platform pi.
 export function climbLinksFrom(world, pi) {
   const out = [];
@@ -308,7 +235,7 @@ export const BIOME_FRUIT_MUL = {
 // convention for all platform-less entities (kelp, minnows): platformIndex
 // -1 means "in the water column", never "nowhere".
 function floatY(world, x) {
-  const w = waterAt(x, 2000);
+  const w = waterAt(x, 2000, world.layout);
   return w ? w.surfaceY + 12 : 800;
 }
 
@@ -323,9 +250,9 @@ export function addPlant(world, x, platformIndex, genome, opts = {}) {
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     pollination: 0, // v0.22.2: 0..1 — raised by pollinator visits; fruit set scales with it
     sway: world.rng.range(0, Math.PI * 2),
-    zone: biomeKeyAt(x), // v0.18: biome key (8)
-    morph: opts.morph || floraFor(biomeKeyAt(x)).morph, // v0.18: flora morph
-    fruitKind: opts.fruitKind || floraFor(biomeKeyAt(x)).fruitKind,
+    zone: biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout }), // v0.26: geographic zone key
+    morph: opts.morph || floraFor(biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout })).morph,
+    fruitKind: opts.fruitKind || floraFor(biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout })).fruitKind,
     genome: g, pheno: plantPhenotype(g), // v0.13: plant genomes
   });
 }
@@ -340,7 +267,7 @@ export function addHerb(world, x, platformIndex, genome, opts = {}) {
     growth: world.rng.range(0.3, 0.8), fruitTimer: world.rng.range(5, 25),
     pollination: 0, // v0.22.2: inert on herbs (they bear leaves, not fruit)
     sway: world.rng.range(0, Math.PI * 2),
-    zone: biomeKeyAt(x), // v0.18: biome key (8)
+    zone: biomeKeyAt(x, plat ? plat.y : 800, { layout: world.layout }), // v0.26: geographic zone key
     morph: opts.morph || 'herb',
     fruitKind: 'leaf',
     genome: g, pheno: plantPhenotype(g), // v0.13: plant genomes
@@ -745,7 +672,7 @@ export function noteDeath(world, c, cause) {
   // from the bodies pool to the food pool, not a creation). At founder
   // values this is exactly 1.2, so the scavenging economy is unchanged.
   const plat = world.platforms[c.platformIndex];
-  const cold = ambientCold(c.x, plat ? plat.y : 800);
+  const cold = ambientCold(c.x, plat ? plat.y : 800, world.layout);
   addFood(world, c.x, c.platformIndex, 'corpse', bodyMassOf(c), CORPSE_ROT * (1 + 2 * cold), { nutrition: 1 });
 }
 // Two creatures share a hash only if every allele matches to 3 decimals.
@@ -914,7 +841,7 @@ export function soundOcclusion(world, x1, y1, x2, y2) {
     // is earth, not air — the ray that punches THROUGH the body loses
     // energy to diffraction. The slab band alone would leak sound under
     // the ridge top; the body test closes the leak.
-    if (plats[i].solid && rayHitsSolid(x1, y1, x2, y2, plats[i])) att *= RIDGE_SHADOW;
+    if (plats[i].solid && rayHitsSolid(x1, y1, x2, y2, plats[i], world.layout)) att *= RIDGE_SHADOW;
   }
   const N = 10;
   let fol = 0;
@@ -931,14 +858,14 @@ export function soundOcclusion(world, x1, y1, x2, y2) {
 // ground beneath (the ridge's foot). NaN-guarded: a bad platform yields a
 // degenerate body that no ray can enter.
 export const RIDGE_SHADOW = 0.45; // attenuation per solid-mass crossing
-function solidBody(pl) {
+function solidBody(pl, layout = null) {
   const x1 = Number(pl.x1), x2 = Number(pl.x2), top = Number(pl.y);
   if (![x1, x2, top].every(Number.isFinite) || x2 <= x1) {
     return { x1: 0, x2: -1, top: 0, base: 0 };
   }
   let base = top + 160; // fallback foot if the ground map has no answer
   try {
-    const g = groundYAt((x1 + x2) / 2);
+    const g = groundYAt((x1 + x2) / 2, layout);
     if (Number.isFinite(g)) base = Math.max(g, top + 40);
   } catch (e) { /* keep the fallback */ }
   return { x1, x2, top, base };
@@ -951,12 +878,12 @@ function solidBody(pl) {
 // sample kissing the body's corner (a hearer standing at the ridge's foot,
 // the ray clipping the cliff base) is diffraction around an edge, not a
 // shadow — it takes >=3 of 20 samples to count.
-function rayHitsSolid(x1, y1, x2, y2, pl) {
+function rayHitsSolid(x1, y1, x2, y2, pl, layout = null) {
   if (![x1, y1, x2, y2].every(Number.isFinite)) return false;
   const near1 = Math.abs(y1 - pl.y) < 16 && x1 >= pl.x1 - 4 && x1 <= pl.x2 + 4;
   const near2 = Math.abs(y2 - pl.y) < 16 && x2 >= pl.x1 - 4 && x2 <= pl.x2 + 4;
   if (near1 || near2) return false;
-  const b = solidBody(pl);
+  const b = solidBody(pl, layout);
   const N = 20;
   let inside = 0;
   for (let i = 1; i < N; i++) {
@@ -1765,7 +1692,7 @@ export function tickWorld(world, dt) {
       if (!Number.isFinite(f.vy)) f.vy = 0;
       if (rng.chance(dt * 2)) { f.vx = rng.range(-40, 40); f.vy = rng.range(-25, 25); }
       const nx = f.x + f.vx * dt, ny = f.y + f.vy * dt;
-      if (waterAt(nx, ny)) { f.x = nx; f.y = ny; }
+      if (waterAt(nx, ny, world.layout)) { f.x = nx; f.y = ny; }
       else { f.vx = -f.vx * 0.5; f.vy = -f.vy * 0.5; } // the water is the constraint
     } else {
       stepLightBody(f, dt);
@@ -1999,24 +1926,28 @@ export function populate(world) {
   // (same calls, same counts — bounds don't consume draws), so founder
   // genomes are bit-identical; only positions moved. Four founders, plain
   // founder stock, no shifts.
-  const mx = (x) => 1200 + x * 0.375;
+  // v0.26: positions are jungle-zone-relative (cluster 0); platform
+  // indices are jungle ordinals — identical values at size 1.
+  const jz = world.layout.zones[2];
+  const mx = (x) => jz.x0 + x * 0.375;
+  const JP = (ord) => world.layout.platformsByZone.jungle[ord].pi;
   // The canopy's ecology: fruit trees grow ON the branches (plants are
   // indexed by platform — a tree on branch 4 fruits on branch 4); medicinal
   // herbs are undergrowth on the forest floor.
   // v0.11 biomes: verdant valley is lush, the arid stretch is harsh (one
   // fruit tree, but extra medicinal herbs), the highland is moderate.
-  addPlant(world, mx(200), 1); addPlant(world, mx(420), 1); // lower-left branch trees
-  addPlant(world, mx(700), 2); // lower-mid
-  addPlant(world, mx(1150), 3); addPlant(world, mx(1400), 3); // lower-right
-  addPlant(world, mx(450), 4); addPlant(world, mx(900), 5); // mid branches
-  addPlant(world, mx(1250), 6);
-  addPlant(world, mx(600), 7); addPlant(world, mx(1050), 8); // upper branches
+  addPlant(world, mx(200), JP(1)); addPlant(world, mx(420), JP(1)); // lower-left branch trees
+  addPlant(world, mx(700), JP(2)); // lower-mid
+  addPlant(world, mx(1150), JP(3)); addPlant(world, mx(1400), JP(3)); // lower-right
+  addPlant(world, mx(450), JP(4)); addPlant(world, mx(900), JP(5)); // mid branches
+  addPlant(world, mx(1250), JP(6));
+  addPlant(world, mx(600), JP(7)); addPlant(world, mx(1050), JP(8)); // upper branches
   // v0.8: medicinal herbs, on the forest floor where the sick descend.
   // v0.11: they thrive where food is scarcest.
-  addHerb(world, mx(650), 0); addHerb(world, mx(950), 0); addHerb(world, mx(1300), 0);
+  addHerb(world, mx(650), JP(0)); addHerb(world, mx(950), JP(0)); addHerb(world, mx(1300), JP(0));
   // Starter food: hang fruit in the branches so the first tanglekins don't
   // starve immediately.
-  const branchIdx = [1, 2, 3, 4, 5, 6];
+  const branchIdx = [JP(1), JP(2), JP(3), JP(4), JP(5), JP(6)];
   for (let i = 0; i < 8; i++) {
     const pi = branchIdx[i % branchIdx.length];
     const plat = world.platforms[pi];
@@ -2037,21 +1968,21 @@ export function populate(world) {
     rng.range(mx(200), mx(1400)); rng.int(0, 2);
     rng.pick([-1, 1]); rng.range(15, 40); rng.range(0, 100);
   }
-  addToy(world, mx(800), 0);
+  addToy(world, mx(800), JP(0));
   // v0.9: pebbles scattered on the forest floor — the world as material.
-  for (let i = 0; i < 8; i++) addPebble(world, rng.range(mx(80), mx(1520)), 0);
+  for (let i = 0; i < 8; i++) addPebble(world, rng.range(mx(80), mx(1520)), JP(0));
   // v0.17.1 "Touch": mineral deposits. Fixed positions (no rng — worldgen
   // order is load-bearing for determinism, and these must never shift the
   // main stream's sequence). Observer-only until the technology release.
-  addMineral(world, mx(300), 0, 'flint');   // jungle floor, west side
-  addMineral(world, mx(800), 0, 'clay');    // jungle floor, middle
-  addMineral(world, mx(1300), 0, 'flint');  // jungle floor, east side
-  addMineral(world, mx(600), 7, 'quartz');  // upper branch — the climb is the price
+  addMineral(world, mx(300), JP(0), 'flint');   // jungle floor, west side
+  addMineral(world, mx(800), JP(0), 'clay');    // jungle floor, middle
+  addMineral(world, mx(1300), JP(0), 'flint');  // jungle floor, east side
+  addMineral(world, mx(600), JP(7), 'quartz');  // upper branch — the climb is the price
   // v0.20 "Hands": fallen branches on the jungle floor — graspable timber.
   // Fixed positions (determinism, like minerals). They rot if unused.
-  addStick(world, mx(450), 0);
-  addStick(world, mx(950), 0);
-  addStick(world, mx(1150), 0);
+  addStick(world, mx(450), JP(0));
+  addStick(world, mx(950), JP(0));
+  addStick(world, mx(1150), JP(0));
   // Four founder tanglekins with fresh random genomes, born in the lower
   // branches. (v0.5: was two. Two founders made every lineage a coin flip —
   // four founders (two breeding pairs) give the population the demographic
@@ -2061,7 +1992,7 @@ export function populate(world) {
   // Founders start on adjacent lower branches where the climb links are —
   // 180px spacing keeps adjacent founders inside the 240px breeding-backstop
   // range but outside the 150px contagion range.
-  const starts = [[mx(400), 1], [mx(580), 1], [mx(760), 2], [mx(940), 2]];
+  const starts = [[mx(400), JP(1)], [mx(580), JP(1)], [mx(760), JP(2)], [mx(940), JP(2)]];
   for (let i = 0; i < 4; i++) {
     const [fx, fpi] = starts[i];
     const c = createCreature(randomGenome(rng), fx, fpi, rng,
@@ -2129,12 +2060,23 @@ function buryFood(world, biome, kind, amount, x0, x1, y, n) {
 }
 
 export function spawnBuriedFood(world) {
-  buryFood(world, 'plains', 'tuber', 1.6, 1850, 2350, 820, 8);       // tubers/roots — plains keep it all underground
-  buryFood(world, 'desert', 'tuber', 1.8, 2450, 2950, 830, 6);        // deep tubers — the desert classic
-  buryFood(world, 'jungle', 'grub', 1.2, 1250, 1750, 800, 6);         // grubs under leaf litter
-  buryFood(world, 'arctic', 'snowcache', 1.4, 50, 550, 800, 4);       // snow caches: roots/tubers
-  buryFood(world, 'shallows', 'morsel', 1.0, 3050, 3550, 950, 5);     // seabed morsels (wading dig)
-  buryFood(world, 'archipelago', 'sandcache', 1.3, 3610, 3710, 780, 4); // shallow sand caches
+  // v0.26: bounds from the generated zones (50px insets, verbatim at
+  // size 1); y from the generated terrain. Draw counts unchanged.
+  const L = world.layout;
+  const zb = (key, inset = 50) => { const z = L.zones[ZONE_KEYS.indexOf(key)]; return [z.x0 + inset, z.x1 - inset]; };
+  const gy = (x) => { const g = groundYAt(x, L); return g === null ? 800 : g; };
+  const [plx0, plx1] = zb('plains');
+  buryFood(world, 'plains', 'tuber', 1.6, plx0, plx1, gy((plx0 + plx1) / 2), 8); // tubers/roots
+  const [dex0, dex1] = zb('desert');
+  buryFood(world, 'desert', 'tuber', 1.8, dex0, dex1, gy((dex0 + dex1) / 2), 6); // deep tubers
+  const [jux0, jux1] = zb('jungle');
+  buryFood(world, 'jungle', 'grub', 1.2, jux0, jux1, gy((jux0 + jux1) / 2), 6); // grubs under leaf litter
+  const [arx0, arx1] = zb('arctic');
+  buryFood(world, 'arctic', 'snowcache', 1.4, arx0, arx1, gy((arx0 + arx1) / 2), 4); // snow caches
+  const [shx0, shx1] = zb('shallows');
+  buryFood(world, 'shallows', 'morsel', 1.0, shx0, shx1, gy((shx0 + shx1) / 2), 5); // seabed morsels
+  const ia = L.platformsByZone.archipelago[0]; // island A ground — the sand flat
+  buryFood(world, 'archipelago', 'sandcache', 1.3, ia.x1 + 10, ia.x2 - 10, ia.y, 4);
 }
 
 // digAt(world, x, y, radius): unearth buried food in a radius — the dig
@@ -2168,20 +2110,43 @@ function addMobileFood(world, foodKind, x, platformIndex, y) {
 }
 
 export function spawnMobileFood(world) {
+  // v0.26: bounds from the generated layout — platform x-ranges, zone
+  // insets, and the generated water surfaces. Draw counts unchanged.
   const dr = world.decorRng || world.rng;
+  const L = world.layout;
+  const P = (key, ord) => L.platformsByZone[key][ord];
+  const Z = (key) => L.zones[ZONE_KEYS.indexOf(key)];
   const bug = (x0, x1, pi, n) => {
     for (let i = 0; i < n; i++) addMobileFood(world, 'bug', dr.range(x0, x1), pi);
   };
-  bug(1250, 1740, 1, 3); bug(1390, 1560, 2, 3); bug(1560, 1770, 3, 2); // jungle beetles (abundant)
-  bug(1850, 2350, 24, 6);   // plains grasshoppers
-  bug(2450, 2950, 26, 4);   // desert nocturnal insects
-  bug(620, 740, 17, 1); bug(740, 860, 19, 1); bug(860, 980, 21, 1); // mountains cliff insects
+  const jz = Z('jungle');
+  const J = (a, b) => [jz.x0 + a, jz.x0 + b]; // jungle-zone-relative, cluster 0
+  bug(...J(50, 540), P('jungle', 1).pi, 3); bug(...J(190, 360), P('jungle', 2).pi, 3); bug(...J(360, 570), P('jungle', 3).pi, 2);
+  const plz = Z('plains');
+  bug(plz.x0 + 50, plz.x1 - 50, P('plains', 0).pi, 6);   // plains grasshoppers
+  const dz = Z('desert');
+  bug(dz.x0 + 50, dz.x1 - 50, P('desert', 0).pi, 4);     // desert nocturnal insects
+  for (const ord of [2, 4, 6]) {                          // mountains cliff insects
+    const mp = P('mountains', ord);
+    bug(mp.x1 + 20, mp.x2 - 20, mp.pi, 1);
+  }
   const minnow = (x0, x1, y0, y1, n) => {
     for (let i = 0; i < n; i++) addMobileFood(world, 'minnow', dr.range(x0, x1), -1, dr.range(y0, y1));
   };
-  minnow(3050, 3550, 815, 900, 8);  // shallows
-  minnow(3650, 3800, 815, 880, 3); minnow(4070, 4170, 815, 880, 3); // archipelago
-  minnow(4250, 4750, 715, 950, 6);  // deep — the only meat
+  // Minnow bands hang below the generated surface, off the bottom.
+  const mzone = (key, x0, x1) => {
+    const w = waterAt((x0 + x1) / 2, 2000, L);
+    const sy = w ? w.surfaceY : 800;
+    const depth = w && w.depth ? w.depth : 100;
+    return [x0, x1, sy + 15, sy + Math.max(30, depth - 20)];
+  };
+  const shz = Z('shallows');
+  minnow(...mzone('shallows', shz.x0 + 50, shz.x1 - 50), 8);            // shallows
+  const iaA = P('archipelago', 0), iaB = P('archipelago', 2), iaC = P('archipelago', 4);
+  minnow(...mzone('archipelago', iaA.x1 + 50, iaB.x2 - 60), 3);         // island group A
+  minnow(...mzone('archipelago', iaC.x1 + 10, iaC.x2 - 10), 3);         // island B
+  const dpz = Z('deep');
+  minnow(...mzone('deep', dpz.x0 + 50, dpz.x1 - 50), 6);                // deep — the only meat
 }
 
 // ---- v0.18 §12.2: per-biome resource sets ----
@@ -2191,17 +2156,21 @@ export function spawnResources(world) {
   // is load-bearing, and resources must never shift the main stream).
   // Observer-only until the technology release — the materials are there,
   // the using is theirs to invent.
-  addMineral(world, 3660, 36, 'timber');    // archipelago island 1 — the shipwright's biome
-  addMineral(world, 3800, 38, 'timber');    // archipelago island 2
-  addMineral(world, 4120, 40, 'timber');    // archipelago island 3
-  addMineral(world, 3300, 31, 'timber');    // shallows mangrove stand — abundant timber
-  addMineral(world, 4325, 42, 'timber');    // deep floe timber
-  addMineral(world, 680, 17, 'stone');      // mountains shaft base — sparse timber, stone instead
-  addMineral(world, 920, 21, 'stone');      // mountains mid shaft
-  addMineral(world, 300, 9, 'stone');       // arctic shelter stone — little to build with
-  addMineral(world, 4150, 40, 'driftwood'); // archipelago drift line
-  addMineral(world, 4525, 43, 'driftwood'); // deep drift current
-  addMineral(world, 2700, 26, 'clay');      // desert sun-baked clay
+  // v0.26: platform centers from the generated layout (ordinals, not indices).
+  const P = (key, ord) => world.layout.platformsByZone[key][ord];
+  const pcx = (key, ord) => { const p = P(key, ord); return [(p.x1 + p.x2) / 2, p.pi]; };
+  let x, pi;
+  [x, pi] = pcx('archipelago', 0); addMineral(world, x, pi, 'timber'); // island 1 — the shipwright's biome
+  [x, pi] = pcx('archipelago', 2); addMineral(world, x, pi, 'timber'); // island 2
+  [x, pi] = pcx('archipelago', 4); addMineral(world, x, pi, 'timber'); // island 3
+  [x, pi] = pcx('shallows', 1); addMineral(world, x, pi, 'timber');    // mangrove stand — abundant timber
+  [x, pi] = pcx('deep', 0); addMineral(world, x, pi, 'timber');       // deep floe timber
+  [x, pi] = pcx('mountains', 2); addMineral(world, x, pi, 'stone');   // shaft base — sparse timber, stone instead
+  [x, pi] = pcx('mountains', 6); addMineral(world, x, pi, 'stone');   // mid shaft
+  [x, pi] = pcx('arctic', 0); addMineral(world, x, pi, 'stone');      // arctic shelter stone
+  [x, pi] = pcx('archipelago', 4); addMineral(world, x + 30, pi, 'driftwood'); // archipelago drift line
+  [x, pi] = pcx('deep', 1); addMineral(world, x + 75, pi, 'driftwood');        // deep drift current
+  [x, pi] = pcx('desert', 0); addMineral(world, x, pi, 'clay');       // desert sun-baked clay
 }
 
 // ---- v0.18 §5: per-biome flora ----
@@ -2241,37 +2210,43 @@ export function plantBiomeFlora(world, x, platformIndex, biomeKey, herb = false)
 }
 
 export function spawnBiomeFlora(world) {
+  // v0.26: trees plant on platform x-ranges from the generated layout
+  // (ordinals, not indices); the kelp band from the generated deep zone.
+  // Draw counts and per-platform counts unchanged.
   const dr = world.decorRng || world.rng;
-  const tree = (biome, x0, x1, pi, n, herb = false) => {
-    for (let i = 0; i < n; i++) plantBiomeFlora(world, dr.range(x0, x1), pi, biome, herb);
+  const P = (key, ord) => world.layout.platformsByZone[key][ord];
+  const tree = (key, ord, n, herb = false) => {
+    const p = P(key, ord);
+    for (let i = 0; i < n; i++) plantBiomeFlora(world, dr.range(p.x1 + 10, p.x2 - 10), p.pi, key, herb);
   };
   // Emerald Jungle: dense fruit trees on the branches + floor herbs (the ancestral economy)
-  tree('jungle', 1230, 1390, 1, 2); tree('jungle', 1390, 1560, 2, 2); tree('jungle', 1560, 1770, 3, 2);
-  tree('jungle', 1290, 1450, 4, 2); tree('jungle', 1460, 1630, 5, 1); tree('jungle', 1630, 1780, 6, 1);
-  tree('jungle', 1330, 1510, 7, 1); tree('jungle', 1520, 1680, 8, 1);
-  tree('jungle', 1250, 1750, 0, 3, true); // medicinal herbs on the floor
+  tree('jungle', 1, 2); tree('jungle', 2, 2); tree('jungle', 3, 2);
+  tree('jungle', 4, 2); tree('jungle', 5, 1); tree('jungle', 6, 1);
+  tree('jungle', 7, 1); tree('jungle', 8, 1);
+  tree('jungle', 0, 3, true); // medicinal herbs on the floor
   // Arctic Wastes: sparse ice-moss
-  tree('arctic', 50, 550, 9, 6);
+  tree('arctic', 0, 6);
   // Skyreach Mountains: alpine shrubs — coldTol selects; the prize altitude taxes
-  tree('mountains', 610, 750, 17, 1); tree('mountains', 730, 870, 19, 1);
-  tree('mountains', 850, 990, 21, 1); tree('mountains', 970, 1110, 23, 1);
-  tree('mountains', 620, 740, 15, 2, true); // foothill herbs
+  tree('mountains', 2, 1); tree('mountains', 4, 1);
+  tree('mountains', 6, 1); tree('mountains', 8, 1);
+  tree('mountains', 0, 2, true); // foothill herbs
   // Whispering Plains: grasses — ALL food on the ground, no branches
-  tree('plains', 1850, 2350, 24, 12);
+  tree('plains', 0, 12);
   // Sunscorch Desert: sparse cacti + one oasis herb
-  tree('desert', 2450, 2950, 26, 5);
-  tree('desert', 2690, 2750, 26, 1, true);
+  tree('desert', 0, 5);
+  tree('desert', 0, 1, true);
   // Mangrove Shallows: mangroves over water
-  tree('shallows', 3030, 3190, 31, 1); tree('shallows', 3230, 3390, 32, 1);
-  tree('shallows', 3430, 3570, 33, 1); tree('shallows', 3060, 3210, 34, 1);
-  tree('shallows', 3290, 3430, 35, 2);
+  tree('shallows', 1, 1); tree('shallows', 2, 1);
+  tree('shallows', 3, 1); tree('shallows', 4, 1);
+  tree('shallows', 5, 2);
   // The Archipelago: palms on the islands + island herbs
-  tree('archipelago', 3610, 3710, 36, 2); tree('archipelago', 3750, 3850, 38, 2);
-  tree('archipelago', 4070, 4170, 40, 1);
-  tree('archipelago', 3630, 3690, 37, 1); tree('archipelago', 3770, 3830, 39, 1);
-  tree('archipelago', 3610, 3710, 36, 1, true); tree('archipelago', 3750, 3850, 38, 1, true);
+  tree('archipelago', 0, 2); tree('archipelago', 2, 2);
+  tree('archipelago', 4, 1);
+  tree('archipelago', 1, 1); tree('archipelago', 3, 1);
+  tree('archipelago', 0, 1, true); tree('archipelago', 2, 1, true);
   // Azure Deep: floating kelp — platformIndex -1, the floating convention
-  for (let i = 0; i < 7; i++) plantBiomeFlora(world, dr.range(4250, 4750), -1, 'deep');
+  const dpz = world.layout.zones[ZONE_KEYS.indexOf('deep')];
+  for (let i = 0; i < 7; i++) plantBiomeFlora(world, dr.range(dpz.x0 + 50, dpz.x1 - 50), -1, 'deep');
 }
 
 // ---- v0.18 §12/§12.1/§13.7: genesis spawns ----
@@ -2307,18 +2282,21 @@ export function shiftAlleles(genome, key, target) {
 }
 
 export const GENESIS_COHORTS = [
-  // biome, spawn x, platform, biome-suited quantitative shifts (§12.1).
-  // The loci all exist (genome.js family-M thermal block + armLength);
+  // v0.26: cohorts spawn by { key, ord } — the zone and the template
+  // ordinal. Spawn x is the platform center (the old x values were the
+  // painted platform centers, clamped on-platform). Cluster 0: the founder
+  // cluster at every size. Biome-suited quantitative shifts (§12.1); the
+  // loci all exist (genome.js family-M thermal block + armLength);
   // shiftAlleles still skips any locus that doesn't, so this table is
   // forward-compatible with genome changes.
-  { biome: 0, key: 'arctic', x: 300, pi: 9, shifts: [['fur', 1], ['coldTol', 1]] },
-  { biome: 1, key: 'mountains', x: 680, pi: 17, shifts: [['armLength', 1], ['coldTol', 0.8]] },
-  { biome: 2, key: 'jungle', x: 1400, pi: 1, shifts: [] }, // the control — always plain founder stock
-  { biome: 3, key: 'plains', x: 2100, pi: 24, shifts: [['legLength', 0.8]] },
-  { biome: 4, key: 'desert', x: 2700, pi: 26, shifts: [['fur', 0.2], ['heatTol', 1]] },
-  { biome: 5, key: 'shallows', x: 3300, pi: 31, shifts: [['coldTol', 0.7]] },
-  { biome: 6, key: 'archipelago', x: 3660, pi: 36, shifts: [['armLength', 0.8]] },
-  { biome: 7, key: 'deep', x: 4325, pi: 42, shifts: [['coldTol', 0.8]] },
+  { key: 'arctic', ord: 0, shifts: [['fur', 1], ['coldTol', 1]] },
+  { key: 'mountains', ord: 2, shifts: [['armLength', 1], ['coldTol', 0.8]] },
+  { key: 'jungle', ord: 1, shifts: [] }, // the control — always plain founder stock
+  { key: 'plains', ord: 0, shifts: [['legLength', 0.8]] },
+  { key: 'desert', ord: 0, shifts: [['fur', 0.2], ['heatTol', 1]] },
+  { key: 'shallows', ord: 1, shifts: [['coldTol', 0.7]] },
+  { key: 'archipelago', ord: 0, shifts: [['armLength', 0.8]] },
+  { key: 'deep', ord: 0, shifts: [['coldTol', 0.8]] },
 ];
 
 // v0.22.2 — the promoted critters. The legacy scripted bugs and butterflies
@@ -2330,11 +2308,12 @@ function spawnPromotedCohorts(world) {
   const rng = world.rng;
   const branchPis = [];
   const groundPis = [];
-  world.platforms.forEach((p, i) => {
-    if (p.x2 < 1100 || p.x1 > 1900) return; // the jungle, where the critters lived
-    if (p.kind === 'branch') branchPis.push(i);
-    if (p.kind === 'ground') groundPis.push(i);
-  });
+  // v0.26: the jungle's cluster-0 platforms, in emission order — the same
+  // 9 platforms (ordinals 0–8) the painted [1100,1900] filter found.
+  for (const p of world.layout.platformsByZone.jungle.slice(0, 9)) {
+    if (p.kind === 'branch') branchPis.push(p.pi);
+    if (p.kind === 'ground') groundPis.push(p.pi);
+  }
   const spawn = (speciesKey, n, pis) => {
     for (let i = 0; i < n && pis.length > 0; i++) {
       const pi = pis[i % pis.length];
@@ -2368,9 +2347,20 @@ export function populateGenesis(world) {
   // Legacy populate() does NOT call this: the jungle battery stays predator-free.
   spawnPredators(world);
   const founders = [];
+  // v0.26: one cohort per zone per cluster — at size 1 this is exactly the
+  // old 8 cohorts; at size 2 each cluster gets its own 8, holding encounter
+  // density constant across the wider world. The draw order is identical at
+  // size 1 (single cluster), so founder genomes are untouched there.
+  const clusters = Math.max(1, Math.round(world.layout.size));
+  for (let cl = 0; cl < clusters; cl++) {
   GENESIS_COHORTS.forEach((g, bi) => {
     const n = 3 + rng.int(0, 2); // 3–5 creatures per biome (§12)
-    const plat = world.platforms[g.pi];
+    // v0.26: cohort platform from the layout (cluster c); spawn x is the
+    // platform center, spread ±130px per founder as before.
+    const zonePlats = world.layout.platformsByZone[g.key];
+    const perCluster = zonePlats.length / clusters;
+    const plat = zonePlats[cl * perCluster + g.ord];
+    const gxc = (plat.x1 + plat.x2) / 2;
     // Sexes: at least one male and one female per cohort, the rest a coin flip.
     const sexes = [];
     for (let i = 0; i < n; i++) sexes.push(rng.chance(0.5) ? 'male' : 'female');
@@ -2383,14 +2373,14 @@ export function populateGenesis(world) {
       // per-founder, not per-biome, so a cohort keeps its sub-stream
       // diversity ("starting variation, never destiny"); the 50% §12.1
       // shifts apply on top.
-      const genome = randomGenome(rng, { pinSub: (seed * 31 + bi * 101 + i * 17) | 0 });
+      const genome = randomGenome(rng, { pinSub: (seed * 31 + (cl * 8 + bi) * 101 + i * 17) | 0 });
       // §12.1: ~50% of each non-control cohort gets biome-suited shifts.
       // Jungle is the control: 100% plain founder stock.
-      if (g.biome !== 2 && rng.chance(0.5)) {
+      if (g.key !== 'jungle' && rng.chance(0.5)) {
         for (const [key, target] of g.shifts) shiftAlleles(genome, key, target);
       }
-      const x = Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, g.x + (i - (n - 1) / 2) * 130));
-      const c = createCreature(genome, x, g.pi, rng, { name: `${g.key}-${i + 1}` });
+      const x = Math.max(plat.x1 + 20, Math.min(plat.x2 - 20, gxc + (i - (n - 1) / 2) * 130));
+      const c = createCreature(genome, x, plat.pi, rng, { name: `${g.key}-${i + 1}` });
       c.name = uniqueName(world, c.name);
       c.sex = sexes[i];
       c.biochem.age = c.pheno.lifespanSec * 0.4; // young adults — breedable from the first minute
@@ -2399,6 +2389,7 @@ export function populateGenesis(world) {
       founders.push(c);
     }
   });
+  } // clusters
   world.creatures.push(...founders);
   // Starter fruit near each founder — the first meal bootstraps foraging.
   for (const c of founders) {

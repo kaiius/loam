@@ -208,10 +208,10 @@ export function render(r, world, ui, t) {
   // v0.18 "Realms": biome ground + water from the biomes module. Older
   // worlds (no biomes module yet) keep the legacy zone washes.
   const B = biomes();
-  const waters = (B && typeof B.waterRects === 'function') ? B.waterRects() : [];
+  const waters = (B && typeof B.waterRects === 'function') ? B.waterRects(world.layout) : [];
   if (B && typeof B.biomeKeyAt === 'function') {
     drawBiomeBands(ctx, world, B, light);
-    drawWaters(ctx, B, world.height, light); // v0.20: one flowing sea, not three rects
+    drawWaters(ctx, B, world.height, light, world); // v0.20: one flowing sea, not three rects
   } else {
     // v0.11 biome tints: the zones are sim state (they set fruiting rates),
     // so painting them is honest. Subtle vertical washes + a name label.

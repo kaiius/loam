@@ -151,15 +151,18 @@ test('v0.16: teacher calls are full acoustic events with utterance logging', () 
 
 test('v0.19: ridge sound shadow — solid earth eats the ray that punches through', () => {
   const world = bindWorld(createWorld(7));
-  // The Whispering Plains ridge: solid mass x 1950–2250, top y=700, foot y=820.
   const ridge = world.platforms.find((p) => p.solid && p.kind === 'ridge');
   assert.ok(ridge, 'the plains ridge is flagged solid');
+  // v0.26: the ridge body is generated (top ≈700±8, foot = terrain). The
+  // ray aims mid-body so it punches through at any seed.
+  const foot = groundYAt((ridge.x1 + ridge.x2) / 2, world.layout) ?? ridge.y + 120;
+  const ry = (ridge.y + foot) / 2;
   // Ground-level ray across the ridge: passes through the body → shadowed.
-  const shadowed = soundOcclusion(world, 1900, 810, 2300, 810);
+  const shadowed = soundOcclusion(world, 1900, ry, 2300, ry);
   // Same ray with the solid flag lifted: only slab/foliage apply → louder.
   const wasSolid = ridge.solid;
   ridge.solid = false;
-  const open = soundOcclusion(world, 1900, 810, 2300, 810);
+  const open = soundOcclusion(world, 1900, ry, 2300, ry);
   ridge.solid = wasSolid;
   assert.ok(shadowed < open, `ridge shadows the ray (${shadowed.toFixed(3)} < ${open.toFixed(3)})`);
   assert.ok(Math.abs(shadowed - open * RIDGE_SHADOW) < 1e-9, `shadow factor is exactly RIDGE_SHADOW (${RIDGE_SHADOW})`);
@@ -1316,6 +1319,11 @@ test('v0.9: fear bristles the body; bristling frightens close neighbors', () => 
   world.creatures.length = 0;
   const a = addTestCreature(world, 500, { action: 'eat', actionTimer: 100 });
   const b = addTestCreature(world, 560, { action: 'eat', actionTimer: 100 });
+  // v0.26: pin b's Fear readout to the identity (gain 1, baseline 0). This
+  // test is about the contagion CAP (0.45 < the 0.5 bristle threshold), not
+  // about genome-drawn Fear gains — a high-gain genome bristles from
+  // contagion alone, which is genetics, not a broken cap.
+  b.pheno.driveGainFear = 1; b.pheno.driveBaseFear = 0;
   a.biochem.adrenaline = 0.9; // canopy: fear is the adrenaline readout — pin the chemical
   tickWorld(world, 0.1);
   assert.ok(a.bristling, 'the afraid creature bristles');
@@ -1942,7 +1950,7 @@ test('physics: falling onto a lower platform lands you standing on it', () => {
   for (let i = 0; i < 30 && !c.grounded; i++) tickWorld(world, 0.1);
   assert.ok(c.grounded, 'touched down');
   assert.equal(c.platformIndex, 2, 'landed on the lower branch');
-  assert.equal(c.y, 640, 'standing on it, not through it');
+  assert.equal(c.y, world.platforms[2].y, 'standing on it, not through it'); // v0.26: generated branch y
 });
 
 test('physics: jump launches with legPower-scaled impulse, grounded only', () => {
@@ -4447,7 +4455,7 @@ test('v0.20: integrateGravity — a body falls and lands on a platform', () => {
   const world = bindWorld(createWorld(7));
   const body = { x: 1500, y: 700, vx: 0, vy: 0, grounded: false, pheno: {}, gliding: false, biochem: { health: 1, injury: 0, adrenaline: 0 } };
   for (let t = 0; t < 120; t++) integrateGravity(body, world, 1 / 30);
-  assert.equal(body.y, 800, 'lands on the jungle floor');
+  assert.equal(body.y, world.platforms[0].y, 'lands on the jungle floor'); // v0.26: generated
   assert.ok(body.grounded, 'grounded after landing');
   assert.equal(body.platformIndex, 0, 'platformIndex is the jungle ground');
 });
@@ -4456,7 +4464,7 @@ test('v0.20: the mountains gap is filled — no fall through the ground', () => 
   const world = bindWorld(createWorld(7));
   const body = { x: 900, y: 700, vx: 0, vy: 0, grounded: false, pheno: {}, gliding: false, biochem: { health: 1, injury: 0, adrenaline: 0 } };
   for (let t = 0; t < 120; t++) integrateGravity(body, world, 1 / 30);
-  assert.equal(body.y, 800, 'lands on the foothill fill, not the world floor');
+  assert.equal(body.y, world.platforms[body.platformIndex].y, 'lands on the foothill fill, not the world floor'); // v0.26
   assert.ok(body.platformIndex >= 45, `on a fill platform (got ${body.platformIndex})`);
 });
 
@@ -4483,11 +4491,15 @@ test('v0.20: anti-slip — a body just under its platform climbs back out', () =
   // (swam out of the pool below the bank) pops back onto the bank instead
   // of falling 300px through the earth.
   const c = createCreature(randomGenome(world.rng), 1402, 0, world.rng);
-  c.x = 1402; c.y = 809; c.vx = 0; c.vy = 0;
+  const jy = world.platforms[0].y; // v0.26: the generated jungle floor
+  // v0.26: the test spot must be dry — generated ponds move per seed.
+  let tx = 1402;
+  while (waterAt(tx, jy + 9, world.layout)) tx += 50;
+  c.x = tx; c.y = jy + 9; c.vx = 0; c.vy = 0;
   c.grounded = false; c.platformIndex = 0;
   stepPhysics(c, world, 1 / 30);
   assert.ok(c.grounded, 'back on the platform');
-  assert.equal(c.y, 800, 'standing on the jungle floor, not under it');
+  assert.equal(c.y, jy, 'standing on the jungle floor, not under it');
 });
 
 test('v0.20: anti-slip keeps clear of the brink — cliff falls still work', () => {
@@ -4510,7 +4522,7 @@ test('v0.20: beached shark falls under gravity — no more hovering', () => {
   shark.x = 1500; shark.y = 700; shark.vx = 0; shark.vy = 0;
   const h0 = shark.biochem.health;
   for (let t = 0; t < 120; t++) tickPredators(world, 1 / 30);
-  assert.equal(shark.y, 800, 'fell to the jungle floor');
+  assert.equal(shark.y, world.platforms[0].y, 'fell to the jungle floor'); // v0.26: generated
   assert.ok(shark.grounded, 'grounded on landing');
   assert.ok(shark.biochem.health < h0, 'the beaching clock still runs');
 });
@@ -4520,15 +4532,17 @@ test('v0.20: shark cannot swim under the desert — the shore is solid', () => {
   spawnPredators(world);
   const shark = world.predators.find((p) => p.kind === 'shark');
   assert.ok(shark, 'a shark spawned');
-  // In the shallows but BELOW desert ground level (830): the old code
-  // swam straight west under the desert and died underground.
-  shark.x = 3050; shark.y = 870; shark.vx = 0; shark.vy = 0;
+  // In the shallows but BELOW the surface: the old code swam straight west
+  // under the desert and died underground. v0.26: the shark rides the
+  // generated sea level.
+  const shw2 = world.layout.waters.find((r) => r.salt && r.x0 < 3600);
+  shark.x = 3050; shark.y = (shw2 ? shw2.surfaceY : 800) + 20; shark.vx = 0; shark.vy = 0;
   shark.wanderDir = -1; shark.wanderT = 999; // hold a westward course
   let minX = Infinity, enteredEarth = false;
   for (let t = 0; t < 300; t++) {
     tickPredators(world, 1 / 30);
     if (shark.x < minX) minX = shark.x;
-    const gy = groundYAt(shark.x);
+    const gy = groundYAt(shark.x, world.layout);
     if (gy !== null && shark.y > gy) enteredEarth = true;
   }
   assert.ok(minX >= 3000, `never crosses the shoreline west (minX=${minX.toFixed(1)})`);
@@ -4557,14 +4571,18 @@ test('v0.20: shark may still beach honestly onto the sand', () => {
   const world = bindWorld(createWorld(7));
   spawnPredators(world);
   const shark = world.predators.find((p) => p.kind === 'shark');
-  // Just under the surface but ABOVE desert ground level: swimming west
-  // exits the water into air — an honest stranding, not a wall.
-  shark.x = 3050; shark.y = 810; shark.vx = 0; shark.vy = 0;
-  shark.wanderDir = -1; shark.wanderT = 999;
+  // v0.26: beach via a freshwater pond — water meeting air, not earth.
+  // (The shallows' west edge is a blurred shore now; the shark correctly
+  // turns from the rising seabed instead of entering it.) Swimming out of
+  // the pond's edge exits into air: an honest stranding, not a wall.
+  const pond = world.layout.waters.find((r) => !r.salt && r.x1 - r.x0 < 120);
+  assert.ok(pond, 'a pond exists to beach from');
+  shark.x = pond.x1 - 30; shark.y = pond.surfaceY + 10; shark.vx = 0; shark.vy = 0;
+  shark.wanderDir = 1; shark.wanderT = 999;
   for (let t = 0; t < 150; t++) tickPredators(world, 1 / 30);
-  assert.ok(shark.x < 3000, `crossed onto the beach (x=${shark.x.toFixed(1)})`);
-  assert.ok(shark.grounded, 'landed on the sand under the same gravity');
-  const gy = groundYAt(shark.x);
+  assert.ok(shark.x > pond.x1, `crossed out of the pond (x=${shark.x.toFixed(1)})`);
+  assert.ok(shark.grounded, 'landed on the bank under the same gravity');
+  const gy = groundYAt(shark.x, world.layout);
   assert.ok(!(gy !== null && shark.y > gy), 'rests on the ground, not under it');
 });
 
@@ -4574,7 +4592,7 @@ test('v0.20: bear ambles grounded — walks the ice, turns at the brink', () => 
   const bear = world.predators.find((p) => p.kind === 'bear');
   assert.ok(bear, 'a bear spawned');
   for (let t = 0; t < 600; t++) tickPredators(world, 1 / 30);
-  assert.equal(bear.y, 800, 'stays on the arctic ice');
+  assert.equal(bear.y, world.platforms[9].y, 'stays on the arctic ice'); // v0.26: generated
   assert.ok(bear.grounded, 'grounded, not pinned');
   assert.equal(bear.platformIndex, 9, 'standing on the arctic ground platform');
   assert.ok(bear.x >= 0 && bear.x <= 600, `never leaves the ice (x=${bear.x.toFixed(1)})`);
@@ -4587,7 +4605,7 @@ test('v0.20: bear with no ground underfoot falls like everything else', () => {
   bear.platformIndex = undefined; // force re-resolution
   bear.x = 900; bear.y = 700; bear.grounded = false; bear.vx = 0; bear.vy = 0;
   for (let t = 0; t < 120; t++) tickPredators(world, 1 / 30);
-  assert.equal(bear.y, 800, 'fell onto the foothill fill');
+  assert.equal(bear.y, world.platforms[bear.platformIndex].y, 'fell onto the foothill fill'); // v0.26
   assert.ok(bear.grounded, 'landed, grounded');
 });
 
@@ -4680,7 +4698,7 @@ test('v0.20: a canopy-to-floor fall strands — an event, not a footnote', () =>
   const e0 = world.events.length;
   for (let i = 0; i < 120 && !c.grounded; i++) stepPhysics(c, world, 0.05);
   assert.ok(c.grounded, 'landed on the jungle floor');
-  assert.equal(Math.round(c.y), 800, 'the floor, not a branch');
+  assert.equal(Math.round(c.y), world.platforms[0].y, 'the floor, not a branch'); // v0.26: generated
   const ev = world.events.slice(e0).find((e) => e.type === 'strandedFall');
   assert.ok(ev, 'the long fall is an event');
   assert.ok(ev.fallPx > STRAND_PX, `the fall was long (${ev.fallPx}px)`);

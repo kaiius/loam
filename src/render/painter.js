@@ -694,20 +694,25 @@ function groundRGB(c, light) {
 // only steps < 40px ease; the 120px coastline at x=3000 keeps its face.
 // Pure function of the sim's biomes module — testable without a canvas.
 export const FLOW_TRANS = 90;
-export function smoothGroundAt(B, x) {
+export function smoothGroundAt(B, x, world = null) {
   // -> { top, rgb:[r,g,b] } | null (open water: nothing to paint)
+  // v0.26: reads the world's generated layout (borders scale with size);
+  // without one the sim's canonical defaults hold.
+  const layout = world && world.layout ? world.layout : null;
+  const zw = layout ? layout.zones[1].x1 - layout.zones[1].x0 : 600;
+  const W = layout ? layout.width : 4800;
   let top = null, key = null;
-  try { top = B.groundYAt(x); key = B.biomeKeyAt(x, 550); } catch (e) { top = null; }
+  try { top = B.groundYAt(x, layout); key = B.biomeKeyAt(x, 550, world); } catch (e) { top = null; }
   if (top === null || top === undefined || !isFinite(top)) return null;
   const info = biomeGroundInfo(key);
   if (!info || !info.ground) return null;
   const plain = { top, rgb: info.ground };
-  const border = Math.round(x / 600) * 600;
-  if (border <= 0 || border >= 4800 || Math.abs(x - border) >= FLOW_TRANS / 2) return plain;
+  const border = Math.round(x / zw) * zw;
+  if (border <= 0 || border >= W || Math.abs(x - border) >= FLOW_TRANS / 2) return plain;
   const xa = border - FLOW_TRANS / 2 - 1, xb = border + FLOW_TRANS / 2 + 1;
   let ta = null, ka = null, tb = null, kb = null;
-  try { ta = B.groundYAt(xa); ka = B.biomeKeyAt(xa, 550); } catch (e) { /* keep null */ }
-  try { tb = B.groundYAt(xb); kb = B.biomeKeyAt(xb, 550); } catch (e) { /* keep null */ }
+  try { ta = B.groundYAt(xa, layout); ka = B.biomeKeyAt(xa, 550, world); } catch (e) { /* keep null */ }
+  try { tb = B.groundYAt(xb, layout); kb = B.biomeKeyAt(xb, 550, world); } catch (e) { /* keep null */ }
   const ia = biomeGroundInfo(ka), ib = biomeGroundInfo(kb);
   const num = (v) => v !== null && v !== undefined && isFinite(v);
   if (!num(ta) || !num(tb) || !ia || !ia.ground || !ib || !ib.ground) return plain;
@@ -724,12 +729,19 @@ export function smoothGroundAt(B, x) {
 // surface eases down where the deep drops at x=4200 instead of drawing
 // the sim's honest 100px rect step as a water cliff. The sim's waterAt
 // rects are untouched — this is paint, not physics.
-export function seaSurfaceYAt(x) {
-  if (x < 3000 || x >= 4800) return null;
-  if (x < 4080) return 800;
-  if (x >= 4320) return 700;
-  const t = (x - 4080) / 240, s = t * t * (3 - 2 * t);
-  return 800 - 100 * s;
+export function seaSurfaceYAt(x, layout = null) {
+  // v0.26: the canonical default preserves the painted easing
+  // (800 → 700 across x∈[4080,4320]); drawWaters eases from live rects.
+  const x1 = layout ? layout.width : 4800;
+  const zx = (i, f) => layout ? layout.zones[i].x0 + f * (layout.zones[i].x1 - layout.zones[i].x0) : null;
+  const lo = layout ? zx(6, 1) : 3000, hi = x1;
+  if (x < lo || x >= hi) return null;
+  const ez0 = (layout ? zx(7, 0) : 4200) - 120, ez1 = (layout ? zx(7, 0) : 4200) + 120;
+  const s0 = layout ? layout.seaY : 800, s1 = 700;
+  if (x < ez0) return s0;
+  if (x >= ez1) return s1;
+  const t = (x - ez0) / 240, s = t * t * (3 - 2 * t);
+  return s0 + (s1 - s0) * s;
 }
 
 function parseRGBA(s) {
@@ -754,7 +766,7 @@ export function drawBiomeBands(ctx, world, B, light) {
   let runKey = null, runX0 = 0;
   for (let x = 0; x <= W; x += step) {
     let k = null;
-    try { k = B.biomeKeyAt(x, H * 0.5); } catch (e) { k = null; }
+    try { k = B.biomeKeyAt(x, H * 0.5, world); } catch (e) { k = null; }
     if (k !== runKey) {
       if (runKey) runs.push({ key: runKey, x0: runX0, x1: x });
       runKey = k; runX0 = x;
@@ -783,7 +795,7 @@ export function drawBiomeBands(ctx, world, B, light) {
     if (r.key === 'arctic') {
       // Glare streaks on the ice shelf — pale diagonal slashes.
       let top = 800;
-      try { const gt = B.groundYAt((r.x0 + r.x1) / 2); if (gt != null) top = gt; } catch (e) { /* keep nominal */ }
+      try { const gt = B.groundYAt((r.x0 + r.x1) / 2, world.layout); if (gt != null) top = gt; } catch (e) { /* keep nominal */ }
       ctx.strokeStyle = 'rgba(255,255,255,0.35)';
       ctx.lineWidth = 3;
       ctx.lineCap = 'round';
@@ -821,7 +833,7 @@ export function drawBiomeBands(ctx, world, B, light) {
   // cliffs keep their faces. Still the sim's answer, never invented.
   const gstep = 30;
   for (let x = 0; x < W; x += gstep) {
-    const sg = smoothGroundAt(B, x);
+    const sg = smoothGroundAt(B, x, world);
     if (!sg) continue;
     ctx.fillStyle = groundRGB(sg.rgb, light);
     ctx.fillRect(x, sg.top, gstep + 1, H - sg.top);
@@ -847,10 +859,12 @@ export function drawWater(ctx, wr, worldH, light) {
 // connected sea — shallows, archipelago channels, deep — is drawn as ONE
 // body with the smoothed surface from seaSurfaceYAt, so the eye travels
 // east over water without tripping on the rect seams.
-export function drawWaters(ctx, B, worldH, light) {
+export function drawWaters(ctx, B, worldH, light, world = null) {
+  const layout = world && world.layout ? world.layout : null;
   let rects = [];
-  try { rects = B.waterRects(); } catch (e) { rects = []; }
-  const isSea = (wr) => !!wr.salt && wr.x0 >= 3000;
+  try { rects = B.waterRects(layout); } catch (e) { rects = []; }
+  const seaStart = layout ? layout.zones[4].x1 : 3000; // the water zones
+  const isSea = (wr) => !!wr.salt && wr.x0 >= seaStart;
   for (const wr of rects) if (!isSea(wr)) drawWater(ctx, wr, worldH, light);
   const sea = rects.filter(isSea);
   if (!sea.length) return;
@@ -858,7 +872,18 @@ export function drawWaters(ctx, B, worldH, light) {
   const x1 = Math.max(...sea.map((w) => w.x1));
   const k = 0.6 + 0.4 * light;
   const step = 20;
-  const surf = (x) => seaSurfaceYAt(x);
+  // v0.26: ease from the open-sea surface down to the deep, read off the
+  // generated rects (painted: 800 → 700 across x∈[4080,4320]).
+  const seaSurf = sea[0].surfaceY;
+  const deepRect = sea[sea.length - 1];
+  const deepSurf = deepRect.surfaceY;
+  const ez0 = deepRect.x0 - 120, ez1 = deepRect.x0 + 120;
+  const surf = (x) => {
+    if (x <= ez0) return seaSurf;
+    if (x >= ez1) return deepSurf;
+    const t = (x - ez0) / (ez1 - ez0), e = t * t * (3 - 2 * t);
+    return seaSurf + (deepSurf - seaSurf) * e;
+  };
   ctx.beginPath();
   ctx.moveTo(x0, surf(x0));
   for (let x = x0 + step; x <= x1; x += step) ctx.lineTo(x, surf(x));

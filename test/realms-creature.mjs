@@ -41,6 +41,23 @@ function addTestCreature(world, x, opts = {}) {
   return c;
 }
 
+// v0.26: ponds are generated per seed — find a jungle freshwater pond.
+function pondAt(world) {
+  const jz = world.layout.zones[2];
+  const pond = world.layout.waters.find((r) => !r.salt && r.x0 >= jz.x0 && r.x1 <= jz.x1);
+  assert.ok(pond, 'a jungle freshwater pond exists');
+  return { x: (pond.x0 + pond.x1) / 2, surfaceY: pond.surfaceY };
+}
+
+// v0.26: the deep water column — for tests that need depth (the ponds are
+// shallow; buoyancy would surface the swimmer mid-test).
+function deepAt(world) {
+  const dz = world.layout.zones[7];
+  const deep = world.layout.waters.find((r) => r.salt && r.x0 >= dz.x0);
+  assert.ok(deep, 'deep water exists');
+  return { x: (deep.x0 + deep.x1) / 2, surfaceY: deep.surfaceY };
+}
+
 // Put a creature at an explicit world position (for water/biome tests).
 function placeCreature(world, x, y, opts = {}) {
   const pi = opts.platformIndex !== undefined ? opts.platformIndex : platformIndexAt(world, x, y);
@@ -86,11 +103,11 @@ test('v0.18: deriveAquaticPheno — founder untouched, idempotent', () => {
 
 test('v0.18: refreshWaterState — submerged is 14px+ below the surface', () => {
   const world = testWorld();
-  // Jungle pool: x 1300–1400, surfaceY 790.
-  const deep = placeCreature(world, 1350, 810); // 20px under → submerged
+  const pond = pondAt(world); // v0.26: the generated jungle pool
+  const deep = placeCreature(world, pond.x, pond.surfaceY + 20); // 20px under → submerged
   assert.ok(deep.submerged, '20px below surfaceY → submerged');
   assert.ok(deep._water, 'in water');
-  const shallow = placeCreature(world, 1350, 800); // 10px under → floating, not submerged
+  const shallow = placeCreature(world, pond.x, pond.surfaceY + 10); // 10px under → floating, not submerged
   assert.ok(!shallow.submerged, '10px below surfaceY → not submerged (margin is 14)');
   const dry = addTestCreature(world, 800); // mx→1500, dry jungle
   assert.ok(!dry.submerged && !dry._water, 'dry land → no water state');
@@ -98,7 +115,8 @@ test('v0.18: refreshWaterState — submerged is 14px+ below the surface', () => 
 
 test('v0.18: buoyancy — a body floats to 11px below the surface and stays', () => {
   const world = testWorld();
-  const c = placeCreature(world, 1350, 900); // deep in the pool
+  const pond = pondAt(world); // v0.26
+  const c = placeCreature(world, pond.x, pond.surfaceY + 30); // deep in the pool
   for (let t = 0; t < 4; t += 0.1) stepPhysics(c, world, 0.1);
   const surfaceY = c._water.surfaceY;
   assert.ok(Math.abs(c.y - (surfaceY + FLOAT_MARGIN)) < 6,
@@ -115,7 +133,8 @@ test('v0.18: buoyancy — a body floats to 11px below the surface and stays', ()
 
 test('v0.18: swim in water with membranes — 2D steering at swimSpeed', () => {
   const world = testWorld();
-  const c = placeCreature(world, 1350, 810);
+  const pond = pondAt(world); // v0.26
+  const c = placeCreature(world, pond.x, pond.surfaceY + 20);
   c.pheno.wingArea = 0.5;
   deriveAquaticPheno(c.pheno); // swimSpeed = 100
   assert.equal(c.pheno.swimSpeed, 100);
@@ -131,7 +150,8 @@ test('v0.18: swim in water with membranes — 2D steering at swimSpeed', () => {
 
 test('v0.18: swim without membranes — flailing at ~12px/s, 3× oxygen cost', () => {
   const world = testWorld();
-  const c = placeCreature(world, 1350, 900); // deep — stays submerged during the test
+  const deep = deepAt(world); // v0.26: deep water — stays submerged
+  const c = placeCreature(world, deep.x, deep.surfaceY + 100); // deep — stays submerged during the test
   assert.equal(c.pheno.swimSpeed, 12);
   c.action = 'swim';
   c.actionTimer = 10;
@@ -147,7 +167,7 @@ test('v0.18: swim without membranes — flailing at ~12px/s, 3× oxygen cost', (
   // Oxygen: base submerged drain + 2× flail surcharge → 3× total.
   // Measure the ratio against a non-flailing control (same depth, membranes).
   const drain = oxy0 - c.biochem.oxygen;
-  const ctrl = placeCreature(world, 1650, 900); // second jungle pool
+  const ctrl = placeCreature(world, deep.x, deep.surfaceY + 100); // same water
   ctrl.pheno.wingArea = 0.5;
   deriveAquaticPheno(ctrl.pheno);
   ctrl.action = 'swim'; ctrl.actionTimer = 10; ctrl.wanderDir = 1;
@@ -172,7 +192,8 @@ test('v0.18: swim on land is an honest flop', () => {
 
 test('v0.18: dive holds depth; oxygen gates the ascent', () => {
   const world = testWorld();
-  const c = placeCreature(world, 1350, 860); // well under
+  const pond = pondAt(world); // v0.26
+  const c = placeCreature(world, pond.x, pond.surfaceY + 30); // well under
   assert.ok(c.submerged, 'starts submerged');
   c.pheno.gillArea = 1.0; // gills → stays down
   c.action = 'dive';
@@ -181,7 +202,7 @@ test('v0.18: dive holds depth; oxygen gates the ascent', () => {
   for (let t = 0; t < 2; t += 0.5) updateCreature(c, world, 0.5);
   assert.ok(Math.abs(c.y - y0) < 30, `gills hold depth: y ${y0.toFixed(0)} → ${c.y.toFixed(0)}`);
   // No gills + critical oxygen → releases depth and re-decides.
-  const d = placeCreature(world, 1350, 860);
+  const d = placeCreature(world, pond.x, pond.surfaceY + 30);
   d.pheno.gillArea = 0;
   d.biochem.oxygen = 0.04;
   d.action = 'dive';
@@ -194,7 +215,8 @@ test('v0.18: dive holds depth; oxygen gates the ascent', () => {
 
 test('v0.18: drink adjacent water restores hydration; far water does not', () => {
   const world = testWorld();
-  const c = placeCreature(world, 1350, 800); // 10px above the pool surface
+  const pond = pondAt(world); // v0.26
+  const c = placeCreature(world, pond.x, pond.surfaceY - 10); // 10px above the pool surface
   c.biochem.hydration = 0.3;
   c.action = 'drink';
   c.actionTimer = 10;
