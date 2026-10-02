@@ -431,6 +431,8 @@ export function generateLayout(seed, size = 1, attempt = 0, gentle = false) {
 // attempt counter is mixed into the stream seed.
 
 export function viabilityGate(layout) {
+  // v1 (canonical): the painted world is viable by construction.
+  if (layout.canonical) return { ok: true, failures: [] };
   const failures = [];
   const F = layout.founder;
   const P = layout.platforms || [];
@@ -827,36 +829,44 @@ function landRegions(layout) {
   return layout.regions.filter((r) => r.label !== 'deep' && r.label !== 'shallows');
 }
 export const COHORT_FINDERS = {
-  'coldest-land': (rs) => {
-    let best = null, bestT = Infinity;
-    for (const r of rs) {
-      const T = sampleTinit(r);
-      if (T < bestT || (T === bestT && best && r.x0 < best.x0)) { bestT = T; best = r; }
-    }
-    return best;
-  },
-  'highest-land': (rs) => {
-    let best = null, bestY = Infinity;
-    for (const r of rs) {
-      const y = regionGroundY(r);
-      if (y < bestY || (y === bestY && best && r.x0 < best.x0)) { bestY = y; best = r; }
-    }
-    return best;
-  },
+  // Label-preferring: the cohort wants its biome; the physical criterion
+  // is the fallback when the label is absent. Null = cohort skipped (G5).
+  'coldest-land': (rs) => largestWithLabel(rs, 'arctic') || coldestLand(rs),
+  'highest-land': (rs) => largestWithLabel(rs, 'mountains') || highestLand(rs),
   'founder': (rs, layout) => rs.find((r) => r.id === layout.founder.regionId) || null,
   'largest-plains': (rs) => largestWithLabel(rs, 'plains'),
-  'hottest-dry': (rs) => {
-    let best = null, bestT = -Infinity;
-    for (const r of rs) {
-      const T = sampleTinit(r);
-      if (T > bestT || (T === bestT && best && r.x0 < best.x0)) { bestT = T; best = r; }
-    }
-    return best;
-  },
+  'hottest-dry': (rs) => largestWithLabel(rs, 'desert') || hottestDry(rs),
   'largest-shallows': (rs) => largestWithLabel(rs, 'shallows'),
   'largest-islands': (rs) => largestWithLabel(rs, 'archipelago'),
   'deep-water': (rs) => largestWithLabel(rs, 'deep'),
 };
+function coldestLand(rs) {
+  let best = null, bestT = Infinity;
+  for (const r of rs) {
+    if (r.label === 'shallows' || r.label === 'archipelago' || r.label === 'deep') continue;
+    const T = sampleTinit(r);
+    if (T < bestT || (T === bestT && best && r.x0 < best.x0)) { bestT = T; best = r; }
+  }
+  return best;
+}
+function highestLand(rs) {
+  let best = null, bestY = Infinity;
+  for (const r of rs) {
+    if (r.label === 'shallows' || r.label === 'archipelago' || r.label === 'deep') continue;
+    const y = regionGroundY(r);
+    if (y < bestY || (y === bestY && best && r.x0 < best.x0)) { bestY = y; best = r; }
+  }
+  return best;
+}
+function hottestDry(rs) {
+  let best = null, bestT = -Infinity;
+  for (const r of rs) {
+    if (r.label === 'shallows' || r.label === 'archipelago' || r.label === 'deep') continue;
+    const T = sampleTinit(r);
+    if (T > bestT || (T === bestT && best && r.x0 < best.x0)) { bestT = T; best = r; }
+  }
+  return best;
+}
 function largestWithLabel(rs, label) {
   let best = null;
   for (const r of rs) {
@@ -889,8 +899,9 @@ function regionGroundY(r) {
   return best;
 }
 // findRegion(layout, finder, x0, x1): the region matching finder, optionally
-// restricted to the x-range (for size>1 segments); falls back to the nearest
-// region when the label is absent in-range.
+// restricted to the x-range (for size>1 segments). Null if the finder has
+// no match — the caller skips the cohort (G5 logs it); no nearest-fallback
+// (a shark in a plains region is worse than no shark).
 export function findRegion(layout, finder, x0 = 0, x1 = Infinity) {
   const fn = COHORT_FINDERS[finder];
   if (!fn) return null;
@@ -900,16 +911,7 @@ export function findRegion(layout, finder, x0 = 0, x1 = Infinity) {
     const inRange = layout.regions.filter((r) => r.x1 > x0 && r.x0 < x1);
     const pool = inRange.length ? inRange : layout.regions;
     // 'founder' ignores the range (there is one founder region).
-    const found = fn(finder === 'founder' ? layout.regions : pool, layout);
-    if (found) return found;
-    // Nearest-region fallback: closest region center to the range center.
-    const cx = (x0 + Math.min(x1, layout.width)) / 2;
-    let best = null, bestD = Infinity;
-    for (const r of pool) {
-      const d = Math.abs(r.cx - cx);
-      if (d < bestD) { bestD = d; best = r; }
-    }
-    return best;
+    return fn(finder === 'founder' ? layout.regions : pool, layout) || null;
   } finally {
     _tinitCtx = null;
   }

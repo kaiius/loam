@@ -694,12 +694,31 @@ function groundRGB(c, light) {
 // only steps < 40px ease; the 120px coastline at x=3000 keeps its face.
 // Pure function of the sim's biomes module — testable without a canvas.
 export const FLOW_TRANS = 90;
+// Zone bounds by ZONE_KEYS index. v1: the painted zones. v2: the largest
+// region with the corresponding label (or the full width if absent).
+function zoneBoundsByIndex(layout, i) {
+  const KEYS = ['arctic', 'mountains', 'jungle', 'plains', 'desert', 'shallows', 'archipelago', 'deep'];
+  if (!layout) return null;
+  if (!layout.canonical && layout.regions) {
+    const label = KEYS[i];
+    let best = null;
+    for (const r of layout.regions) {
+      if (r.label !== label) continue;
+      if (!best || (r.x1 - r.x0) > (best.x1 - best.x0)) best = r;
+    }
+    if (best) return { x0: best.x0, x1: best.x1 };
+    return { x0: 0, x1: layout.width };
+  }
+  const z = layout.zones[i];
+  return z ? { x0: z.x0, x1: z.x1 } : null;
+}
 export function smoothGroundAt(B, x, world = null) {
   // -> { top, rgb:[r,g,b] } | null (open water: nothing to paint)
   // v0.26: reads the world's generated layout (borders scale with size);
   // without one the sim's canonical defaults hold.
   const layout = world && world.layout ? world.layout : null;
-  const zw = layout ? layout.zones[1].x1 - layout.zones[1].x0 : 600;
+  const zb1 = zoneBoundsByIndex(layout, 1);
+  const zw = zb1 ? zb1.x1 - zb1.x0 : 600;
   const W = layout ? layout.width : 4800;
   let top = null, key = null;
   try { top = B.groundYAt(x, layout); key = B.biomeKeyAt(x, 550, world); } catch (e) { top = null; }
@@ -733,7 +752,10 @@ export function seaSurfaceYAt(x, layout = null) {
   // v0.26: the canonical default preserves the painted easing
   // (800 → 700 across x∈[4080,4320]); drawWaters eases from live rects.
   const x1 = layout ? layout.width : 4800;
-  const zx = (i, f) => layout ? layout.zones[i].x0 + f * (layout.zones[i].x1 - layout.zones[i].x0) : null;
+  const zx = (i, f) => {
+    const zb = zoneBoundsByIndex(layout, i);
+    return zb ? zb.x0 + f * (zb.x1 - zb.x0) : null;
+  };
   const lo = layout ? zx(6, 1) : 3000, hi = x1;
   if (x < lo || x >= hi) return null;
   const ez0 = (layout ? zx(7, 0) : 4200) - 120, ez1 = (layout ? zx(7, 0) : 4200) + 120;
@@ -863,7 +885,8 @@ export function drawWaters(ctx, B, worldH, light, world = null) {
   const layout = world && world.layout ? world.layout : null;
   let rects = [];
   try { rects = B.waterRects(layout); } catch (e) { rects = []; }
-  const seaStart = layout ? layout.zones[4].x1 : 3000; // the water zones
+  const zb4 = zoneBoundsByIndex(layout, 4);
+  const seaStart = zb4 ? zb4.x1 : 3000; // the water zones
   const isSea = (wr) => !!wr.salt && wr.x0 >= seaStart;
   for (const wr of rects) if (!isSea(wr)) drawWater(ctx, wr, worldH, light);
   const sea = rects.filter(isSea);

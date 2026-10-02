@@ -22,11 +22,37 @@ export const BIOMES = [
   { key: 'deep', name: 'Azure Deep', x0: 4200, x1: 4800, cx: 4500 },
 ];
 
+// PAINTED_BIOMES: alias for the v1 painted world (name lookup).
+export const PAINTED_BIOMES = BIOMES;
+
 export function biomeAt(x, y, layout = null) {
   const l = L(layout);
+  // v2: regions carry labels — return the region KEY.
+  if (!l.canonical && l.regions) {
+    const r = regionAt(x, l);
+    return r ? r.label : 'plains';
+  }
+  // v1 (canonical): index into the painted zones.
   const xc = Math.max(0, Math.min(l.width - 1, x));
   for (let i = 0; i < l.zones.length; i++) if (xc < l.zones[i].x1) return i;
   return l.zones.length - 1;
+}
+
+// The region containing x. v2: from layout.regions; v1: synthetic region
+// from the painted zones (label = biome key).
+export function regionAt(x, layout = null) {
+  const l = L(layout);
+  const xc = Math.max(0, Math.min(l.width - 1, x));
+  if (!l.canonical && l.regions) {
+    for (const r of l.regions) if (xc >= r.x0 && xc < r.x1) return r;
+    return l.regions[l.regions.length - 1];
+  }
+  for (let i = 0; i < l.zones.length; i++) {
+    const z = l.zones[i];
+    if (xc < z.x1) return { id: i, label: BIOMES[i].key, x0: z.x0, x1: z.x1, cx: (z.x0 + z.x1) / 2 };
+  }
+  const z = l.zones[l.zones.length - 1];
+  return { id: 7, label: BIOMES[7].key, x0: z.x0, x1: z.x1, cx: (z.x0 + z.x1) / 2 };
 }
 
 import { createRng } from './rng.js';
@@ -49,23 +75,58 @@ const L = (layout) => layout || canon();
 // v0.23 "Weather": emergent biomes. With a world (climate state), the key
 // comes from the Whittaker lookup on the generated T/M field — biomes drift
 // as the climate evolves. Without one (pure geography: tests, renderers),
-// the painted map is the answer. Altitude cools the reading via the lapse,
-// so high peaks emerge as alpine without any painted "mountain = cold" rule.
+// the painted map (v1) or region label (v2) is the answer. Altitude cools
+// the reading via the lapse, so high peaks emerge as alpine without any
+// painted "mountain = cold" rule.
 export function biomeKeyAt(x, y, world = null) {
   const layout = world ? world.layout : null;
   if (world && world.climate) {
     const c = colAt(world.climate, x);
-    const bi = biomeAt(x, y, layout);
-    const waterKey = bi >= 5 ? BIOMES[bi].key : null; // water bodies are geography
     const lapse = Math.max(0, 800 - y) / 550;
     const Teff = Math.max(0, Math.min(1, c.T - lapse * 0.30));
+    // Water-ness from the water table (v2: waterAt; v1: painted index ≥5).
+    let waterKey = null;
+    const w = waterAt(x, y, layout);
+    if (w) {
+      const l = L(layout);
+      if (!l.canonical && l.regions) {
+        const r = regionAt(x, l);
+        waterKey = r && (r.label === 'shallows' || r.label === 'archipelago' || r.label === 'deep')
+          ? r.label : 'shallows';
+      } else {
+        const bi = biomeAt(x, y, layout);
+        waterKey = bi >= 5 ? BIOMES[bi].key : null;
+      }
+    }
     return whittakerKey(Teff, c.soil, waterKey);
+  }
+  const l = L(layout);
+  if (!l.canonical && l.regions) {
+    const r = regionAt(x, l);
+    return r ? r.label : 'plains';
   }
   return BIOMES[biomeAt(x, y, layout)].key;
 }
 
-export function biomeCenterX(i, layout = null) {
-  const z = L(layout).zones[Math.max(0, Math.min(7, i))];
+export function biomeCenterX(keyOrIndex, layout = null) {
+  const l = L(layout);
+  // v2: key (label string) → center of the LARGEST region with that label.
+  // Number → region index (backward compat for migrated callers).
+  if (!l.canonical && l.regions) {
+    if (typeof keyOrIndex === 'string') {
+      let best = null;
+      for (const r of l.regions) {
+        if (r.label !== keyOrIndex) continue;
+        if (!best || (r.x1 - r.x0) > (best.x1 - best.x0)) best = r;
+      }
+      if (best) return (best.x0 + best.x1) / 2;
+      return l.width / 2; // label absent: world center
+    }
+    const r = l.regions[Math.max(0, Math.min(l.regions.length - 1, keyOrIndex | 0))];
+    return r ? (r.x0 + r.x1) / 2 : l.width / 2;
+  }
+  // v1: index into the painted zones.
+  const z = l.zones[Math.max(0, Math.min(7, keyOrIndex | 0))];
   return (z.x0 + z.x1) / 2;
 }
 
@@ -73,10 +134,17 @@ function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-// Altitude cold + biome cold. Arctic: the honest cold, base 1.0.
-// Mountains: altitude lapse — 0 at foothills (y≥700) → 1 above y≤250.
-// Deep: water chill 0.3. Everywhere else: 0.
+// Altitude cold + biome cold. v1 (canonical): the painted rules — Arctic:
+// the honest cold, base 1.0. Mountains: altitude lapse — 0 at foothills
+// (y≥700) → 1 above y≤250. Deep: water chill 0.3. Everywhere else: 0.
+// v2: physical — from the generated Tinit field (tempC = -10 + 45·T).
 export function ambientCold(x, y, layout = null) {
+  const l = L(layout);
+  if (!l.canonical && l.regions) {
+    const T = tinitAt(x, l);
+    const tempC = -10 + 45 * T;
+    return clamp01((10 - tempC) / 20); // 1.0 at ≤-10°C, 0 at ≥10°C
+  }
   const b = biomeAt(x, y, layout);
   if (b === 0) return 1.0;
   if (b === 1) return clamp01((700 - y) / (700 - 250));
@@ -84,13 +152,19 @@ export function ambientCold(x, y, layout = null) {
   return 0;
 }
 
-// Desert interior → 1.0, ramping from 0.3 at the biome edges.
+// v1: Desert interior → 1.0, ramping from 0.3 at the biome edges.
 // Jungle 0.1, plains 0.2, everywhere else 0. The interior band scales with
 // the generated desert zone (150px margins at size 1, verbatim).
+// v2: physical — from the generated Tinit field.
 export function ambientHeat(x, y, layout = null) {
+  const l = L(layout);
+  if (!l.canonical && l.regions) {
+    const T = tinitAt(x, l);
+    const tempC = -10 + 45 * T;
+    return clamp01((tempC - 22) / 13); // 1.0 at ≥35°C, 0 at ≤22°C
+  }
   const b = biomeAt(x, y, layout);
   if (b === 4) {
-    const l = L(layout);
     const dz = l.zones[4];
     const m = 150 * l.size;
     const lo = dz.x0 + m, hi = dz.x1 - m;
@@ -101,6 +175,14 @@ export function ambientHeat(x, y, layout = null) {
   if (b === 2) return 0.1;
   if (b === 3) return 0.2;
   return 0;
+}
+
+// Tinit at x (v2). v1 layouts don't have it — return 0.5 (neutral).
+function tinitAt(x, layout) {
+  const l = L(layout);
+  if (!l.Tinit) return 0.5;
+  const i = Math.max(0, Math.min(l.Tinit.length - 1, Math.floor(x / 20)));
+  return l.Tinit[i];
 }
 
 export function ambientTemp(x, y, layout = null) {

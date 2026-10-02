@@ -13,6 +13,7 @@ import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA
 // v0.18 "Realms": the biome map — region layout, temperature fields,
 // waters, ground. Pure geography; every call NaN-guarded at use.
 import { biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, groundYAt } from './biomes.js';
+import { findRegion } from './worldgen.js';
 import { windAt, tempAt, cloudAt, seasonSun } from './weather.js';
 
 let nextId = 1;
@@ -2345,22 +2346,48 @@ export function spawnPredators(world) {
   // Decor stream: predator placement must not shift the main rng sequence
   // (founder genomes/cohort sizes stay pinned). The v0.9 decorRng lesson.
   const rng = world.decorRng || world.rng || { range: (a, b) => a + (b - a) / 2 };
-  const sharkBiomes = [7, 7, 7, 6, 5]; // deep×3, archipelago, shallows
-  for (const bi of sharkBiomes) {
-    let sx = null;
-    try { sx = biomeCenterX(bi, world.layout); } catch (e) { sx = null; }
-    if (!Number.isFinite(sx)) sx = [4500, 4400, 4600, 3900, 3300][sharkBiomes.indexOf(bi)] || 4500;
+  const layout = world.layout;
+  // v2: sharks → deep water via the region finder; bears → coldest land.
+  // v1: index-based (deep×3, archipelago, shallows; arctic).
+  const sharkXs = [];
+  if (layout && !layout.canonical && layout.regions) {
+    const deep = findRegion(layout, 'deep-water');
+    const arch = findRegion(layout, 'largest-islands');
+    const shal = findRegion(layout, 'largest-shallows');
+    const regs = [deep, deep, deep, arch, shal].filter(Boolean);
+    for (const r of regs) sharkXs.push((r.x0 + r.x1) / 2);
+    while (sharkXs.length < 5) sharkXs.push(layout.width / 2);
+  } else {
+    const sharkBiomes = [7, 7, 7, 6, 5]; // deep×3, archipelago, shallows
+    for (const bi of sharkBiomes) {
+      let sx = null;
+      try { sx = biomeCenterX(bi, layout); } catch (e) { sx = null; }
+      if (!Number.isFinite(sx)) sx = [4500, 4400, 4600, 3900, 3300][sharkBiomes.indexOf(bi)] || 4500;
+      sharkXs.push(sx);
+    }
+  }
+  for (const sx of sharkXs) {
     let w = null;
-    try { w = waterAt(sx, 800, world.layout); } catch (e) { w = null; }
+    try { w = waterAt(sx, 800, layout); } catch (e) { w = null; }
     const sy = w && Number.isFinite(w.surfaceY) ? w.surfaceY + 120 : 980;
     world.predators.push(makeShark(world, sx + rng.range(-80, 80), sy));
   }
-  for (let i = 0; i < 2; i++) {
-    let bx = null;
-    try { bx = biomeCenterX(0, world.layout); } catch (e) { bx = null; }
-    if (!Number.isFinite(bx)) bx = 300;
+  const bearXs = [];
+  if (layout && !layout.canonical && layout.regions) {
+    const cold = findRegion(layout, 'coldest-land');
+    const bx0 = cold ? (cold.x0 + cold.x1) / 2 : layout.width / 2;
+    bearXs.push(bx0, bx0);
+  } else {
+    for (let i = 0; i < 2; i++) {
+      let bx = null;
+      try { bx = biomeCenterX(0, layout); } catch (e) { bx = null; }
+      if (!Number.isFinite(bx)) bx = 300;
+      bearXs.push(bx);
+    }
+  }
+  for (const bx of bearXs) {
     let gy = 800;
-    try { gy = groundYAt(bx, world.layout); } catch (e) { gy = 800; }
+    try { gy = groundYAt(bx, layout); } catch (e) { gy = 800; }
     if (!Number.isFinite(gy)) gy = 800;
     world.predators.push(makeBear(world, bx + rng.range(-100, 100), gy));
   }

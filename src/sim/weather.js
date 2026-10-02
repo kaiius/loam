@@ -21,6 +21,7 @@
 
 import { createRng } from './rng.js';
 import { timeOfDay, daylightCurve } from './world.js'; // v0.28: the shared integer-tick day clock
+import { SUBSTRATE, SUBSTRATE_PROPS } from './worldgen.js'; // v2: substrate properties
 
 export const WEATHER_COL_W = 100;
 export const WEATHER_COLS = 48; // WORLD_W 4800 / 100
@@ -184,11 +185,25 @@ export function placeVents(world) {
   const cl = world.climate;
   const rng = createRng((world.seed >>> 0) ^ VENT_SEED_XOR);
   const geo = world.climateGeo;
-  // v0.26: geothermal zone = arctic + mountains from the layout.
-  const lz = world.layout ? world.layout.zones : null;
-  const size = world.layout ? world.layout.size : 1;
-  const lo = lz ? lz[0].x0 + 60 * size : 60;
-  const hi = lz ? lz[1].x1 - 60 * size : 1140;
+  const layout = world.layout;
+  // v2: geothermal zone = arctic + mountains REGIONS from the generated
+  // layout. v1: the painted zones (verbatim).
+  let lo, hi;
+  const size = layout ? layout.size : 1;
+  if (layout && !layout.canonical && layout.regions) {
+    let x0 = Infinity, x1 = -Infinity;
+    for (const r of layout.regions) {
+      if (r.label === 'arctic' || r.label === 'mountains') {
+        x0 = Math.min(x0, r.x0); x1 = Math.max(x1, r.x1);
+      }
+    }
+    if (x0 < x1) { lo = x0 + 60 * size; hi = x1 - 60 * size; }
+  }
+  if (lo === undefined) {
+    const lz = layout ? layout.zones : null;
+    lo = lz ? lz[0].x0 + 60 * size : 60;
+    hi = lz ? lz[1].x1 - 60 * size : 1140;
+  }
   cl.vents = [];
   let guard = 0;
   while (cl.vents.length < VENT_COUNT && guard++ < 300) {
@@ -249,8 +264,55 @@ export function diffuseT(climate, dt) {
   for (let i = 0; i < n; i++) climate.cols[i].T = clamp01(climate.cols[i].T + d[i]);
 }
 
+// v2: seasonal amplitude by SUBSTRATE (not painted biome). Sand swings
+// hard (desert-like), water buffers, soil breathes easy.
+export const SEASON_AMP_BY_SUBSTRATE = {
+  [SUBSTRATE.DEEP_WATER]: 0.35,
+  [SUBSTRATE.SHALLOW_WATER]: 0.35,
+  [SUBSTRATE.SAND]: 1.0,
+  [SUBSTRATE.SOIL]: 0.5,
+  [SUBSTRATE.ROCK]: 0.6,
+  [SUBSTRATE.ALPINE]: 0.8,
+};
+
+// v2: init the climate field from the generated physical fields — T from
+// Tinit, soil moisture from substrate retention, thermal mass from substrate
+// heat capacity, seasonal amplitude by substrate, wind from the thermal
+// equator. The old painted path (initClimateFromPainted) is kept for the
+// canonical layout.
+export function initClimateFromPhysical(climate, layout) {
+  const rng = climate.rng;
+  const n = NC(climate);
+  const tinit = layout.Tinit;
+  const sub = layout.substrate;
+  const eqX = layout.thermalEquatorX || 0;
+  climate.thermalMass = [];
+  for (let i = 0; i < n; i++) {
+    const cx = (i + 0.5) * WEATHER_COL_W;
+    // Map the 100px weather column to the 20px terrain columns.
+    const ti = Math.max(0, Math.min(tinit.length - 1, Math.floor(cx / 20)));
+    const T0 = tinit[ti];
+    const s = sub[ti];
+    const props = SUBSTRATE_PROPS[s] || SUBSTRATE_PROPS[SUBSTRATE.SOIL];
+    const c = climate.cols[i];
+    c.T = clamp01(T0 + rng.range(-0.02, 0.02));
+    c.soil = clamp01(props.retention + rng.range(-0.05, 0.05));
+    c.vapor = clamp01(0.25 + props.retention * 0.5 + rng.range(-0.05, 0.05));
+    c.cloud = clamp01(0.15 + props.retention * 0.3);
+    c.windU = baseWindU(cx, eqX) + rng.range(-8, 8);
+    climate.baseT[i] = c.T;
+    climate.wet[i] = 0.5 + props.retention;
+    climate.seasonAmp[i] = SEASON_AMP_BY_SUBSTRATE[s] !== undefined
+      ? SEASON_AMP_BY_SUBSTRATE[s] : 0.4;
+    // Thermal mass from heat capacity (water slow, land fast) — precomputed
+    // here instead of lazily in tickClimate (same values, earlier).
+    const wf = (s === SUBSTRATE.DEEP_WATER || s === SUBSTRATE.SHALLOW_WATER) ? 1 : 0;
+    climate.thermalMass.push(1 + 4 * wf);
+  }
+}
+
 // Paint the initial field from the painted biome map (world.js passes its
-// keyAt). After this, physics owns the field.
+// keyAt). After this, physics owns the field. v1 (canonical) only.
 export function initClimateFromPainted(climate, keyAt) {
   const rng = climate.rng;
   for (let i = 0; i < NC(climate); i++) {
@@ -337,13 +399,15 @@ const ADVECT_K = 0.0001;   // vapor advection per (px/s) wind — 10x slower tha
 const LIFT_K = 0.000004;    // orographic lift: windward condensation per px rise
 const LIGHTNING_P = 0.004;  // strike probability per second at full storm
 
-// The ITCZ: westerlies west of x=1500, easterlies (trades) east of it.
-// The trades carry sea moisture WEST to the rainforest — the real Amazon's
-// "flying rivers". Where the regimes meet, air converges, rises, and rains.
-// (A uniform westerly just flushes every column's vapor to the sea in 50s;
-// vapor never reaches saturation and nothing ever rains.)
-export function baseWindU(x) {
-  const t = Math.max(0, Math.min(1, (x - 1300) / 400));
+// The ITCZ: westerlies west of the convergence zone, easterlies (trades)
+// east of it. The trades carry sea moisture toward the rainforest — the real
+// Amazon's "flying rivers". Where the regimes meet, air converges, rises,
+// and rains. (A uniform westerly just flushes every column's vapor to the
+// sea in 50s; vapor never reaches saturation and nothing ever rains.)
+// v2: the convergence zone is the thermal equator (hottest longitude), not
+// the painted x=1500.
+export function baseWindU(x, thermalEquatorX = 1500) {
+  const t = Math.max(0, Math.min(1, (x - (thermalEquatorX - 200)) / 400));
   return 20 * (1 - t) + (-15) * t;
 }
 

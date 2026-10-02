@@ -340,8 +340,16 @@ export function createUI(canvas, renderer, world) {
   });
   // ---- 🐒+ troop: found a founder troop in the jungle canopy ----
   root.querySelector('#troopBtn').addEventListener('click', () => {
-    const zonePlats = (world.layout && world.layout.platformsByZone && world.layout.platformsByZone.jungle) || [];
-    const plat = zonePlats[Math.floor(zonePlats.length / 2)] || world.platforms[2] || world.platforms[0];
+    const layout = world.layout;
+    // v2: the founder canopy's platforms. v1: the jungle zone platforms.
+    let plats = [];
+    if (layout && !layout.canonical && layout.founder) {
+      const f = layout.founder;
+      plats = [...f.groundPis, ...f.branchPis].map((pi) => layout.platforms[pi]);
+    } else {
+      plats = (layout && layout.platformsByZone && layout.platformsByZone.jungle) || [];
+    }
+    const plat = plats[Math.floor(plats.length / 2)] || world.platforms[2] || world.platforms[0];
     if (!plat) return;
     const n = 4;
     const sexes = ['female', 'male', 'female', 'male'];

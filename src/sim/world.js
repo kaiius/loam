@@ -6,9 +6,9 @@ import { founderGenome } from './species.js';
 import { randomGenome, inherit, genomeDistance, GENES, EVO17_KEYS, randomAllele } from './genome.js';
 import { randomPlantGenome, plantPhenotype, inheritPlant } from './plantgenome.js';
 import { createCreature, updateCreature, creatureRadius, GRAVITY, MAX_FALL, spawnPredators, tickPredators } from './creature.js';
-import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
-import { createClimate, initClimateFromPainted, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, seasonBreedMul, WEATHER_COL_W, NC } from './weather.js';
-import { rollLayout, computeClimbLinks, ZONE_KEYS } from './worldgen.js';
+import { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, regionAt, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H } from './biomes.js';
+import { createClimate, initClimateFromPainted, initClimateFromPhysical, tickClimate, tempAt, droughtStressAt, windAt, cloudAt, placeVents, seasonBreedMul, WEATHER_COL_W, NC } from './weather.js';
+import { rollLayout, computeClimbLinks, findRegion, ZONE_KEYS } from './worldgen.js';
 
 // v0.18: the biome map is the world's geography now — re-export its API so
 // world.js stays the sim's facade.
@@ -135,7 +135,17 @@ export function createWorld(seed = 1, opts = {}) {
     // drift via the Whittaker lookup (biomeKeyAt with a world).
     climate: createClimate(seed, Math.round(layout.width / WEATHER_COL_W)),
   };
-  initClimateFromPainted(world.climate, (x, y) => BIOMES[biomeAt(x, y, layout)].key);
+  // v2: soil pools keyed by REGION ID (mass-integrity: each region's
+  // detritus loop closes locally). v1: keyed by the 8 biome keys.
+  if (!layout.canonical && layout.regions) {
+    world.soil = {};
+    for (const r of layout.regions) {
+      world.soil[r.id] = { waste: 0, fertility: 0.5, bacteria: BACT_FOUNDER };
+    }
+  }
+  // v2: climate from the generated physical fields. v1: from the painted map.
+  if (!layout.canonical && layout.Tinit) initClimateFromPhysical(world.climate, layout);
+  else initClimateFromPainted(world.climate, (x, y) => BIOMES[biomeAt(x, y, layout)].key);
   // Per-column terrain elevation (ground/rock/ridge/shelf only — branches are
   // not terrain) for orographic lift, and open-water fraction for evaporation.
   // Computed once at worldgen — the land doesn't move.
@@ -169,9 +179,18 @@ export function createWorld(seed = 1, opts = {}) {
   // vertical gap is climbable (60–240px). Computed once at worldgen —
   // the canopy's vertical roads.
   world.climbLinks = computeClimbLinks(world.platforms);
-  // v0.26: the teacher stands on the generated jungle floor (cluster 0).
-  const _jf = layout.platformsByZone.jungle[0];
-  world.teacher = createTeacher(world, (_jf.x1 + _jf.x2) / 2, _jf.pi); // the ancestral ground
+  // v2: the teacher stands on the founder canopy's ground (the ancestral
+  // ground). v1: the painted jungle floor (cluster 0).
+  let _teacherPi = null, _teacherX = 0;
+  if (!layout.canonical && layout.founder && layout.founder.groundPis.length) {
+    _teacherPi = layout.founder.groundPis[0];
+    const _tp = layout.platforms[_teacherPi];
+    _teacherX = (_tp.x1 + _tp.x2) / 2;
+  } else {
+    const _jf = layout.platformsByZone.jungle[0];
+    _teacherPi = _jf.pi; _teacherX = (_jf.x1 + _jf.x2) / 2;
+  }
+  world.teacher = createTeacher(world, _teacherX, _teacherPi); // the ancestral ground
   initLedger(world); // v0.24: the mass ledger starts with the world
   return world;
 }
@@ -241,6 +260,17 @@ export function zoneAt(x) {
     if (d < bd) { bd = d; best = z; }
   }
   return best;
+}
+
+// The soil pool for a position. v2: keyed by region id (each region's
+// detritus loop is local). v1: keyed by the 8 biome keys.
+export function soilAt(world, x) {
+  const layout = world.layout;
+  if (layout && !layout.canonical && layout.regions) {
+    const r = regionAt(x, layout);
+    return r ? world.soil[r.id] : null;
+  }
+  return world.soil ? world.soil[biomeKeyAt(x)] : null;
 }
 
 // v0.18: per-biome fruiting pressure — the old zone fruitMul generalized.
@@ -345,7 +375,7 @@ export function dropWindfall(world, f, rng) {
   if (!f) return;
   const compost = (amt) => {
     if (!(amt > 0)) return;
-    const s = world.soil && world.soil[f.zone || biomeKeyAt(f.x)];
+    const s = (f.zone != null && world.soil) ? world.soil[f.zone] : soilAt(world, f.x);
     if (s) s.waste += amt;
     else ledgerOut(world, 'lost', amt); // no soil entry: labeled, never silent
   };
@@ -651,7 +681,7 @@ export const CORPSE_ROT = 150;
 // contents spill to the zone's soil (decomposition's honest start), held
 // tools drop where the body fell. A transfer, never a deletion.
 export function releaseBodyMass(world, c) {
-  const s = world.soil && world.soil[biomeKeyAt(c.x)];
+  const s = soilAt(world, c.x);
   if (s && (c.gut || 0) > 0) s.waste += c.gut;
   c.gut = 0;
   if (c.held) {
@@ -1044,16 +1074,19 @@ export function excrete(c, world, dt) {
   const dep = Math.min(c.gut, c.gut * EXCRETE_RATE * dt);
   if (dep <= 0) return;
   c.gut -= dep;
-  const s = world.soil[biomeKeyAt(c.x)];
+  const s = soilAt(world, c.x);
   if (s) s.waste += dep;
 }
 
 export function tickSoil(world, dt) {
   if (world.noFouling) return; // §13.7: the contamination-neutralize switch
   if (!world.soil) return;
-  for (const b of BIOMES) {
-    const s = world.soil[b.key];
-    if (!s) continue;
+  // v2: soil pools keyed by region id — iterate the pools directly.
+  // v1: keyed by the 8 biome keys.
+  const pools = (world.layout && !world.layout.canonical)
+    ? Object.values(world.soil)
+    : BIOMES.map((b) => world.soil[b.key]).filter(Boolean);
+  for (const s of pools) {
     // Decomposition: raw waste becomes fertility — at the rate the
     // zone's bacteria set (v0.22 "Web of Life": the decomposer layer is
     // living; at founder biomass the multiplier is exactly 1.0, so all
@@ -1106,7 +1139,7 @@ export function compostRot(world) {
   for (let i = world.foods.length - 1; i >= 0; i--) {
     const f = world.foods[i];
     if (f.rotsAt > 0 && world.time >= f.rotsAt) {
-      const s = world.soil && world.soil[biomeKeyAt(f.x)];
+      const s = soilAt(world, f.x);
       // v0.24: the FULL amount composts — nutrition is an energy quality,
       // not a mass discount. Composting amount×nutrition deleted the
       // (1−nutrition) share (−2.5 drift in the rot isolation probe).
@@ -1127,7 +1160,7 @@ export function shedLitter(world, dt) {
   for (const p of world.plants) {
     const acc = p._litterAcc || 0;
     if (acc <= 0) continue;
-    const s = world.soil[p.zone];
+    const s = world.soil[p.regionId !== undefined ? p.regionId : p.zone];
     if (s) {
       s.waste += acc * PLANT_MASS;
       p._litterAcc = 0;
@@ -1511,7 +1544,7 @@ export function tickWorld(world, dt) {
       let tissue = dg * (1 + LITTER_FRAC);
       const need = tissue * MINERAL_FRAC;
       let draw = 0;
-      const gs = world.soil && world.soil[p.zone];
+      const gs = world.soil && world.soil[p.regionId !== undefined ? p.regionId : p.zone];
       if (gs) {
         const avail = (gs.fertility || 0) + (gs.waste || 0);
         if (Math.min(need, avail) < need) {
@@ -1539,7 +1572,7 @@ export function tickWorld(world, dt) {
         p.growth -= loss;
         // v0.24: withered tissue returns to the soil (Paul's wither rule) —
         // rot, not deletion.
-        const ws = world.soil && world.soil[p.zone];
+        const ws = world.soil && world.soil[p.regionId !== undefined ? p.regionId : p.zone];
         if (ws) ws.waste += loss * PLANT_MASS;
         else ledgerOut(world, 'withered', loss * PLANT_MASS);
       }
@@ -1627,7 +1660,7 @@ export function tickWorld(world, dt) {
         // hidden: the book always balances.
         const fruitNeed = fruits * FRUIT_MINERAL;
         let fruitDraw = 0;
-        const fs = world.soil && world.soil[p.zone];
+        const fs = world.soil && world.soil[p.regionId !== undefined ? p.regionId : p.zone];
         if (fs) {
           fruitDraw = Math.min(fruitNeed, (fs.fertility || 0) + (fs.waste || 0));
           let fd = fruitDraw;
@@ -1781,8 +1814,7 @@ export function tickWorld(world, dt) {
     // Nothing accumulates forever.
     if (world.soil && rotted.length > 0) {
       for (const s of rotted) {
-        const zone = zoneAt(s.x);
-        const soil = zone && world.soil[zone.key];
+        const soil = soilAt(world, s.x);
         if (soil) soil.waste = (soil.waste || 0) + (s.weight ?? 0.7);
       }
     }
@@ -1944,18 +1976,32 @@ export function uniqueName(world, name) {
 
 export function populate(world) {
   const rng = world.rng;
-  // v0.18 "Realms": the legacy jungle-only battery spawner. The founder 9
-  // platforms are indices 0–8 (the scaled jungle), so platform indices are
-  // unchanged; x-coordinates are mapped into the jungle region,
-  // x' = 1200 + x×(600/1600). The rng draw ORDER is identical to v0.17.1
-  // (same calls, same counts — bounds don't consume draws), so founder
-  // genomes are bit-identical; only positions moved. Four founders, plain
-  // founder stock, no shifts.
-  // v0.26: positions are jungle-zone-relative (cluster 0); platform
-  // indices are jungle ordinals — identical values at size 1.
-  const jz = world.layout.zones[2];
-  const mx = (x) => jz.x0 + x * 0.375;
-  const JP = (ord) => world.layout.platformsByZone.jungle[ord].pi;
+  // v2: founder-canopy-relative. The v1 ordinals (0=ground, 1-8=branches)
+  // map onto the founder canopy's ground/branch platforms; x maps into the
+  // founder region bounds.
+  const layout = world.layout;
+  let jz, mx, JP;
+  if (!layout.canonical && layout.founder) {
+    const f = layout.founder;
+    const fr = layout.regions[f.regionId];
+    jz = { x0: fr.x0, x1: fr.x1 };
+    mx = (x) => fr.x0 + (x / 1600) * (fr.x1 - fr.x0);
+    const plats = [f.groundPis[0], ...f.branchPis];
+    JP = (ord) => plats[ord % plats.length];
+  } else {
+    // v0.18 "Realms": the legacy jungle-only battery spawner. The founder 9
+    // platforms are indices 0–8 (the scaled jungle), so platform indices are
+    // unchanged; x-coordinates are mapped into the jungle region,
+    // x' = 1200 + x×(600/1600). The rng draw ORDER is identical to v0.17.1
+    // (same calls, same counts — bounds don't consume draws), so founder
+    // genomes are bit-identical; only positions moved. Four founders, plain
+    // founder stock, no shifts.
+    // v0.26: positions are jungle-zone-relative (cluster 0); platform
+    // indices are jungle ordinals — identical values at size 1.
+    jz = layout.zones[2];
+    mx = (x) => jz.x0 + x * 0.375;
+    JP = (ord) => layout.platformsByZone.jungle[ord].pi;
+  }
   // The canopy's ecology: fruit trees grow ON the branches (plants are
   // indexed by platform — a tree on branch 4 fruits on branch 4); medicinal
   // herbs are undergrowth on the forest floor.
@@ -2085,9 +2131,32 @@ function buryFood(world, biome, kind, amount, x0, x1, y, n) {
 }
 
 export function spawnBuriedFood(world) {
+  const L = world.layout;
+  // v2: region-based — buried food by region label.
+  if (!L.canonical && L.regions) {
+    const gy = (x) => { const g = groundYAt(x, L); return g === null ? 800 : g; };
+    for (const r of L.regions) {
+      const x0 = r.x0 + 50, x1 = r.x1 - 50;
+      if (x1 <= x0) continue;
+      const midY = gy((x0 + x1) / 2);
+      if (r.label === 'plains') buryFood(world, r.id, 'tuber', 1.6, x0, x1, midY, 8);
+      else if (r.label === 'desert') buryFood(world, r.id, 'tuber', 1.8, x0, x1, midY, 6);
+      else if (r.label === 'jungle') buryFood(world, r.id, 'grub', 1.2, x0, x1, midY, 6);
+      else if (r.label === 'arctic') buryFood(world, r.id, 'snowcache', 1.4, x0, x1, midY, 4);
+      else if (r.label === 'shallows') buryFood(world, r.id, 'morsel', 1.0, x0, x1, midY, 5);
+      else if (r.label === 'archipelago') {
+        const plats = L.platforms.filter((p) => p.regionId === r.id && p.kind === 'ground');
+        if (plats.length) {
+          const p = plats[0];
+          buryFood(world, r.id, 'sandcache', 1.3, p.x1 + 10, p.x2 - 10, p.y, 4);
+        }
+      }
+    }
+    return;
+  }
+  // v1: the painted zones (verbatim).
   // v0.26: bounds from the generated zones (50px insets, verbatim at
   // size 1); y from the generated terrain. Draw counts unchanged.
-  const L = world.layout;
   const zb = (key, inset = 50) => { const z = L.zones[ZONE_KEYS.indexOf(key)]; return [z.x0 + inset, z.x1 - inset]; };
   const gy = (x) => { const g = groundYAt(x, L); return g === null ? 800 : g; };
   const [plx0, plx1] = zb('plains');
@@ -2135,10 +2204,38 @@ function addMobileFood(world, foodKind, x, platformIndex, y) {
 }
 
 export function spawnMobileFood(world) {
-  // v0.26: bounds from the generated layout — platform x-ranges, zone
-  // insets, and the generated water surfaces. Draw counts unchanged.
   const dr = world.decorRng || world.rng;
   const L = world.layout;
+  // v2: region-based — bugs over land regions, minnows in water regions.
+  if (!L.canonical && L.regions) {
+    const bug = (x0, x1, pi, n) => {
+      for (let i = 0; i < n; i++) addMobileFood(world, 'bug', dr.range(x0, x1), pi);
+    };
+    const minnow = (x0, x1, y0, y1, n) => {
+      for (let i = 0; i < n; i++) addMobileFood(world, 'minnow', dr.range(x0, x1), -1, dr.range(y0, y1));
+    };
+    for (const r of L.regions) {
+      const w = r.x1 - r.x0;
+      const n = Math.max(1, Math.round(w / 600));
+      if (r.label === 'jungle' || r.label === 'plains' || r.label === 'desert') {
+        const plats = L.platforms.filter((p) => p.regionId === r.id && p.kind === 'ground');
+        if (plats.length) {
+          const p = plats[0];
+          bug(p.x1 + 20, p.x2 - 20, p.pi, n * 2);
+        }
+      } else if (r.label === 'mountains' || r.label === 'arctic') {
+        const plats = L.platforms.filter((p) => p.regionId === r.id && p.kind === 'shelf');
+        for (const p of plats.slice(0, 3)) bug(p.x1 + 20, p.x2 - 20, p.pi, 1);
+      } else if (r.label === 'shallows' || r.label === 'archipelago' || r.label === 'deep') {
+        const wtr = waterAt((r.x0 + r.x1) / 2, 2000, L);
+        if (wtr) minnow(r.x0 + 50, r.x1 - 50, wtr.surfaceY + 40, wtr.surfaceY + 120, n);
+      }
+    }
+    return;
+  }
+  // v1: the painted template (verbatim).
+  // v0.26: bounds from the generated layout — platform x-ranges, zone
+  // insets, and the generated water surfaces. Draw counts unchanged.
   const P = (key, ord) => L.platformsByZone[key][ord];
   const Z = (key) => L.zones[ZONE_KEYS.indexOf(key)];
   const bug = (x0, x1, pi, n) => {
@@ -2177,6 +2274,30 @@ export function spawnMobileFood(world) {
 // ---- v0.18 §12.2: per-biome resource sets ----
 
 export function spawnResources(world) {
+  // v2: region-based — resources on region platforms by label.
+  const L = world.layout;
+  if (!L.canonical && L.regions) {
+    const addOn = (label, kinds, mineral, n = 1) => {
+      for (const r of L.regions) {
+        if (r.label !== label) continue;
+        const plats = L.platforms.filter((p) => p.regionId === r.id && kinds.includes(p.kind));
+        for (let i = 0; i < Math.min(n, plats.length); i++) {
+          const p = plats[i];
+          addMineral(world, (p.x1 + p.x2) / 2, p.pi, mineral);
+        }
+      }
+    };
+    addOn('archipelago', ['ground'], 'timber', 3);
+    addOn('shallows', ['ground', 'branch'], 'timber', 1);
+    addOn('deep', ['floe'], 'timber', 1);
+    addOn('mountains', ['ground', 'shelf'], 'stone', 2);
+    addOn('arctic', ['ground'], 'stone', 1);
+    addOn('archipelago', ['ground'], 'driftwood', 1);
+    addOn('deep', ['floe'], 'driftwood', 1);
+    addOn('desert', ['ground'], 'clay', 1);
+    return;
+  }
+  // v1: the painted template (verbatim).
   // Fixed positions, no rng draws (the decorRng precedent: worldgen order
   // is load-bearing, and resources must never shift the main stream).
   // Observer-only until the technology release — the materials are there,
@@ -2235,6 +2356,43 @@ export function plantBiomeFlora(world, x, platformIndex, biomeKey, herb = false)
 }
 
 export function spawnBiomeFlora(world) {
+  const layout = world.layout;
+  // v2: region-based — each region gets label-appropriate flora on its
+  // platforms, counts scaled by region width.
+  if (!layout.canonical && layout.regions) {
+    const dr = world.decorRng || world.rng;
+    for (const r of layout.regions) {
+      const plats = layout.platforms.filter((p) => p.regionId === r.id);
+      const w = r.x1 - r.x0;
+      const n = Math.max(1, Math.round(w / 400)); // density per 400px
+      const plantOn = (kinds, count, herb = false) => {
+        const cands = plats.filter((p) => kinds.includes(p.kind));
+        for (let i = 0; i < count && cands.length; i++) {
+          const p = cands[i % cands.length];
+          plantBiomeFlora(world, dr.range(p.x1 + 10, p.x2 - 10), p.pi, r.label, herb);
+        }
+      };
+      if (r.label === 'jungle') {
+        plantOn(['branch'], n * 2); plantOn(['ground'], Math.max(1, n >> 1), true);
+      } else if (r.label === 'arctic') {
+        plantOn(['ground', 'shelf'], n);
+      } else if (r.label === 'mountains') {
+        plantOn(['ground', 'shelf'], n); plantOn(['ground'], 1, true);
+      } else if (r.label === 'plains') {
+        plantOn(['ground'], n * 3);
+      } else if (r.label === 'desert') {
+        plantOn(['ground'], Math.max(1, n >> 1)); plantOn(['ground'], 1, true);
+      } else if (r.label === 'shallows') {
+        plantOn(['branch', 'ground'], n);
+      } else if (r.label === 'archipelago') {
+        plantOn(['ground', 'branch'], n); plantOn(['ground'], 1, true);
+      } else if (r.label === 'deep') {
+        for (let i = 0; i < n; i++) plantBiomeFlora(world, dr.range(r.x0 + 50, r.x1 - 50), -1, 'deep');
+      }
+    }
+    return;
+  }
+  // v1: the painted template ordinals (verbatim).
   // v0.26: trees plant on platform x-ranges from the generated layout
   // (ordinals, not indices); the kelp band from the generated deep zone.
   // Draw counts and per-platform counts unchanged.
@@ -2314,14 +2472,16 @@ export const GENESIS_COHORTS = [
   // loci all exist (genome.js family-M thermal block + armLength);
   // shiftAlleles still skips any locus that doesn't, so this table is
   // forward-compatible with genome changes.
-  { key: 'arctic', ord: 0, shifts: [['fur', 1], ['coldTol', 1]] },
-  { key: 'mountains', ord: 2, shifts: [['armLength', 1], ['coldTol', 0.8]] },
-  { key: 'jungle', ord: 1, shifts: [] }, // the control — always plain founder stock
-  { key: 'plains', ord: 0, shifts: [['legLength', 0.8]] },
-  { key: 'desert', ord: 0, shifts: [['fur', 0.2], ['heatTol', 1]] },
-  { key: 'shallows', ord: 1, shifts: [['coldTol', 0.7]] },
-  { key: 'archipelago', ord: 0, shifts: [['armLength', 0.8]] },
-  { key: 'deep', ord: 0, shifts: [['coldTol', 0.8]] },
+  // v2: { label, finder } — the region label and the COHORT_FINDERS key.
+  // The shifts are shared.
+  { key: 'arctic', ord: 0, label: 'arctic', finder: 'coldest-land', shifts: [['fur', 1], ['coldTol', 1]] },
+  { key: 'mountains', ord: 2, label: 'mountains', finder: 'highest-land', shifts: [['armLength', 1], ['coldTol', 0.8]] },
+  { key: 'jungle', ord: 1, label: 'jungle', finder: 'founder', shifts: [] }, // the control — always plain founder stock
+  { key: 'plains', ord: 0, label: 'plains', finder: 'largest-plains', shifts: [['legLength', 0.8]] },
+  { key: 'desert', ord: 0, label: 'desert', finder: 'hottest-dry', shifts: [['fur', 0.2], ['heatTol', 1]] },
+  { key: 'shallows', ord: 1, label: 'shallows', finder: 'largest-shallows', shifts: [['coldTol', 0.7]] },
+  { key: 'archipelago', ord: 0, label: 'archipelago', finder: 'largest-islands', shifts: [['armLength', 0.8]] },
+  { key: 'deep', ord: 0, label: 'deep', finder: 'deep-water', shifts: [['coldTol', 0.8]] },
 ];
 
 // v0.22.2 — the promoted critters. The legacy scripted bugs and butterflies
@@ -2333,9 +2493,18 @@ function spawnPromotedCohorts(world) {
   const rng = world.rng;
   const branchPis = [];
   const groundPis = [];
-  // v0.26: the jungle's cluster-0 platforms, in emission order — the same
-  // 9 platforms (ordinals 0–8) the painted [1100,1900] filter found.
-  for (const p of world.layout.platformsByZone.jungle.slice(0, 9)) {
+  // v2: the founder canopy's platforms. v1: the jungle's cluster-0 platforms,
+  // in emission order — the same 9 platforms (ordinals 0–8) the painted
+  // [1100,1900] filter found.
+  const layout = world.layout;
+  let plats = [];
+  if (!layout.canonical && layout.founder) {
+    const f = layout.founder;
+    plats = [...f.groundPis, ...f.branchPis].map((pi) => layout.platforms[pi]);
+  } else {
+    plats = layout.platformsByZone.jungle.slice(0, 9);
+  }
+  for (const p of plats) {
     if (p.kind === 'branch') branchPis.push(p.pi);
     if (p.kind === 'ground') groundPis.push(p.pi);
   }
@@ -2380,11 +2549,23 @@ export function populateGenesis(world) {
   for (let cl = 0; cl < clusters; cl++) {
   GENESIS_COHORTS.forEach((g, bi) => {
     const n = 3 + rng.int(0, 2); // 3–5 creatures per biome (§12)
-    // v0.26: cohort platform from the layout (cluster c); spawn x is the
-    // platform center, spread ±130px per founder as before.
-    const zonePlats = world.layout.platformsByZone[g.key];
-    const perCluster = zonePlats.length / clusters;
-    const plat = zonePlats[cl * perCluster + g.ord];
+    // v2: cohort platform from the region finder. v1: from platformsByZone.
+    let plat = null;
+    const layout = world.layout;
+    if (!layout.canonical && layout.regions) {
+      const region = findRegion(layout, g.finder);
+      if (!region) return; // finder found nothing — cohort skipped (gate logs)
+      // Prefer a ground platform in the region; else the first platform.
+      const rplats = layout.platforms.filter((p) => p.regionId === region.id);
+      plat = rplats.find((p) => p.kind === 'ground') || rplats[0];
+      if (!plat) return;
+    } else {
+      // v0.26: cohort platform from the layout (cluster c); spawn x is the
+      // platform center, spread ±130px per founder as before.
+      const zonePlats = layout.platformsByZone[g.key];
+      const perCluster = zonePlats.length / clusters;
+      plat = zonePlats[cl * perCluster + g.ord];
+    }
     const gxc = (plat.x1 + plat.x2) / 2;
     // Sexes: at least one male and one female per cohort, the rest a coin flip.
     const sexes = [];
