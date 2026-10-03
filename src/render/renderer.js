@@ -3,7 +3,7 @@
 
 import { drawCreature, drawTeacher, drawBiomeBands, drawWater, drawWaters, drawPredator } from './painter.js';
 import { creatureRadius } from '../sim/creature.js';
-import { ageStage } from '../sim/biochem.js';
+import { ageStage, mood } from '../sim/biochem.js';
 import { timeOfDay, ZONES } from '../sim/world.js';
 
 // v0.18 "Realms": the biome data module (../sim/biomes.js) is landed by the
@@ -162,14 +162,9 @@ export function render(r, world, ui, t) {
   const light = world.light;
   const tod = timeOfDay(world);
 
-  // Sky.
-  const top = mix(SKY_NIGHT_TOP, SKY_DAY_TOP, light);
-  const bot = mix(SKY_NIGHT_BOT, SKY_DAY_BOT, light);
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, rgb(top));
-  g.addColorStop(1, rgb(bot));
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
+  // Combo pass: layered atmosphere — gradient depth, sun bloom, god rays,
+  // mist bands. The sky is no longer a flat wash.
+  drawAtmosphere(ctx, r, W, H, light, t);
 
   // Stars.
   if (light < 0.5) {
@@ -181,17 +176,22 @@ export function render(r, world, ui, t) {
     ctx.globalAlpha = 1;
   }
 
-  // Sun / moon arc.
+  // Sun / moon arc, with a soft bloom halo.
   const sunA = tod * Math.PI * 2 - Math.PI / 2; // noon at top
   const sunX = W / 2 - Math.cos(sunA) * W * 0.42;
   const sunY = H * 0.62 - Math.sin(sunA) * H * 0.5;
   const isDay = light > 0.45;
+  const sunR = (isDay ? 34 : 26) * r.dpr;
+  ctx.fillStyle = isDay ? 'rgba(255,236,170,0.16)' : 'rgba(235,240,255,0.10)';
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, sunR * 2.6, 0, Math.PI * 2);
+  ctx.fill();
   ctx.fillStyle = isDay ? 'rgba(255,236,170,0.95)' : 'rgba(235,240,255,0.9)';
   ctx.beginPath();
-  ctx.arc(sunX, sunY, (isDay ? 34 : 26) * r.dpr, 0, Math.PI * 2);
+  ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
   ctx.fill();
   if (!isDay) { // moon shadow bite
-    ctx.fillStyle = rgb(top);
+    ctx.fillStyle = rgb(mix(SKY_NIGHT_TOP, SKY_DAY_TOP, light));
     ctx.beginPath();
     ctx.arc(sunX - 10 * r.dpr, sunY - 6 * r.dpr, 22 * r.dpr, 0, Math.PI * 2);
     ctx.fill();
@@ -201,13 +201,13 @@ export function render(r, world, ui, t) {
   ctx.translate(r.ox, r.oy);
   ctx.scale(r.scale, r.scale);
 
-  // Parallax hills (drawn in world space, behind platforms).
-  drawHills(ctx, world, light, 0.35, [mix([60,70,110],[150,190,150],light), 560]);
-  drawHills(ctx, world, light, 0.6, [mix([45,55,90],[120,175,130],light), 660]);
+  // Combo pass: layered background foliage — three depths of leaf clusters,
+  // deterministic per world seed, tinted per biome. Replaces the flat hills.
+  const B = biomes();
+  drawFoliage(ctx, r, world, B, light, t);
 
   // v0.18 "Realms": biome ground + water from the biomes module. Older
   // worlds (no biomes module yet) keep the legacy zone washes.
-  const B = biomes();
   const waters = (B && typeof B.waterRects === 'function') ? B.waterRects(world.layout) : [];
   if (B && typeof B.biomeKeyAt === 'function') {
     drawBiomeBands(ctx, world, B, light);
@@ -229,35 +229,19 @@ export function render(r, world, ui, t) {
     ctx.restore();
   }
 
-  // Platforms.
+  // Combo pass: platforms are branches now — tapered organic limbs with
+  // bark, moss caps, and twig offshoots. Same geometry (creatures stand at
+  // pl.y); only the paint changed.
   for (const pl of world.platforms) {
-    const pw = pl.x2 - pl.x1;
     if (pl.kind === 'floe') {
-      // v0.18 "Realms": ice floes render as driftwood — weathered timber,
-      // plank seams, no grass cap. A raft, not a branch.
-      ctx.fillStyle = rgb(mix([58, 44, 32], [148, 112, 74], light));
-      roundRect(ctx, pl.x1, pl.y, pw, 34, 10);
-      ctx.fill();
-      ctx.strokeStyle = rgb(mix([40, 30, 22], [110, 82, 54], light));
-      ctx.lineWidth = 2;
-      for (const fx of [0.25, 0.5, 0.75]) {
-        ctx.beginPath();
-        ctx.moveTo(pl.x1 + pw * fx, pl.y + 5);
-        ctx.lineTo(pl.x1 + pw * fx, pl.y + 29);
-        ctx.stroke();
-      }
+      drawDriftwood(ctx, pl, light);
       continue;
     }
-    ctx.fillStyle = rgb(mix([52, 44, 70], [139, 117, 82], light));
-    roundRect(ctx, pl.x1, pl.y, pw, 60, 10);
-    ctx.fill();
-    ctx.fillStyle = rgb(mix([50, 80, 60], [106, 176, 105], light));
-    roundRect(ctx, pl.x1 - 4, pl.y - 14, pw + 8, 22, 10);
-    ctx.fill();
+    drawBranch(ctx, pl, t, light);
   }
 
   // Plants.
-  for (const p of world.plants) { drawPlant(ctx, p, t, light); if (ui.selected === p) drawInspectRing(ctx, p.x, p.y - 40, 44, 52, t); }
+  for (const p of world.plants) { drawPlant(ctx, p, t, light, B, world); if (ui.selected === p) drawInspectRing(ctx, p.x, p.y - 40, 44, 52, t); }
 
   // Foods.
   for (const f of world.foods) { drawFood(ctx, f, t); if (ui.selected === f) drawInspectRing(ctx, f.x, f.y - 12, 20, 20, t); }
@@ -308,6 +292,10 @@ export function render(r, world, ui, t) {
     if (ui.selected === pr) drawInspectRing(ctx, pr.x, (pr.y || 0) - 20, 46, 36, t);
   }
 
+  // Combo pass: creature motion trails — renderer-side history, not sim
+  // state. Updated every frame, pruned on death.
+  updateTrails(r, world);
+
   // Creatures (selected last, with ring).
   const sorted = showCreatures ? [...world.creatures].sort((a, b) =>
     (ui.selected === a ? 1 : 0) - (ui.selected === b ? 1 : 0)) : [];
@@ -316,6 +304,7 @@ export function render(r, world, ui, t) {
     // Physics: creatures have their own y now — the airborne draw mid-air.
     const cy = (c.y !== undefined && c.y !== null) ? c.y : plat.y;
     if (ui.selected === c) drawSelectionRing(ctx, c, cy, t);
+    drawCreatureShadow(ctx, c, cy);
     drawCreature(ctx, c, cy, t);
     // v0.18: underwater creatures get a blue tint overlay — you can see
     // at a glance who is swimming and who is drowning.
@@ -326,8 +315,16 @@ export function render(r, world, ui, t) {
       ctx.ellipse(c.x, cy - cr2 * 0.9, cr2 * 1.15, cr2 * 1.5, 0, 0, Math.PI * 2);
       ctx.fill();
     }
-    drawLabel(ctx, c, cy, ui);
+    // Combo pass: the readout card is drawn in screen space after the world
+    // transform is restored, so it stays a constant size at any zoom.
+    if (ui.selected === c || ui.hover === c) {
+      r._cardTarget = { c, cy, sx: c.x * r.scale + r.ox, sy: cy * r.scale + r.oy };
+    }
   }
+
+  // Combo pass: path traces over the scene — thin white linework, the
+  // diagrammatic layer on the living painting.
+  if (showCreatures) drawTrails(ctx, r);
 
   // The Teacher — Sunny's visitor avatar (v0.14 "Voices"). Drawn after the
   // tanglekins: blue monkey, jaunty newsboy cap, unmistakably not one of them.
@@ -354,11 +351,22 @@ export function render(r, world, ui, t) {
 
   ctx.restore();
 
+  // Combo pass: the readout card lives in screen space — constant size at
+  // any zoom, the diagrammatic layer floating over the painting.
+  if (r._cardTarget) {
+    drawReadoutCardScreen(ctx, r, r._cardTarget);
+    r._cardTarget = null;
+  }
+
   // Night tint.
   if (light < 0.6) {
     ctx.fillStyle = `rgba(8,10,38,${((0.6 - light) * 0.55).toFixed(3)})`;
     ctx.fillRect(0, 0, W, H);
   }
+
+  // Combo pass: instrument frame — corner brackets and honest micro-labels,
+  // drawn last in screen space, above everything.
+  drawHUD(ctx, r, world, W, H);
 }
 
 function roundRect(ctx, x, y, w, h, rad) {
@@ -379,64 +387,488 @@ function submergedRect(waters, x, y) {
   return null;
 }
 
-function drawHills(ctx, world, light, parallax, [color, baseY]) {
-  ctx.fillStyle = rgb(color);
-  ctx.globalAlpha = parallax;
-  ctx.beginPath();
-  ctx.moveTo(-100, world.height);
-  for (let x = -100; x <= world.width + 100; x += 40) {
-    const y = baseY + Math.sin(x * 0.004 + parallax * 9) * 60 + Math.sin(x * 0.013) * 25;
-    ctx.lineTo(x, y);
-  }
-  ctx.lineTo(world.width + 100, world.height);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = 1;
+// ---------------------------------------------------------------------------
+// Combo visual pass: atmosphere, foliage, branches, and the diagrammatic
+// overlay. All presentation — the sim is never touched. Deterministic where
+// it matters (foliage, branches) via seeded PRNGs; animated where it's cheap
+// (light shafts, mist drift, water shimmer).
+
+function hashSeed(s) {
+  let a = (s * 16807) % 2147483647;
+  if (a <= 0) a += 2147483646;
+  return () => { a = (a * 16807) % 2147483647; return (a - 1) / 2147483646; };
 }
 
-function drawPlant(ctx, p, t, light) {
+// Three-stop sky keyed to light, warmer at the horizon than the old flat wash.
+const ATMOS_DAY = { top: [118, 184, 214], mid: [178, 204, 178], bot: [244, 226, 182] };
+const ATMOS_NIGHT = { top: [8, 12, 34], mid: [22, 28, 60], bot: [42, 50, 90] };
+
+function drawAtmosphere(ctx, r, W, H, light, t) {
+  const top = mix(ATMOS_NIGHT.top, ATMOS_DAY.top, light);
+  const mid = mix(ATMOS_NIGHT.mid, ATMOS_DAY.mid, light);
+  const bot = mix(ATMOS_NIGHT.bot, ATMOS_DAY.bot, light);
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, rgb(top));
+  g.addColorStop(0.55, rgb(mid));
+  g.addColorStop(1, rgb(bot));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // Warm bloom low on the horizon — the light the canopy drinks.
+  ctx.fillStyle = `rgba(255,224,160,${(0.10 * light).toFixed(3)})`;
+  const bg = ctx.createLinearGradient(0, H * 0.55, 0, H);
+  bg.addColorStop(0, 'rgba(255,224,160,0)');
+  bg.addColorStop(1, `rgba(255,224,160,${(0.22 * light).toFixed(3)})`);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, H * 0.55, W, H * 0.45);
+
+  // God rays: slanted translucent shafts drifting slowly. Kept whisper-thin
+  // — they suggest light, not searchlights.
+  ctx.save();
+  ctx.fillStyle = '#fff6d8';
+  ctx.globalAlpha = 0.016 + 0.022 * light;
+  for (let i = 0; i < 3; i++) {
+    const sx = W * (0.22 + i * 0.28) + Math.sin(t * 0.08 + i * 2.1) * 24 * r.dpr;
+    const wTop = 34 * r.dpr, spread = 70 * r.dpr;
+    ctx.beginPath();
+    ctx.moveTo(sx, -60);
+    ctx.lineTo(sx + wTop, -60);
+    ctx.lineTo(sx + wTop + spread, H * 0.78);
+    ctx.lineTo(sx + spread, H * 0.78);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Mist bands in the lower third — two soft horizontal washes.
+  for (const [yFrac, aMax] of [[0.66, 0.09], [0.80, 0.13]]) {
+    const y0 = H * yFrac;
+    const mg = ctx.createLinearGradient(0, y0 - 46 * r.dpr, 0, y0 + 46 * r.dpr);
+    const c = `rgba(222,232,238,${(aMax * (0.4 + 0.6 * light)).toFixed(3)})`;
+    mg.addColorStop(0, 'rgba(222,232,238,0)');
+    mg.addColorStop(0.5, c);
+    mg.addColorStop(1, 'rgba(222,232,238,0)');
+    ctx.fillStyle = mg;
+    ctx.fillRect(0, y0 - 46 * r.dpr, W, 92 * r.dpr);
+  }
+}
+
+// Per-biome foliage tint — the background reads the biome map.
+const FOLIAGE_TINT = {
+  arctic: [176, 198, 214], mountains: [96, 104, 116], jungle: [44, 108, 60],
+  plains: [94, 148, 78], desert: [188, 158, 98], shallows: [58, 128, 118],
+  archipelago: [68, 138, 108], deep: [28, 58, 88],
+};
+
+function foliageFor(r, world) {
+  if (r.foliageCache && r.foliageCache.seed === world.seed) return r.foliageCache.layers;
+  const rnd = hashSeed(((world.seed | 0) * 31 + 7) | 0);
+  const layers = [];
+  // Two depths of leaf clusters; leaves are small and numerous so they read
+  // as foliage, not blobs. A third foreground layer is screen-space framing.
+  const defs = [
+    { n: 60, yMin: 0.02, yMax: 0.55, leaves: 10, sMin: 6, sMax: 15, alpha: 0.13 },
+    { n: 34, yMin: 0.10, yMax: 0.70, leaves: 7, sMin: 11, sMax: 26, alpha: 0.19 },
+  ];
+  for (const d of defs) {
+    const clusters = [];
+    for (let i = 0; i < d.n; i++) {
+      const leaves = [];
+      const cx = rnd() * world.width;
+      const cy = (d.yMin + rnd() * (d.yMax - d.yMin)) * world.height;
+      const spread = 26 + rnd() * 40;
+      for (let j = 0; j < d.leaves; j++) {
+        leaves.push({
+          dx: (rnd() - 0.5) * spread * 2,
+          dy: (rnd() - 0.5) * spread * 1.2,
+          s: d.sMin + rnd() * (d.sMax - d.sMin),
+          rot: rnd() * Math.PI,
+        });
+      }
+      clusters.push({ x: cx, y: cy, ph: rnd() * Math.PI * 2, leaves });
+    }
+    layers.push({ alpha: d.alpha, clusters });
+  }
+  r.foliageCache = { seed: world.seed, layers };
+  return layers;
+}
+
+function drawFoliage(ctx, r, world, B, light, t) {
+  const layers = foliageFor(r, world);
+  const dark = [14, 20, 32];
+  ctx.save();
+  for (const L of layers) {
+    ctx.globalAlpha = L.alpha;
+    for (const c of L.clusters) {
+      let leaf = [44, 104, 62];
+      if (B && typeof B.biomeKeyAt === 'function') {
+        try { leaf = FOLIAGE_TINT[B.biomeKeyAt(c.x, c.y, world)] || leaf; } catch (e) { /* keep default */ }
+      }
+      const depthK = 0.7 + 0.3 * (1 - c.y / world.height);
+      const base = [0, 1, 2].map((i) => Math.round(leaf[i] * depthK));
+      ctx.fillStyle = rgb(mix(dark, base, light));
+      const sway = Math.sin(t * 0.5 + c.ph) * 4;
+      for (const lf of c.leaves) {
+        ctx.beginPath();
+        ctx.ellipse(c.x + lf.dx + sway, c.y + lf.dy,
+          lf.s, lf.s * 0.55, lf.rot, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+
+  // Foreground framing: soft out-of-focus leaves at the screen corners,
+  // like the mockup's dark foreground. Screen space — always frames the view.
+  const W = r.canvas.width, H = r.canvas.height;
+  const frnd = hashSeed(99);
+  ctx.save();
+  ctx.globalAlpha = 0.16;
+  ctx.fillStyle = rgb(mix([10, 16, 26], [34, 72, 44], light));
+  for (let i = 0; i < 14; i++) {
+    const corner = frnd();
+    const s = (36 + frnd() * 54) * r.dpr;
+    let fx, fy;
+    if (corner < 0.3) { fx = frnd() * W * 0.10; fy = frnd() * H * 0.5; }
+    else if (corner < 0.55) { fx = W - frnd() * W * 0.10; fy = frnd() * H * 0.5; }
+    else if (corner < 0.8) { fx = frnd() * W; fy = frnd() * H * 0.07; }
+    else { fx = frnd() * W; fy = H - frnd() * H * 0.07; }
+    ctx.beginPath();
+    ctx.ellipse(fx, fy, s, s * 0.55, frnd() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+
+function drawBranch(ctx, pl, t, light) {
+  const pw = pl.x2 - pl.x1;
+  const rnd = hashSeed((((pl.x1 | 0) * 73 + (pl.y | 0) * 149) | 0) || 1);
+  const thick = 30 + rnd() * 12;
+  const sag = 6 + rnd() * 10;
+  const mx = pl.x1 + pw * 0.5;
+  const barkD = rgb(mix([34, 28, 42], [92, 70, 50], light));
+  const barkL = rgb(mix([48, 40, 54], [124, 98, 68], light));
+  const moss = rgb(mix([38, 64, 42], [106, 158, 94], light));
+
+  // Body.
+  ctx.fillStyle = barkD;
+  ctx.beginPath();
+  ctx.moveTo(pl.x1, pl.y - 3);
+  ctx.quadraticCurveTo(mx, pl.y - 6 + sag * 0.4, pl.x2, pl.y - 2);
+  ctx.lineTo(pl.x2, pl.y + thick * 0.55);
+  ctx.quadraticCurveTo(mx, pl.y + thick * 0.75 + sag, pl.x1, pl.y + thick * 0.5);
+  ctx.closePath();
+  ctx.fill();
+  // Lit upper edge.
+  ctx.fillStyle = barkL;
+  ctx.beginPath();
+  ctx.moveTo(pl.x1, pl.y - 3);
+  ctx.quadraticCurveTo(mx, pl.y - 6 + sag * 0.4, pl.x2, pl.y - 2);
+  ctx.lineTo(pl.x2, pl.y + 5);
+  ctx.quadraticCurveTo(mx, pl.y + 2 + sag * 0.4, pl.x1, pl.y + 4);
+  ctx.closePath();
+  ctx.fill();
+  // Moss: a low irregular nap along the walk surface, not separate pads.
+  ctx.fillStyle = moss;
+  ctx.globalAlpha = 0.7;
+  ctx.beginPath();
+  ctx.moveTo(pl.x1, pl.y - 2);
+  ctx.quadraticCurveTo(mx, pl.y - 5 + sag * 0.4, pl.x2, pl.y - 1);
+  ctx.lineTo(pl.x2, pl.y + 3);
+  ctx.quadraticCurveTo(mx, pl.y + 1 + sag * 0.4, pl.x1, pl.y + 2);
+  ctx.closePath();
+  ctx.fill();
+  // Moss texture: tiny darker flecks.
+  ctx.fillStyle = rgb(mix([30, 52, 34], [84, 128, 76], light));
+  const nFleck = Math.max(4, Math.round(pw / 60));
+  for (let i = 0; i <= nFleck; i++) {
+    const fx = pl.x1 + (i / nFleck) * pw;
+    ctx.beginPath();
+    ctx.arc(fx, pl.y - 1 + Math.sin(fx * 0.08) * 1.5, 2.2 + (i % 3), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // Bark grain.
+  ctx.strokeStyle = 'rgba(0,0,0,0.16)';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 3; i++) {
+    const yy = pl.y + thick * (0.25 + i * 0.14);
+    ctx.beginPath();
+    ctx.moveTo(pl.x1 + pw * 0.08, yy);
+    ctx.quadraticCurveTo(mx, yy + (rnd() - 0.5) * 9, pl.x2 - pw * 0.08, yy + (rnd() - 0.5) * 5);
+    ctx.stroke();
+  }
+  // Twigs with leaf tufts.
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 2; i++) {
+    const tx = pl.x1 + pw * (0.22 + rnd() * 0.56);
+    const ty = pl.y - 6;
+    const tl = 22 + rnd() * 30;
+    const ta = -Math.PI / 2 + (rnd() - 0.5) * 1.4;
+    const ex = tx + Math.cos(ta) * tl, ey = ty + Math.sin(ta) * tl;
+    ctx.strokeStyle = barkD;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.quadraticCurveTo(tx + Math.cos(ta) * tl * 0.5, ty + Math.sin(ta) * tl * 0.6, ex, ey);
+    ctx.stroke();
+    ctx.fillStyle = rgb(mix([40, 68, 46], [88, 148, 86], light));
+    ctx.beginPath();
+    ctx.ellipse(ex, ey, 11 + rnd() * 5, 6.5, ta, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// Driftwood raft (floe kind): weathered timber, plank seams — restyled, same role.
+function drawDriftwood(ctx, pl, light) {
+  const pw = pl.x2 - pl.x1;
+  ctx.fillStyle = rgb(mix([52, 40, 30], [142, 108, 72], light));
+  ctx.beginPath();
+  ctx.moveTo(pl.x1, pl.y);
+  ctx.quadraticCurveTo(pl.x1 + pw * 0.5, pl.y + 6, pl.x2, pl.y + 1);
+  ctx.lineTo(pl.x2, pl.y + 30);
+  ctx.quadraticCurveTo(pl.x1 + pw * 0.5, pl.y + 36, pl.x1, pl.y + 28);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = rgb(mix([36, 28, 22], [104, 78, 52], light));
+  ctx.lineWidth = 2;
+  for (const fx of [0.25, 0.5, 0.75]) {
+    ctx.beginPath();
+    ctx.moveTo(pl.x1 + pw * fx, pl.y + 4);
+    ctx.lineTo(pl.x1 + pw * fx, pl.y + 30);
+    ctx.stroke();
+  }
+  // Pale sun-bleached top edge.
+  ctx.strokeStyle = rgb(mix([70, 56, 42], [178, 146, 104], light));
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(pl.x1, pl.y + 1);
+  ctx.quadraticCurveTo(pl.x1 + pw * 0.5, pl.y + 7, pl.x2, pl.y + 2);
+  ctx.stroke();
+}
+
+// Soft contact shadow under a creature — grounds it on the branch.
+function drawCreatureShadow(ctx, c, cy) {
+  const r = creatureRadius(c);
+  ctx.fillStyle = 'rgba(8, 12, 8, 0.20)';
+  ctx.beginPath();
+  ctx.ellipse(c.x, cy + 5, r * 1.05, r * 0.26, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// --- The diagrammatic overlay ---------------------------------------------
+// Renderer-side motion trails: position history per living creature.
+// Presentation only — never written to the sim.
+
+function updateTrails(r, world) {
+  if (!r.trails) { r.trails = new Map(); r.trailWorld = null; }
+  if (r.trailWorld !== world) { r.trails.clear(); r.trailWorld = world; }
+  const alive = new Set();
+  for (const c of world.creatures) {
+    if (!c.alive) continue;
+    alive.add(c.id);
+    const cy = (c.y !== undefined && c.y !== null) ? c.y : 0;
+    let tr = r.trails.get(c.id);
+    if (!tr) { tr = []; r.trails.set(c.id, tr); }
+    const last = tr[tr.length - 1];
+    if (!last || Math.abs(c.x - last.x) + Math.abs(cy - last.y) > 9) {
+      tr.push({ x: c.x, y: cy });
+      if (tr.length > 30) tr.shift();
+    }
+  }
+  for (const id of [...r.trails.keys()]) if (!alive.has(id)) r.trails.delete(id);
+}
+
+function drawTrails(ctx, r) {
+  ctx.save();
+  ctx.lineWidth = 1.5;
+  ctx.lineCap = 'round';
+  for (const tr of r.trails.values()) {
+    if (tr.length < 2) continue;
+    for (let i = 1; i < tr.length; i++) {
+      const a = (i / tr.length) * 0.30;
+      ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(tr[i - 1].x, tr[i - 1].y - 22);
+      ctx.lineTo(tr[i].x, tr[i].y - 22);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// The readout card: a mockup-style instrument readout for the
+// selected/hovered creature — leader line, ID, action + mood, energy bar.
+// Every value is sim state; the painter invents nothing.
+// Readout card — screen space, constant size at any zoom. A small
+// instrument readout: leader line from the creature, name, action · mood,
+// energy bar. The diagrammatic overlay on the living painting.
+function drawReadoutCardScreen(ctx, r, target) {
+  const { c, sx, sy } = target;
+  const b = c.biochem;
+  const m = mood(b);
+  const action = (c.actionLabel || c.action || '').toString();
+  const dpr = r.dpr || 1;
+  const W = r.canvas.width, H = r.canvas.height;
+
+  ctx.save();
+  ctx.font = `${11 * dpr}px ui-monospace, Menlo, monospace`;
+  const l1 = `${c.name}`;
+  const l2 = `${action.toUpperCase()} \u00B7 ${m.toUpperCase()}`;
+  // The SVG shim's measureText is a stub; estimate from the monospace advance.
+  const charW = 6.7 * dpr;
+  const cw = Math.max(l1.length, l2.length, 18) * charW + 20 * dpr;
+  const ch = 52 * dpr;
+  // Card sits up-right of the creature's screen position, clamped on-screen.
+  let cx = sx + 26 * dpr, cyy = sy - 90 * dpr - ch;
+  cx = Math.max(8 * dpr, Math.min(cx, W - cw - 8 * dpr));
+  cyy = Math.max(8 * dpr, Math.min(cyy, H - ch - 8 * dpr));
+
+  // Leader line: creature -> card.
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 1.2 * dpr;
+  ctx.beginPath();
+  ctx.moveTo(sx, sy - 14 * dpr);
+  ctx.lineTo(cx + 8 * dpr, cyy + ch);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.beginPath();
+  ctx.arc(sx, sy - 14 * dpr, 2.6 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Card body.
+  ctx.fillStyle = 'rgba(10,14,22,0.78)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.32)';
+  ctx.lineWidth = 1 * dpr;
+  ctx.beginPath();
+  ctx.moveTo(cx, cyy);
+  ctx.lineTo(cx + cw, cyy);
+  ctx.lineTo(cx + cw, cyy + ch);
+  ctx.lineTo(cx, cyy + ch);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.fillText(l1, cx + 10 * dpr, cyy + 17 * dpr);
+  ctx.fillStyle = 'rgba(255,255,255,0.62)';
+  ctx.fillText(l2, cx + 10 * dpr, cyy + 32 * dpr);
+  // Energy bar.
+  const bw = cw - 20 * dpr, bx = cx + 10 * dpr, by = cyy + 40 * dpr;
+  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  ctx.fillRect(bx, by, bw, 4 * dpr);
+  const e = Math.max(0, Math.min(1, b.energy || 0));
+  ctx.fillStyle = e > 0.5 ? 'rgba(140,220,150,0.9)' : e > 0.25 ? 'rgba(240,200,110,0.9)' : 'rgba(235,110,100,0.9)';
+  ctx.fillRect(bx, by, bw * e, 4 * dpr);
+  ctx.restore();
+}
+
+// Instrument frame: corner brackets + honest micro-labels, screen space, last.
+function drawHUD(ctx, r, world, W, H) {
+  const dpr = r.dpr || 1;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.30)';
+  ctx.lineWidth = 1.5 * dpr;
+  const m = 16 * dpr, L = 24 * dpr;
+  const corners = [
+    [m, m, 1, 1], [W - m, m, -1, 1], [m, H - m, 1, -1], [W - m, H - m, -1, -1],
+  ];
+  for (const [x, y, sx, sy] of corners) {
+    ctx.beginPath();
+    ctx.moveTo(x + sx * L, y);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x, y + sy * L);
+    ctx.stroke();
+  }
+  ctx.font = `${10 * dpr}px ui-monospace, Menlo, monospace`;
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.textAlign = 'left';
+  ctx.fillText('CANOPY // v0.37', m + 6 * dpr, m + 18 * dpr);
+  const dayNum = Math.floor(world.tick / (world.dayTicks || 3000)) + 1;
+  ctx.fillText(`TICK ${world.tick} · DAY ${dayNum}`, m + 6 * dpr, H - m - 10 * dpr);
+  ctx.textAlign = 'right';
+  let n = 0;
+  for (const c of world.creatures) if (c.alive) n++;
+  ctx.fillText(`${n} ALIVE`, W - m - 6 * dpr, H - m - 10 * dpr);
+  ctx.restore();
+}
+
+function drawPlant(ctx, p, t, light, B, world) {
   // v0.18 "Realms": flora morphs from floraFor(biomeKey) — plants carry a
   // morph field. Unknown morphs fall through to the classic tree: the
   // painter never draws nothing.
   const morph = p.morph || 'tree';
   if (PLANT_MORPHS.has(morph)) { drawPlantMorph(ctx, p, t, light, morph); return; }
-  const h = 40 + p.growth * 70;
-  const sway = Math.sin(p.sway) * 8 * p.growth;
-  // v0.8: herbs are violet where fruit plants are green — unmistakable.
-  const herb = p.kind === 'herb';
-  ctx.strokeStyle = herb
-    ? rgb(mix([52, 40, 78], [96, 72, 148], light))
-    : rgb(mix([40, 70, 50], [62, 140, 78], light));
-  ctx.lineWidth = 7;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(p.x, p.y - 6);
-  ctx.quadraticCurveTo(p.x + sway * 0.4, p.y - h * 0.6, p.x + sway, p.y - h);
-  ctx.stroke();
-  // Leaves.
-  ctx.fillStyle = herb
-    ? rgb(mix([58, 44, 96], [128, 96, 190], light))
-    : rgb(mix([45, 80, 55], [84, 168, 100], light));
-  for (const s of [-1, 1]) {
-    ctx.beginPath();
-    ctx.ellipse(p.x + s * 20 + sway * 0.5, p.y - h * 0.55, 20, 9, s * 0.5, 0, Math.PI * 2);
-    ctx.fill();
+  // Combo pass: the tree is a layered canopy now, not a lollipop — a tapered
+  // trunk with three tiers of leaf clusters and fruit nestled inside.
+  // Foliage tinted per biome so arctic pines read pale, desert scrub sandy.
+  let leafBase = [84, 168, 100];
+  if (B && world && typeof B.biomeKeyAt === 'function') {
+    try {
+      const bk = B.biomeKeyAt(p.x, p.y, world);
+      if (FOLIAGE_TINT[bk]) leafBase = FOLIAGE_TINT[bk].map((v) => Math.round(v * 1.35));
+    } catch (e) { /* keep default */ }
   }
-  // Fruits (or medicinal buds on herbs).
+  const h = 40 + p.growth * 70;
+  const sway = Math.sin(p.sway + t * 0.8) * 7 * p.growth;
+  const herb = p.kind === 'herb';
+  const rnd = hashSeed(((p.id | 0) * 31 + 7) | 0);
+  const stem = herb
+    ? rgb(mix([52, 40, 78], [96, 72, 148], light))
+    : rgb(mix([38, 62, 44], [88, 128, 70], light));
+  if (herb) leafBase = [128, 96, 190];
+  const leafDark = [14, 20, 32];
+
+  // Trunk: tapered, gently curving.
+  ctx.strokeStyle = stem;
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y - 4);
+  ctx.quadraticCurveTo(p.x + sway * 0.3, p.y - h * 0.55, p.x + sway, p.y - h);
+  ctx.stroke();
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y - h * 0.35);
+  ctx.quadraticCurveTo(p.x - 18 + sway * 0.2, p.y - h * 0.6, p.x - 26 + sway * 0.4, p.y - h * 0.78);
+  ctx.stroke();
+
+  // Canopy: three tiers of leaf clusters, denser at the top.
+  for (let layer = 0; layer < 3; layer++) {
+    const ly = p.y - h * (0.52 + layer * 0.24);
+    const spread = (34 - layer * 8) * (0.6 + p.growth * 0.4);
+    const nLeaf = 6 + layer * 2;
+    for (let i = 0; i < nLeaf; i++) {
+      const a = rnd() * Math.PI * 2;
+      const rr = Math.sqrt(rnd()) * spread;
+      const lx = p.x + sway * (0.4 + layer * 0.25) + Math.cos(a) * rr;
+      const ly2 = ly + Math.sin(a) * rr * 0.55;
+      const v = rnd();
+      const col = [0, 1, 2].map((k) => Math.round(leafBase[k] * (0.75 + v * 0.35)));
+      ctx.fillStyle = rgb(mix(leafDark, col, light));
+      ctx.beginPath();
+      ctx.ellipse(lx, ly2, 9 + v * 9, 5.5 + v * 5, a * 0.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Fruit (or medicinal buds on herbs), nestled in the lower canopy.
   if (p.growth >= 1) {
-    ctx.fillStyle = herb ? '#9a6ee8' : '#e4574f';
-    const fruits = 3;
-    for (let i = 0; i < fruits; i++) {
-      const fx = p.x + sway + Math.sin(i * 2.4 + p.sway) * 26;
-      const fy = p.y - h + Math.cos(i * 1.7) * 14 - 6;
+    const fc = herb ? '#9a6ee8' : '#e4574f';
+    for (let i = 0; i < 4; i++) {
+      const a = rnd() * Math.PI * 2;
+      const fx = p.x + sway * 0.6 + Math.cos(a) * 26;
+      const fy = p.y - h * 0.72 + Math.sin(a) * 16;
+      ctx.fillStyle = fc;
       ctx.beginPath();
-      ctx.arc(fx, fy, 9, 0, Math.PI * 2);
+      ctx.arc(fx, fy, 7.5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
       ctx.beginPath();
-      ctx.arc(fx - 3, fy - 3, 3, 0, Math.PI * 2);
+      ctx.arc(fx - 2.5, fy - 2.5, 2.4, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = herb ? '#9a6ee8' : '#e4574f';
     }
   }
 }
@@ -901,17 +1333,3 @@ function drawTeacherLabel(ctx, te, groundY, ui) {
   ctx.fillText(label, te.x, y);
 }
 
-function drawLabel(ctx, c, groundY, ui) {
-  if (ui.selected !== c && ui.hover !== c) return;
-  const r = creatureRadius(c);
-  ctx.font = '600 15px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  const label = `${c.name} ${c.actionLabel ? '· ' + c.actionLabel : ''}`;
-  const w = ctx.measureText(label).width + 18;
-  const y = groundY - r * 2.35;
-  ctx.fillStyle = 'rgba(20,18,30,0.72)';
-  roundRect(ctx, c.x - w / 2, y - 20, w, 26, 13);
-  ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.fillText(label, c.x, y);
-}

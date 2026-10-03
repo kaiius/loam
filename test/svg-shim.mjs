@@ -146,7 +146,7 @@ export class SvgCtx {
   fillText(text, x, y) {
     const m = /(\d+(?:\.\d+)?)px/.exec(this.font);
     const size = m ? parseFloat(m[1]) : 12;
-    const anchor = this.textAlign === 'center' ? 'middle' : 'start';
+    const anchor = this.textAlign === 'center' ? 'middle' : this.textAlign === 'right' ? 'end' : 'start';
     const esc = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;');
     this.body.push(`<text x="${x}" y="${y}" font-size="${size}" font-family="sans-serif" text-anchor="${anchor}" fill="${this._paint(this.fillStyle)}"${this._styleAttrs()}>${esc}</text>`);
   }

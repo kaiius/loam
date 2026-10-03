@@ -648,6 +648,16 @@ export function drawCreature(ctx, c, groundY, t) {
     ctx.globalAlpha = 1;
   }
 
+  // Combo pass: rim light — the sun catches the creature's upper-left edge,
+  // seating it in the scene's light instead of floating on it.
+  ctx.strokeStyle = 'rgba(255,242,208,0.38)';
+  ctx.lineWidth = Math.max(2, r * 0.07);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.ellipse(0, torsoY - r * 0.35, r * 1.04 * sx * segK, r * 1.32 * sy,
+    -0.25, Math.PI * 1.02, Math.PI * 1.62);
+  ctx.stroke();
+
   ctx.restore();
 }
 
@@ -853,11 +863,17 @@ export function drawBiomeBands(ctx, world, B, light) {
   // Ground: the sim's own groundYAt, eased across borders by
   // smoothGroundAt — small steps become slopes, palettes cross-fade,
   // cliffs keep their faces. Still the sim's answer, never invented.
+  // Combo pass: each column gets a vertical gradient (lit top → dark depth)
+  // instead of a flat fill, so the ground reads as soil, not a block.
   const gstep = 30;
   for (let x = 0; x < W; x += gstep) {
     const sg = smoothGroundAt(B, x, world);
     if (!sg) continue;
-    ctx.fillStyle = groundRGB(sg.rgb, light);
+    const g = ctx.createLinearGradient(0, sg.top, 0, H);
+    g.addColorStop(0, groundRGB(sg.rgb, Math.min(1, light * 1.25 + 0.15)));
+    g.addColorStop(0.25, groundRGB(sg.rgb, light));
+    g.addColorStop(1, groundRGB(sg.rgb, light * 0.45));
+    ctx.fillStyle = g;
     ctx.fillRect(x, sg.top, gstep + 1, H - sg.top);
   }
 }
