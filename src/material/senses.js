@@ -8,7 +8,7 @@
 // vocal system in M2), wasteOdor (no waste system), farLedge (no glide in
 // M2). A zero with a reason beats a confabulated value.
 
-import { MAT } from './grid.js';
+import { MAT, CELL_PX } from './grid.js';
 import { sampleMat, isSolid, isClimbable, supportBelow } from './locomotion.js';
 import { sense43_45 } from './creature.js';
 import { coldSense, heatSense } from '../sim/biochem.js';
@@ -50,7 +50,8 @@ function nearestFood(mw, c, range) {
   if (mw.plants) {
     for (const p of mw.plants) {
       if (!p.fruiting || (p.fruit || 0) <= 0) continue;
-      const dx = p.seedX - c.x, dy = p.seedY - c.y - 40;
+      // seedX/seedY are CELL coords; c.x/c.y are pixels — convert.
+      const dx = p.seedX * CELL_PX - c.x, dy = p.seedY * CELL_PX - c.y - 40;
       const d = Math.hypot(dx, dy);
       if (d < range && (!best || d < best.d)) best = { d, dx, kind: 'fruit', plant: p };
     }
