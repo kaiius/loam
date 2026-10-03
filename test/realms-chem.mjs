@@ -219,7 +219,12 @@ test('v0.18: index contract — N_IN 39, N_OUT 24, append-only', () => {
   assert.equal(v[35], 0, 'creatureSize rides at index 35'); // v0.22 "Web of Life"
   assert.equal(v[36], 0, 'phaseSleepiness rides at index 36'); // v0.28 "Day and night"
   assert.equal(v[37], 0, 'pain rides at index 37'); // v0.32 "Nervous system"
-  assert.equal(v[38], 1, 'bias still last'); // v0.32: was 37
+  assert.equal(v[38], 0, 'libido rides at index 38'); // v0.37 "Affect"
+  assert.equal(v[39], 0, 'curiosity rides at index 39'); // v0.37
+  assert.equal(v[40], 0, 'attachment rides at index 40'); // v0.37
+  assert.equal(v[41], 0, 'care rides at index 41'); // v0.37
+  assert.equal(v[42], 0, 'pairNear rides at index 42'); // v0.37
+  assert.equal(v[43], 1, 'bias still last'); // v0.37: 43 senses + bias
 });
 
 test('v0.18: founder main-stream bit-identity with pinSub + a pinned allele', () => {

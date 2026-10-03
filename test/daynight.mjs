@@ -57,9 +57,10 @@ test('v0.28: new loci draw from their own sub-stream — earlier streams untouch
 });
 
 test('v0.32: one new sense — pain at index 37, N_IN 39', () => {
-  assert.equal(SENSE32.length, 38);
+  assert.equal(SENSE32.length, 43); // v0.37: +5 affect senses appended
   assert.equal(SENSE32[36], 'phaseSleepiness');
-  assert.equal(SENSE32[37], 'pain');
+  assert.equal(SENSE32[37], 'pain'); // v0.32: pain still at 37 — appended, never renumbered
+  assert.deepEqual(SENSE32.slice(38), ['libido', 'curiosity', 'attachment', 'care', 'pairNear']); // v0.37
   assert.equal(N_IN, 44); // v0.37: +5 affect senses (libido, curiosity, attachment, care, pairNear)
   const s = {};
   for (const k of SENSE32) s[k] = 0;
@@ -69,7 +70,7 @@ test('v0.32: one new sense — pain at index 37, N_IN 39', () => {
   assert.equal(v.length, 44); // v0.37: 43 senses + bias
   assert.equal(v[36], 0.7);
   assert.equal(v[37], 0.9);
-  assert.equal(v[38], 1); // bias
+  assert.equal(v[43], 1); // bias still last // v0.37: 43 senses + bias
 });
 
 test('v0.28: DAY length is a world parameter (ticks per day, default 3000)', () => {
