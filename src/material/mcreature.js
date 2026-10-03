@@ -102,7 +102,31 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   const input = senseVector47(s);
   const erng = createRng(hash3(mw.seed || 1, mw.tick || 0, c.id * 7919));
   const decision = decide(c.brain, input, c.exploration, erng);
-  const action = decision.index;
+  let action = decision.index;
+  // Action-level proximity fallback (the starvation fix, part 3): the
+  // instinct gate (instFoodDistEat) is evolvable and neural, hence noisy —
+  // the argmax can still select EAT with food out of reach, or seekFood
+  // when EAT would work. This fallback is infallible: EAT fires only when
+  // food is within tryEat's reach; otherwise the creature seeks (food
+  // sensed) or wanders (nothing sensed). And when food is in reach, a
+  // seekFood decision is upgraded to EAT — the consummatory act takes
+  // precedence over the appetitive one. Reach is kind-aware: fruit/buried
+  // 120px, corpse 70px (matching tryEat). Deterministic, amoral.
+  const sightRange = (c.pheno && c.pheno.sightRange) || 420; // must match senses.js
+  const foodKind = c._foodTarget ? c._foodTarget.kind : null;
+  const reachPx = foodKind === 'corpse' ? 70 : 119; // tryEat's reaches (strict <)
+  const reachFd = reachPx / sightRange;
+  // Carried food is always in reach (foodDist forced to 0 in senses).
+  const hasCarried = c.carried && c.carried.edible;
+  if (action === 1 /* eat */) {
+    if (!hasCarried && s.foodDist > reachFd) {
+      action = s.foodDist < 1 ? 0 /* seekFood */ : 7 /* wander */;
+    }
+  } else if (action === 0 /* seekFood */ && s.hunger > 0.3) {
+    if (hasCarried || s.foodDist <= reachFd) {
+      action = 1; // hungry and food in reach: eat, don't seek
+    }
+  }
   c.lastAction = action;
 
   // --- act ---

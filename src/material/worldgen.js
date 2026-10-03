@@ -410,7 +410,7 @@ function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
     .sort((a, b) => (b.score - a.score) || (a.p.seedX - b.p.seedX));
   let mark = ranked.filter((r) => r.score > 0.42);
   if (mark.length < need + 4) mark = ranked.slice(0, Math.min(ranked.length, Math.ceil(need + 4)));
-  for (const r of mark) { r.p.fruiting = true; r.p.fruit = 5; } // M2: edible fruit count
+  for (const r of mark) { r.p.fruiting = true; r.p.fruit = 15; } // M2: edible fruit count
   log.push(`flora: ${plants.length} plants grown, ${mark.length} fruiting`);
   return plants;
 }

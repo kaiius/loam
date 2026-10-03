@@ -85,17 +85,30 @@ export function seedEcology(mw, rng, opts = {}) {
   };
   const W = g.cols * 10;
   const third = W / 3;
+  // Spawn near the food: the fruiting grove anchors the herbivore base.
+  // (The starvation fix: scattering grazers uniformly across a 4800px world
+  // with a single 840px grove strands half the ecology beyond sense range.)
+  // Herbivores spawn within the grove's x-band; hunters and cleaners keep
+  // wider ranges (they track prey/corpses, not plants).
+  let gx0 = third, gx1 = 2 * third;
+  if (mw.plants) {
+    const fxs = mw.plants.filter((p) => p.fruiting).map((p) => p.seedX * 10);
+    if (fxs.length) {
+      gx0 = Math.max(0, Math.min(...fxs) - 200);
+      gx1 = Math.min(W, Math.max(...fxs) + 200);
+    }
+  }
   // The prey base and grazers — the world needs something to eat first.
-  put('grub', 6, 0, W);
-  put('beetle', 8, 0, W);
-  put('flutter', 4, third, 2 * third);
-  put('scurrier', 4, 0, W);
-  put('skimmer', 3, third, W);
+  put('grub', 6, gx0, gx1);
+  put('beetle', 8, gx0, gx1);
+  put('flutter', 4, gx0, gx1);
+  put('scurrier', 4, gx0, gx1);
+  put('skimmer', 3, gx0, gx1);
   // The hunters — few, or there is nothing left to hunt.
   put('jungle-cat', 1, third, 2 * third);
   put('plains-runner', 2, 2 * third, W);
   // The cleaners — corpses come later; they arrive hungry and wait.
   put('vulture', 1, 0, third);
-  put('beetle-detritivore', 4, 0, W);
+  put('beetle-detritivore', 4, gx0, gx1);
   return spawned;
 }

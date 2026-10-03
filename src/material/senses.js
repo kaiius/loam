@@ -131,6 +131,10 @@ export function gatherMaterialSenses(mw, c, ctx = {}) {
   s.foodDist = food ? clamp01(food.d / range) : 1;
   s.foodDir = food ? (food.dx >= 0 ? 1 : -1) : 0;
   c._foodTarget = food || null;
+  // Food in hand is food at distance zero. Without this, the proximity
+  // gate on EAT (instFoodDistEat) would veto eating a carried meal the
+  // creature just dug up — starving a successful forager.
+  if (c.carried && c.carried.edible) s.foodDist = 0;
 
   // --- creatures ---
   const other = nearestCreature(c, others, range);

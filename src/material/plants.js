@@ -35,8 +35,8 @@ export function attachPlantGenomes(plants, rng) {
     p.stress = 0;          // drought/cold stress accumulator
     p.cells = null;        // worldgen plants don't track cells (bulk cleanup by grownId)
     p.generation = 0;
-    // Fruit count from the yield gene (worldgen set a flat 5).
-    if (p.fruiting) p.fruit = 1 + Math.round(2 * p.pheno.yield) + 3;
+    // Fruit count from the yield gene (worldgen set a flat 15).
+    if (p.fruiting) p.fruit = 3 + Math.round(4 * p.pheno.yield) + 8;
   }
   return plants;
 }
@@ -258,6 +258,27 @@ export function tickPlants(mw) {
     if (p.cells) {
       for (const ci of p.cells) {
         if (g.heat[ci] > 0.7) { burning = true; break; }
+      }
+    }
+
+    // Fruit regrowth: a mature, fruiting, unstressed plant replenishes its
+    // crop slowly — the ecology's primary production. Without this, the
+    // fixed initial stock cannot sustain the herbivore base (measured:
+    // 60 fruit vs ~900 units of metabolic demand over 3000 ticks). Not
+    // free food: the plant must be alive, mature, unstressed, and in a
+    // suitable climate; the rate scales with the yield phenotype and the
+    // crop caps at the variety's maximum. Deterministic (tick counter).
+    if (p.fruiting && p.growth >= 1 && !stressing && !burning) {
+      const maxFruit = 3 + Math.round(4 * (ph.yield || 0.5)) + 8;
+      if ((p.fruit || 0) < maxFruit) {
+        p.fruitTimer = (p.fruitTimer || 0) + 1;
+        const interval = Math.max(10, Math.round(30 / (0.5 + (ph.yield || 0.5))));
+        if (p.fruitTimer >= interval) {
+          p.fruitTimer = 0;
+          p.fruit = (p.fruit || 0) + 1;
+        }
+      } else {
+        p.fruitTimer = 0;
       }
     }
 

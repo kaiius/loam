@@ -178,7 +178,16 @@ export function createBrain(pheno, rng) {
     fanIn = sizes[l];
   }
   // Associative → motor: sparse (density ~0.5), motor units map 1:1 to actions.
-  const a2m = randSparse(rng, N_OUT, sizes[nLayers - 1], 0.5, 0.9);
+  // Loam M2: ZERO init (not the platform's 0.9). A newborn's learned
+  // associations start blank; the instinct pathway is the prior and Hebbian
+  // learning builds on it. At 0.9 the random readout noise (±1.5) drowns the
+  // instincts (±1.2) — measured: a starving grub with food in reach outputs
+  // cuddle 0.92 / dive 0.86 from pure noise while EAT sits at 0.12. Even at
+  // 0.1 the fan-in norm (sqrt(44/cols) ≈ 2.3 for small brains) amplifies the
+  // noise back to ±1.0. Zero is the only honest blank slate; learning (with
+  // the tamed rate below) grows the weights it earns.
+  const _a2mInit = randSparse(rng, N_OUT, sizes[nLayers - 1], 0.5, 0.9);
+  const a2m = { idx: _a2mInit.idx, w: _a2mInit.w.map((row) => row.map(() => 0)) };
   const biasM = new Array(N_OUT).fill(0);
 
   // Instincts: evolvable sense→action reflexes, wired straight from the genome.
@@ -444,7 +453,11 @@ export function learn(brain, pheno, reward, chems = null) {
   }
   updateTraces(brain, pheno);
   // v2 (B): the Hebbian rate is evolvable — founder → ×1.0, the classic rate.
-  let lr = (0.02 + (pheno.learningRate ?? 0.5) * 0.18) * (2 * (pheno.bpHebb ?? 0.5));
+  // Loam M2: tamed base (0.005, not 0.02). At 0.02 a single reward event
+  // moves weights by ~0.1/tick — enough to rebuild the readout noise (±1.5)
+  // from a zero init within 30 ticks, re-drowning the instincts. Learning
+  // must be slow refinement on top of a working prior, not rapid overwriting.
+  let lr = (0.005 + (pheno.learningRate ?? 0.5) * 0.045) * (2 * (pheno.bpHebb ?? 0.5));
   // v2 (B): neuromodulation — a chemical level scales the learning rate.
   // Founder gain 0 → no modulation, exactly as before. When evolved, the
   // modulator gene picks the chemical (founder: adrenaline — stress tunes

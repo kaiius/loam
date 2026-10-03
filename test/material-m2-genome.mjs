@@ -84,7 +84,13 @@ test('m2: world marks accumulate on the body', () => {
 
 test('m2: M2 instinct genes target the new actions', () => {
   const acts = M2_GENES.map((g) => g.action).sort();
-  assert.deepEqual(acts, [30, 30, 31, 32], 'pile, pile, instPile, geophagy');
+  // The three new M2 verbs (pile, instPile, geophagy) must have genes
+  // (Paul's v0.5 rule). The starvation-fix genes (drive priority, proximity
+  // gate) target older actions — they are Loam-specific overrides, also
+  // in M2_GENES, and also tested below.
+  for (const a of [30, 30, 31, 32]) {
+    assert.ok(acts.includes(a), `action ${a} has an M2 gene`);
+  }
   for (const g of M2_GENES) {
     assert.ok(g.sense >= 0 && g.sense <= 45, `${g.key} sense in range`);
   }
