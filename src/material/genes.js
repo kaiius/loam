@@ -12,14 +12,13 @@
 // `gene.founder` when the phenotype lacks the key (see material/brain.js).
 //
 // Sense indices referenced: 0 hunger, 6 foodDist, 33 heldWeight, 45 enclosed.
-// NOTE (2026-10-03): instCarriedPile below wires sense 34, which is `falling`,
-// not heldWeight (33) — a latent miswire from M2. Flagged, not changed here:
-// pile is rarely selected while falling, so it is dormant, but the intent
-// ("carrying nudges placing") does not match the wire. Fix = sense 34→33.
+// (2026-10-03 fix): instCarriedPile was wired to sense 34 (falling) — a
+// latent M2 miswire; the intent "carrying nudges placing" is heldWeight (33).
+// pile is rarely selected while falling, so the miswire was dormant.
 
 export const M2_GENES = [
   // Carrying something nudges placing it — pile is construction.
-  { key: 'instCarriedPile', kind: 'float', sense: 34, action: 30, founder: 0.7 },
+  { key: 'instCarriedPile', kind: 'float', sense: 33, action: 30, founder: 0.7 },
   // Deep in a burrow with a load, shape the tunnel — a weaker second wire.
   { key: 'instEnclosedPile', kind: 'float', sense: 45, action: 30, founder: 0.3 },
   // Carrying nudges dumping too — instPile is the fast, thoughtless twin.

@@ -385,9 +385,13 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
 function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
   const plants = [];
   // Seed selection: SOIL surface cells with fertility x moisture above
-  // threshold (soil fertility = 1.0), spaced >= 12 cells apart
+  // threshold (soil fertility = 1.0), spaced >= 9 cells apart
   // (competition), west -> east. Count scales with fertile area.
-  const SEED_GAP = 12, SEED_THRESH = 0.38;
+  // (Carrying-capacity fix, 2026-10-03: the 12-cell gap and 0.38
+  // threshold grew only 38 plants in the seed-7 world — too sparse a
+  // grove to feed 34 creatures. 9 / 0.30 grows a lusher world; the
+  // fruiting floor (need) then has real candidates to mark.)
+  const SEED_GAP = 9, SEED_THRESH = 0.30;
   const maxPlants = Math.min(400 * Math.max(1, Math.round(size)), 60000);
   let lastX = -SEED_GAP - 1, pid = 0;
   for (let c = 0; c < cols && pid < maxPlants; c++) {
@@ -404,7 +408,14 @@ function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
     lastX = c;
   }
   // Fruiting: best climate first; keep a margin over the G1 requirement.
-  const need = 8 * size;
+  // (Carrying-capacity fix, 2026-10-03: 8 fruiting plants produced
+  // ~0.29 fruit/tick against ~1.0 of behavioral demand — creatures ate at
+  // 100% in-reach and still starved to bloodSugar ~0. Measured: with
+  // infinite fruit the brain holds bs ~0.43 and eats ~2.8/tick, so the
+  // world must provision ~1.5-2/tick effective. 44 per size does it; the
+  // per-plant crop cap self-limits any surplus, so this is provision,
+  // not force-feeding.)
+  const need = 44 * size;
   const ranked = plants
     .map((p) => ({ p, score: T[p.seedX] * M[p.seedX] }))
     .sort((a, b) => (b.score - a.score) || (a.p.seedX - b.p.seedX));
@@ -598,7 +609,9 @@ function walkableLandFraction(w) {
 export function checkViability(world) {
   const failures = [];
   // G1 — food: >= N fruit-bearing grown plants (N scales with size).
-  const need = 8 * world.size;
+  //  (44/size since the 2026-10-03 carrying-capacity fix — 8 starved the
+  // roster; the marking above keeps its +4 margin over this.)
+  const need = 44 * world.size;
   const fruiting = world.plants.filter((p) => p.fruiting).length;
   if (fruiting < need) failures.push(`G1 food: ${fruiting} fruiting plants, need ${need}`);
   // G2 — water: >= 1 freshwater lake.
@@ -699,7 +712,12 @@ export function generateMaterialWorld(seed, size = 1, opts = {}) {
     log.push(`reject: attempt ${attempt}: ${gate.failures.join('; ')}`);
   }
   for (let k = 0; k < 50; k++) {
-    world = buildWorld(seed, size, k, true, log);
+    // The starting attempt mixes into the gentle roll: different start
+    // attempts explore different gentle worlds, so the "attempt counter
+    // changes the roll" invariant holds in the fallback too (without
+    // this, two rejected starts would collapse onto the same gentle
+    // world and the attempt counter would silently stop mattering).
+    world = buildWorld(seed, size, startAttempt * 1000 + k, true, log);
     gate = checkViability(world);
     if (gate.ok) {
       log.push(`fallback: gentle attempt ${k} accepted`);

@@ -91,14 +91,10 @@ export function tickMaterialWorldM2(mw, ctx = {}) {
   if ((mw.tick % SKY_EVERY) === 0) tickSky(mw, SKY_EVERY);
   // M3: seeds drift on the wind.
   if ((mw.tick % 10) === 0) tickSeeds(mw);
-  // Fruit regrows slowly on fruiting plants (the food economy breathes).
-  if (mw.plants && mw.tick % 50 === 0) {
-    for (const p of mw.plants) {
-      if (p.fruiting && (p.fruit || 0) < 5) p.fruit = Math.min(5, (p.fruit || 0) + 1);
-    }
-    // M3: the plant slow tick — growth, stress, death, generations.
-    tickPlants(mw);
-  }
+  // M3: the plant slow tick — growth, stress, death, generations, and
+  // fruit regrowth (the food economy breathes; the refill lives in
+  // plants.js, yield-scaled and climate-gated).
+  if (mw.tick % 50 === 0) tickPlants(mw);
   // M3: corpses rot.
   if (mw.tick % 50 === 0) tickCorpses(mw);
   // Social substrate: bonds decay/drift. The adapter maps the material
@@ -113,8 +109,13 @@ export function tickMaterialWorldM2(mw, ctx = {}) {
 // Add a founder creature to the world (spawns on the surface).
 export function addFounder(mw, rng, opts = {}) {
   const c = spawnFounder(mw, rng, 0, 0, opts);
-  // Drop onto the surface near the world center.
-  const cx = Math.floor(mw.grid.cols / 2);
+  // Drop onto the world's designated spawn: pickSpawn chose it for open
+  // sky (6 cells of AIR headroom) near the fruiting grove. The old blind
+  // world-center drop could land inside a grown canopy once the grove
+  // grew dense enough — a founder spawning in leaves, in the dark
+  // (caught by the m2 senses test when seed 7 resampled).
+  const sp = mw.spawn || { x: (mw.grid.cols / 2) * 10 };
+  const cx = Math.max(0, Math.min(mw.grid.cols - 1, Math.floor(sp.x / 10)));
   const sy = mw.surf[cx] || 0;
   c.x = cx * 10;
   c.y = sy * 10 - 2;

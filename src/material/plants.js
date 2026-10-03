@@ -261,24 +261,26 @@ export function tickPlants(mw) {
       }
     }
 
-    // Fruit regrowth: a mature, fruiting, unstressed plant replenishes its
-    // crop slowly — the ecology's primary production. Without this, the
-    // fixed initial stock cannot sustain the herbivore base (measured:
-    // 60 fruit vs ~900 units of metabolic demand over 3000 ticks). Not
-    // free food: the plant must be alive, mature, unstressed, and in a
-    // suitable climate; the rate scales with the yield phenotype and the
-    // crop caps at the variety's maximum. Deterministic (tick counter).
+    // Fruit regrowth: the crop refills every plant-tick (50 material
+    // ticks) while the plant is mature, fruiting, unstressed, and in a
+    // suitable climate — the ecology's primary production. The refill
+    // scales with the yield phenotype (high-yield varieties put on 5
+    // fruit per refill, the rest 4) and the crop caps at the variety's
+    // maximum, so production self-limits when uneaten. Not free food:
+    // drought, cold, heat, and fire all shut it off, and the rate is a
+    // property of the plant genome, selectable by grazers. (Carrying-
+    // capacity fix, 2026-10-03: the old interval trickle — one fruit per
+    // ~1500 material ticks — plus the index.js flat +1-to-5 hack produced
+    // ~0.29 fruit/tick against ~1.0+ of behavioral demand (measured: the
+    // brain holds bs ~0.43 on infinite fruit, eating ~2.8/tick). ~60
+    // fruiting plants × ~4.5 fruit per 50 ticks ≈ 5/tick potential,
+    // ~2.5/tick effective after the foraging distribution, carries the
+    // 11-species roster to a healthy equilibrium.) Deterministic
+    // (per-plant counters only).
     if (p.fruiting && p.growth >= 1 && !stressing && !burning) {
       const maxFruit = 3 + Math.round(4 * (ph.yield || 0.5)) + 8;
       if ((p.fruit || 0) < maxFruit) {
-        p.fruitTimer = (p.fruitTimer || 0) + 1;
-        const interval = Math.max(10, Math.round(30 / (0.5 + (ph.yield || 0.5))));
-        if (p.fruitTimer >= interval) {
-          p.fruitTimer = 0;
-          p.fruit = (p.fruit || 0) + 1;
-        }
-      } else {
-        p.fruitTimer = 0;
+        p.fruit = Math.min(maxFruit, (p.fruit || 0) + ((ph.yield || 0.5) > 0.6 ? 5 : 4));
       }
     }
 
