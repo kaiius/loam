@@ -267,7 +267,7 @@ convenience.
       Two sim bugs found live and fixed: sequential-worlds id leak,
       teacher floating-fruit crash. Gemini review: 2 P0s accepted, 1 declined.
       Zero new test failures vs v0.35. Protocol ref: design/qa-rebaseline.md.
-- [ ] v0.37 — affect expansion (design/affect-expansion.md, Joshua's
+- [x] v0.37 — affect expansion (design/affect-expansion.md, Joshua's
       directive 2026-10-02: "all the emotions I mentioned and the ones I
       didn't mention should be possible"): 6 new chemicals (sexHormone,
       zest, serotonin, vasopressin, prolactin, stimulus), 4 new drives
@@ -279,10 +279,15 @@ convenience.
       salt 55 for mutation only). Relationship kinds: TRACKED EMERGENCE
       (Joshua's ruling 2026-10-02, §4.2b) — kinds derive from bond + kin +
       pair-bond (brain never sees labels), world tracks kind transitions
-      per dyad + chronicle events. Gemini-reviewed (3 P0s fixed, 4 misreads
-      dismissed with evidence). Probe: emotion-pathway gate — force each
-      new chemical/drive through its full path in a live sim and watch the
-      behavior happen.
+      per dyad + chronicle events. Gemini-reviewed (2 P0s fixed: hormone
+      cost removed per ledger discipline, libido formula confirmed;
+      1 P1 noted: tail integrity check deferred — no Scars system yet).
+      DONE 2026-10-03: commit df652d4, tag v0.37. 21 new tests pass.
+      Full suite: 60 pre-existing failures (v0.36 baseline), zero new.
+      Execution probes: 5/5 PASS (libido→display retargeting, novelty→
+      stimulus, grief→chemistry cascade, pair-bond→vasopressin, live mood).
+      Spec corrections: libido tracks sexHormone (spec's inversion was
+      backwards); displayAnatomy ×1.2 for founder clearance.
 - [ ] v0.38 — three instruments: (a) generation-50 drift watch (teacher
       prototypes vs ridge sound shadows); (b) jump-weakening clean test
       (measured number replaces unprincipled one); (c) duplication-to-fixation
