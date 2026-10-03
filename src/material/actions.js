@@ -258,12 +258,26 @@ function tryEat(mw, c, s) {
   }
   // 1. Fruit: a fruiting plant with fruit left, canopy within reach.
   const f = c._foodTarget;
-  if (f && f.kind === 'fruit' && f.d < 120 && f.plant && (f.plant.fruit || 0) > 0) {
-    f.plant.fruit -= 1;
-    const bitter = (f.plant.pheno && f.plant.pheno.bitterness) || 0;
-    const size = (f.plant.pheno && f.plant.pheno.fruitSize) || 0.5;
+  // Fruit: the target plant, or a nearby backup if it was stripped by a
+  // tick-mate (contention: 84% of EATs targeted empty plants). The backup
+  // search is bounded (120px) and deterministic.
+  let fruitPlant = (f && f.kind === 'fruit' && f.d < 120) ? f.plant : null;
+  if (fruitPlant && (fruitPlant.fruit || 0) <= 0) {
+    fruitPlant = null;
+    if (mw.plants) {
+      for (const p of mw.plants) {
+        if (!p.fruiting || (p.fruit || 0) <= 0) continue;
+        const dx = p.seedX * 10 - c.x, dy = p.seedY * 10 - c.y - 40;
+        if (Math.hypot(dx, dy) < 120) { fruitPlant = p; break; }
+      }
+    }
+  }
+  if (fruitPlant && (fruitPlant.fruit || 0) > 0) {
+    fruitPlant.fruit -= 1;
+    const bitter = (fruitPlant.pheno && fruitPlant.pheno.bitterness) || 0;
+    const size = (fruitPlant.pheno && fruitPlant.pheno.fruitSize) || 0.5;
     // A seed may ride along — endozoochory (plants.js).
-    seedFromFeeding(mw, f.plant, c);
+    seedFromFeeding(mw, fruitPlant, c);
     return 0.35 * (1 - 0.5 * bitter) * (0.7 + 0.6 * size);
   }
   // 2. Buried: a food cell within a body length.
