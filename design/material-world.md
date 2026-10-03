@@ -387,3 +387,76 @@ visibly distinct; one founder across 4 forced affect states (face/posture
 read correctly); gait frames differ across ticks; sleep/dig/climb poses
 render; determinism holds. All checks pass; stills in previews/material-art/,
 eye-checked. Full suite green, zero regressions.
+
+## 12. Beauty pass (2026-10-03, Joshua's commission: "does it have to be pixelated style?")
+
+His question — "What would more naturalistic look like? Can it be more
+beautiful and retain the complexity?" — and his answer: yes. The brief:
+the world view becomes a naturalistic painting. Sim untouched; rendering
+is eye-only, never feeds back. Same determinism, same ecology.
+
+**The clean split** (his bar: "a window, not a dashboard"): WORLD view =
+the painting; INSPECT view = the lab bench (stays crisp — hit-testing,
+cell data, drive bars never smear). Click-picking stays pixel-accurate
+against the sim grid regardless of blending.
+
+**World view — technique by technique** (all in render.js `renderWorldView`):
+- *Blended materials:* the albedo pass computes per-cell RGB, then emits
+  corner-blend subrects — uniform 3×3 neighborhoods collapse to one rect,
+  boundaries split into 4 subrects colored by the mean of the meeting
+  cells. No hard cell edges; soil/rock/sand melt into each other.
+  Per-material procedural texture (soil grain, rock facets) via
+  deterministic hash variation.
+- *Water:* not blue squares — a smooth surface with animated shimmer
+  (per-rect alpha oscillation) and soft highlights on the top row.
+- *Fire:* solid ember core (the old ember-orange, kept for readability)
+  + radial glow with flicker + white-hot core above heat 0.82. Ember light
+  casts on neighbors via the glow radius.
+- *Light:* diurnal cycle (2400 ticks) drives a sky gradient (zenith →
+  horizon, mapped to the sky region so dawn actually burns at the
+  horizon), sun glow, and a full-scene tint — dawn/dusk fire (warm
+  horizon via circular hue lerp, no swamp-green), night indigo.
+  Seasonal palette breathing. Burrows fall into shadow via ambient
+  occlusion; sealed air renders as warm dark earth shadow (never blue).
+- *Plants:* real branching forms (L-system, from M1) with leaves that sway
+  in the live wind (`windAt`, quantized per 200px for perf, one batched
+  path for all leaves).
+- *Weather:* rain as animated streaks (only visible sky columns — culled
+  from 48 to ~13), lightning bolts with scene flash.
+- *Performance:* terrain paints to an offscreen canvas, cached 32 ticks
+  (was 8 — the repaint hitch at 16× was twice per frame); per-frame work
+  is overlays + creatures only. Rain culled to visible columns; leaves
+  batched. Measured (node, null ctx, 30 creatures): 10.5ms/frame
+  (was 18.8ms). Creatures alone: 1.3ms for 30.
+
+**Creatures — from cartoon toward naturalistic** (new material/fauna.js):
+- The art pass's anatomy stays (IK limbs, prehensile tail, affect poses).
+  Flat fills + outlines replaced with: gradient body shading (dark→mid→
+  pale along the body), rim light (pale arc on the sun side), fur as
+  layered directional strokes (building on the shaggy halo), eyes with
+  highlight catchlights.
+- *Species silhouettes* (the follow-up the refresh builder flagged):
+  all 11 M3 species get their own body plan — broad fingered wings +
+  hooked beak for vulture/skimmer (perched birds fold their wings),
+  six-legged scuttle for beetles, low-slung quadruped for jungle-cat /
+  plains-runner, heavy bulk for the bear, big upright wings for the
+  flutter (never edge-on), segmented grub, etc. The tanglekin keeps its
+  grown-body renderer.
+- Affect stays wired to the real biochemistry, subtler: fear/exhaustion/
+  contentment read on face + posture via the existing portrait system
+  (which the artifact now actually animates — `portraitFor` was exported
+  and the live portrait was not animating before this pass).
+
+**Eye-check bar** (his: "does it look like a real place, not a diagram?"):
+stills in previews/material-beauty/, eye-checked at noon/dawn/night +
+all species. Noon: painterly, trees read as trees. Night: deep blue,
+readable. Dawn: golden horizon (fixed twice — first the gradient mapped
+to full canvas hiding the warmth behind terrain, then the hue lerp swung
+through swamp-green). Vulture v1 (purple blob) and skimmer v1
+(periscope) were rewritten; flutter wings were invisible until a shim
+bug (dropped ellipse rotation) was found and fixed.
+
+**Verification:** determinism hash holds (805f49d5663f7bf454910e22587b4c13);
+109/109 material tests green (two tests updated for the new techniques:
+ember overlay now rgba, coverage replaces exact rect counting);
+39/39 UI checks green. Sim 10.6ms/tick (node, 30 creatures).

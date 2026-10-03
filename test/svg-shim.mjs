@@ -88,7 +88,10 @@ export class SvgCtx {
     if (s.kind === 'circle') {
       this.body.push(`<circle cx="${s.x}" cy="${s.y}" r="${s.r}"${this._styleAttrs()}/>`);
     } else {
-      this.body.push(`<ellipse cx="${s.x}" cy="${s.y}" rx="${s.rx}" ry="${s.ry}"${s.rot ? '' : ''}${this._styleAttrs()}/>`);
+      // rotation applies in local coords, before the CTM: transform="rotate() <ctm>"
+      const rot = s.rot ? `rotate(${(s.rot * 180 / Math.PI).toFixed(2)} ${s.x} ${s.y}) ` : '';
+      const attrs = this._styleAttrs().replace('transform="', `transform="${rot}`);
+      this.body.push(`<ellipse cx="${s.x}" cy="${s.y}" rx="${s.rx}" ry="${s.ry}"${attrs}/>`);
     }
   }
 
@@ -116,7 +119,10 @@ export class SvgCtx {
         ? `<circle cx="${s.x}" cy="${s.y}" r="${s.r}"`
         : `<ellipse cx="${s.x}" cy="${s.y}" rx="${s.rx}" ry="${s.ry}"`;
       const sw = stroke && stroke !== 'none' ? ` stroke="${stroke}" stroke-width="${this.lineWidth}" stroke-linecap="${this.lineCap}"` : '';
-      this.body.push(`${base} fill="${fill}"${sw}${this._styleAttrs()}/>`);
+      // ellipse rotation applies in local coords, before the CTM
+      const rot = (s.kind !== 'circle' && s.rot) ? `rotate(${(s.rot * 180 / Math.PI).toFixed(2)} ${s.x} ${s.y}) ` : '';
+      const attrs = this._styleAttrs().replace('transform="', `transform="${rot}`);
+      this.body.push(`${base} fill="${fill}"${sw}${attrs}/>`);
     }
     this._shapes = [];
   }
@@ -128,6 +134,12 @@ export class SvgCtx {
       const id = `g${this.gradId++}`;
       const stops = style._stops.map((s) => `<stop offset="${s[0]}" stop-color="${s[1]}"/>`).join('');
       this.defs.push(`<linearGradient id="${id}" x1="${style._x1}" y1="${style._y1}" x2="${style._x2}" y2="${style._y2}">${stops}</linearGradient>`);
+      return `url(#${id})`;
+    }
+    if (style && style._rgrad) {
+      const id = `g${this.gradId++}`;
+      const stops = style._stops.map((s) => `<stop offset="${s[0]}" stop-color="${s[1]}"/>`).join('');
+      this.defs.push(`<radialGradient id="${id}" cx="${style._x1}" cy="${style._y1}" r="${style._r1}" fx="${style._x0}" fy="${style._y0}">${stops}</radialGradient>`);
       return `url(#${id})`;
     }
     return style;
@@ -153,6 +165,11 @@ export class SvgCtx {
   measureText() { return { width: 60 }; }
   createLinearGradient(x1, y1, x2, y2) {
     const g = { _grad: true, _x1: x1, _y1: y1, _x2: x2, _y2: y2, _stops: [] };
+    g.addColorStop = (o, c) => g._stops.push([o, c]);
+    return g;
+  }
+  createRadialGradient(x0, y0, r0, x1, y1, r1) {
+    const g = { _rgrad: true, _x0: x0, _y0: y0, _r0: r0, _x1: x1, _y1: y1, _r1: r1, _stops: [] };
     g.addColorStop = (o, c) => g._stops.push([o, c]);
     return g;
   }

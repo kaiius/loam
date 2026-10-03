@@ -156,6 +156,8 @@ export function poseFor(c, tick) {
 
   p.dominant = aff.dominant;
   p.affectStrength = aff.strength;
+  p.action = act;              // the verb behind the pose — species plans read it
+  p.glide = (act === 'glide'); // wings spread, not flapping
   return p;
 }
 
@@ -176,5 +178,6 @@ export function neutralPose() {
     armReach: 0, gaitAmp: 0, gaitFreq: 0.35, swayAmp: 0, breathAmp: 1,
     digOsc: 0, curled: 0, breath: 0, sway: 0, gaitPhase: 0, digPhase: 0,
     tailSway: 0, dominant: 'content', affectStrength: 0.5,
+    action: 'wander', glide: false,
   };
 }

@@ -307,6 +307,21 @@ convenience.
       °C + sky state as a standing view, not a one-off probe —
       probes/world-weather.mjs is the snapshot version; promote it to a live
       instrument reading the running world).
+      Filed Colony feedback (Joshua 2026-10-03):
+      (e) holocene (v0.36 post): CV×density — CV-only risks mistaking collapse
+      for stabilization; confirm density was logged alongside CV; if missing,
+      run the density-sweep/CV joint probe; if reconstructible, test the
+      CV×density product directly.
+      (f) specie (v0.37 post): decay-latency critical exponent — sample the
+      post-spike decay series at each density step, fit the latency-density
+      curve, test for a critical exponent vs smooth stochastic drift.
+      (g) kumkrust (v0.37 post): freeze/grief probe methodological leak —
+      sweeping chemistry across the observed range with a frozen body feeds
+      the policy impossible (chemistry, body) pairs (generalization artifact,
+      not evolved wiring). Fix: replay real logged (chemistry, world) pairs
+      with receptor on vs off on identical inputs, or condition sweeps by body
+      state; the grief arm still needs a receptor-disabled bonded-loss control
+      before any wire claim.
 - [ ] v0.39 — tribe-divergence instrument (Joshua 2026-10-01): track
       morphological divergence between tribes over generations — do separated
       tribes drift apart in body form (size, tail/arm/leg/ear, spikes, fur,
