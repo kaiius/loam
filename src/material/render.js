@@ -186,7 +186,12 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   }
 
   // --- creature overlay (optional, humble) ---------------------------------
-  if (opts.creature) drawCreature(ctx, opts.creature, px, py, scale);
+  // M2: opts.creature may carry a `drawing` (bodyDrawing() output) — the
+  // grown body. Without it, the M1 fixed silhouette (kept for old callers).
+  if (opts.creature) {
+    if (opts.creature.drawing) drawGrownBody(ctx, opts.creature, px, py, scale);
+    else drawCreature(ctx, opts.creature, px, py, scale);
+  }
 
   return { scale, ox, oy };
 }
@@ -337,4 +342,141 @@ function drawCreature(ctx, c, px, py, scale) {
   ctx.beginPath(); ctx.moveTo(8, -38); ctx.quadraticCurveTo(16, -30, 13, -20); ctx.stroke();
 
   ctx.restore();
+}
+
+// --- M2: the grown body ------------------------------------------------------
+// Draws bodyDrawing() output: torso + per-limb segments + tail, in the
+// genome's hue. Scarred limbs draw thinner and paler — the world writes on
+// the body and the renderer doesn't look away.
+function drawGrownBody(ctx, c, px, py, scale) {
+  const d = c.drawing;
+  ctx.save();
+  ctx.translate(px(c.x), py(c.y));
+  ctx.scale(scale * (c.facing >= 0 ? 1 : -1), scale);
+  const H = d.heightPx, W = d.widthPx;
+  const fur = `hsl(${d.hueDeg}, 32%, 26%)`;
+  const furLight = `hsl(${d.hueDeg}, 30%, 40%)`;
+  const scarCol = `hsl(${d.hueDeg}, 18%, 52%)`;
+
+  // tail: back-swept curve, length from the genome
+  const tailLen = d.tailLenPx || 40;
+  ctx.strokeStyle = fur;
+  ctx.lineWidth = Math.max(2.5, W * 0.14);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-W * 0.3, -H * 0.3);
+  ctx.quadraticCurveTo(-W * 0.3 - tailLen * 0.6, -H * 0.35, -W * 0.3 - tailLen * 0.35, -H * 0.75);
+  ctx.stroke();
+
+  // limbs: shoulder/hip arms + legs, dorsal/mid/neck buds as smaller nubs.
+  // Grasp limbs reach; membrane/sail/fin/gill buds draw as short flaps.
+  for (const l of d.limbs) {
+    const isLeg = l.site === 'hip';
+    const baseX = l.side === 'L' ? -W * 0.18 : W * 0.18;
+    const baseY = l.site === 'shoulder' ? -H * 0.62 : l.site === 'hip' ? -H * 0.3 : -H * 0.75;
+    ctx.strokeStyle = l.scarred ? scarCol : fur;
+    if (l.type === 'grasp') {
+      ctx.lineWidth = l.scarred ? 3 : 5.5;
+      ctx.beginPath();
+      ctx.moveTo(baseX, baseY);
+      const reachX = baseX + (l.side === 'L' ? -1 : 1) * l.lenPx * 0.5;
+      const reachY = isLeg ? 0 : baseY + l.lenPx * 0.45;
+      ctx.quadraticCurveTo(reachX, (baseY + reachY) / 2, l.side === 'L' ? reachX - 3 : reachX + 3, reachY);
+      ctx.stroke();
+    } else {
+      // bud flap: membrane / sail / fin / gill
+      ctx.fillStyle = l.scarred ? scarCol : furLight;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.ellipse(baseX, baseY - l.lenPx * 0.3, l.lenPx * 0.32, l.lenPx * 0.5, l.side === 'L' ? 0.5 : -0.5);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // torso
+  ctx.fillStyle = fur;
+  ctx.beginPath();
+  ctx.ellipse(0, -H * 0.45, W * 0.42, H * 0.32, 0);
+  ctx.fill();
+
+  // head + muzzle
+  const headR = W * 0.36;
+  ctx.beginPath();
+  ctx.arc(W * 0.12, -H * 0.88, headR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = furLight;
+  ctx.beginPath();
+  ctx.ellipse(W * 0.12 + headR * 0.45, -H * 0.86, headR * 0.5, headR * 0.42, 0);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// --- M2: INSPECT VIEW ----------------------------------------------------------
+// The WORLD VIEW is the pure scene (no text, ever). The INSPECT VIEW is the
+// same scene with the instruments on: a data overlay for the selected
+// creature and cell. Two views, one world — the split Joshua asked for.
+//
+// renderInspectView(ctx, mw, view, opts)
+//   opts: { creature, inspect: { cx, cy } (cell), tick, extra lines[] }
+//   The overlay is drawn in canvas space (top-left panel + cell highlight).
+export function renderInspectView(ctx, mw, view, opts = {}) {
+  // The scene first — identical to the world view.
+  const { scale, ox, oy } = renderWorldView(ctx, mw, view, opts);
+  const W = ctx.w, H = ctx.h;
+  const px = (wx) => ox + (wx - view.x) * scale;
+  const py = (wy) => oy + (wy - view.y) * scale;
+
+  // Cell highlight.
+  if (opts.inspect) {
+    const { cx, cy } = opts.inspect;
+    const g = mw.grid;
+    if (cx >= 0 && cy >= 0 && cx < g.cols && cy < g.rows) {
+      const s = 10 * scale + 1;
+      const rx = px(cx * 10), ry = py(cy * 10), lw = 2.5;
+      ctx.save();
+      ctx.fillStyle = 'rgba(255, 240, 200, 0.9)';
+      // outline via 4 bars (the SvgCtx shim has no strokeRect)
+      ctx.fillRect(rx, ry, s, lw);
+      ctx.fillRect(rx, ry + s - lw, s, lw);
+      ctx.fillRect(rx, ry, lw, s);
+      ctx.fillRect(rx + s - lw, ry, lw, s);
+      ctx.restore();
+    }
+  }
+
+  // Data panel — top-left, translucent dark, monospace-ish (canvas font).
+  const c = opts.creature;
+  const lines = [];
+  lines.push(`tick ${mw.tick || 0}`);
+  if (c) {
+    const chem = c.chem || {};
+    lines.push(`action: ${opts.actionName || '—'}`);
+    lines.push(`hunger ${(1 - (chem.bloodSugar ?? 0.75)).toFixed(2)}  energy ${(chem.energy ?? 0.9).toFixed(2)}`);
+    lines.push(`minerals ${(c.minerals ?? 0.6).toFixed(2)}  reward ${(c.lastReward ?? 0).toFixed(3)}`);
+    lines.push(`body ${(c.body ? c.body.heightPx.toFixed(0) : '?')}px  grasp x${c.body ? c.body.graspPairs : '?'}`);
+    lines.push(`carried ${c.carried ? c.carried.material : '—'}  piled ${c.piled || 0}`);
+    if (c.body && c.body.marks.length) lines.push(`marks: ${c.body.marks.length}`);
+  }
+  if (opts.inspect) {
+    const g = mw.grid;
+    const i = opts.inspect.cy * g.cols + opts.inspect.cx;
+    const names = ['AIR', 'SOIL', 'SAND', 'CLAY', 'ROCK', 'WOOD', 'DEADWOOD', 'LEAF', 'WATER', 'BEDROCK'];
+    lines.push(`cell: ${names[g.mat[i]] || '?'}${g.dug[i] ? ' (dug)' : ''}${g.food && g.food[i] > 0 ? ' food:' + g.food[i].toFixed(0) : ''}`);
+  }
+  if (opts.extra) for (const l of opts.extra) lines.push(l);
+
+  ctx.save();
+  ctx.font = `${Math.max(11, H * 0.022)}px monospace`;
+  const pad = 10, lh = Math.max(15, H * 0.03);
+  const tw = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  ctx.fillStyle = 'rgba(12, 14, 18, 0.72)';
+  ctx.fillRect(pad, pad, tw + 20, lines.length * lh + 14);
+  ctx.fillStyle = 'rgba(235, 240, 235, 0.95)';
+  ctx.textBaseline = 'top';
+  lines.forEach((l, i) => ctx.fillText(l, pad + 10, pad + 8 + i * lh));
+  ctx.restore();
+
+  return { scale, ox, oy };
 }

@@ -58,7 +58,9 @@ export const MAT_PROPS = [
 // Fields: mat (Uint8 material id), moist (0..1 water content), root (1 if
 // part of a grown structure), grownId (Uint16 plant instance id),
 // dug (1 if this cell was dug out — tunnel plumbing), heat (fire),
-// water (0..1 fluid depth; the WATER id is rendering, this is dynamics).
+// water (0..1 fluid depth; the WATER id is rendering, this is dynamics),
+// food (M2: buried food stores per cell — 0 = none; digging a food cell
+// yields the food with the soil).
 export function createGrid(cols, rows) {
   const n = cols * rows;
   return {
@@ -71,6 +73,7 @@ export function createGrid(cols, rows) {
     dug: new Uint8Array(n),
     heat: new Float32Array(n),
     water: new Float32Array(n),
+    food: new Float32Array(n),
   };
 }
 

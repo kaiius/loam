@@ -339,6 +339,10 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
     g.mat[i] = MAT.WOOD; g.root[i] = 1; g.grownId[i] = pid; wood++;
     return true;
   };
+  // M2: lusher canopies via DENSER branching (every 3rd iteration in good
+  // climate), not bigger clusters — the 3x3 cluster keeps every leaf
+  // 8-adjacent to tip WOOD, which is what the orphan assert guarantees.
+  // (A 5x5 fringe broke it: fringe leaves touch leaf, not wood.)
   const putLeafCluster = (x, y) => {
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       const nx = x + dx, ny = y + dy;
@@ -353,11 +357,12 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
   for (let it = 0; it < iters && tips.length; it++) {
     const next = [];
     for (const t of tips) {
-      // Every 4th iteration the apical shoot buds a branch at +/-30-50deg.
+      // M2: every 3rd iteration the apical shoot buds a branch at +/-30-50deg
+      // (was 4th — denser branching = lusher canopies, same 3x3 clusters).
       // Angles come from hash2(seed, plantId, iter): stateless, no stream.
       // Drawn from [30.5, 49.5) — never exactly 30/60, so Math.round of the
       // unit step never sits on a .5 boundary (float-wobble safety).
-      if (!t.bud && it > 0 && it % 4 === 0) {
+      if (!t.bud && it > 0 && it % 3 === 0) {
         const hr = hash2(seed, pid, it);
         const side = hr < 0.5 ? -1 : 1;
         const deg = 30.5 + hash2(seed, pid, it + 7919) * 19;
@@ -393,7 +398,7 @@ function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
     if (M[c] < SEED_THRESH) continue;         // fertility(1.0) x moisture
     pid++;
     const score = T[c] * M[c];
-    const iters = score > 0.55 ? 40 : score > 0.35 ? 24 : 12; // jungle..scrub
+    const iters = score > 0.55 ? 56 : score > 0.35 ? 32 : 16; // jungle..scrub (M2: lusher)
     const { wood, leaf } = growPlant(seed, pid, c, s, iters, g, cols, rows);
     plants.push({ id: pid, seedX: c, seedY: s, iters, fruiting: false, wood, leaf });
     lastX = c;
@@ -405,7 +410,7 @@ function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
     .sort((a, b) => (b.score - a.score) || (a.p.seedX - b.p.seedX));
   let mark = ranked.filter((r) => r.score > 0.42);
   if (mark.length < need + 4) mark = ranked.slice(0, Math.min(ranked.length, Math.ceil(need + 4)));
-  for (const r of mark) r.p.fruiting = true;
+  for (const r of mark) { r.p.fruiting = true; r.p.fruit = 5; } // M2: edible fruit count
   log.push(`flora: ${plants.length} plants grown, ${mark.length} fruiting`);
   return plants;
 }

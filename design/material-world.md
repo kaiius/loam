@@ -304,3 +304,50 @@ the substrate:
 
 - **No ceiling.** Grand's "clever pet, not planner" is a description of his stopping point, not ours. The goal is human-level intelligence; what happens after that is undecided.
 - **The universe is amoral.** No built-in welfare policy in the architecture. The world does not moralize; natural selection runs. (The keeper's benevolence is a personal posture — Thoth/Hermes guidance, never rescue — not a property of the universe.)
+
+## 10. M2 build record (2026-10-03, "the living creature")
+
+**Scope delivered:** the creature-systems port core.
+- **Genome** (sim/genome.js, untouched): diploid, meiosis, epigenetics, phenotype.
+- **Body** (material/body.js): genome → phenotype → evodevo developmental
+  program → grown body. Height/width/limbs/tail from the genome; babies
+  smaller than adults; starved juveniles stunt; world marks accumulate
+  (the scars hook is live; the full v0.36 scars port is M3).
+- **Brain** (material/brain.js): port of sim/brain.js — N_IN 44→47, 33
+  actions (30 ported + pile/instPile/geophagy, append-only). Instinct genes
+  for the three new actions (Paul's v0.5 rule); climb's instincts pre-existed.
+- **Learning rule** (material/chem.js): Grand's endogenous reinforcement —
+  drive reduction → Reward, drive increase → Punishment (half weight). Zero
+  reward shaping; the chemistry reports what it did.
+- **Senses** (material/senses.js): 43 platform senses re-implemented against
+  the substrate + 3 appended material senses (43/44/45). Honest zeros for
+  toys/calls/waste/glide (not in M2). New: diurnal cycle (2400 ticks/day)
+  driving the light and phaseSleepiness senses.
+- **Actions** (material/actions.js): climb (surface-following, no links),
+  pile, instPile, dig (brain-driven now), geophagy (mineral-gated);
+  ported core: seekFood, eat, sleep, wander, approach, flee, jump, drink,
+  swim, groom, seekHome. Anatomy gates: dig/pile need graspPairs.
+- **Social foundation**: bond ledger wired (groom nudges bonds, tickBonds
+  decay). Full troops/tribes in M3.
+- **Lusher trees**: denser branching (every 3rd iteration) + taller growth
+  (56/32/16 iters). A 5×5 leaf-cluster attempt broke the orphan assert
+  (fringe leaves touch leaf, not wood) — reverted; lushness via branching.
+  Orphan count still 0 across seeds 7/42/99; viability gates hold.
+- **INSPECT VIEW** (render.js): world view (pure scene) + inspect view
+  (scene + live data overlay: tick, action, drives, minerals, reward, body,
+  carried, cell inspector).
+- **Determinism**: exploration noise from hash(seed, tick, id) — stateless.
+  Same seed/tick/creature → same action (tested).
+
+**Verification:** 95/95 tests pass (60 M1 + 35 M2), zero regressions.
+Execution probes (not just wiring): dig, pile, instPile, climb, geophagy
+(gated + ungated), eat, anatomy gate, full 50-tick brain loop, determinism.
+
+**Deferred to M3 ("society"):** the remaining 18 actions, the 6 v0.37
+emotion actions + emotion context, the scars/nerves port, reproduction in
+the world, burrow-entry locomotion (digging doesn't step into the tunnel
+yet — the stills step in manually). Proposed, not silently shrunk.
+
+**Stills:** previews/material-m2/ (m2-living-world, m2-inspect, m2-burrow).
+**Animation:** proven feasible — 24-frame clip pipeline renders in ~3s,
+  encodes to mp4 via ffmpeg (probes/material-m2-clip.mjs).
