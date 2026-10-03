@@ -299,3 +299,8 @@ the substrate:
 5. **Water**: full physics and fluid dynamics (not the simple version).
 6. **World size**: yes — parity with current, designed to scale.
 7. **Biome labels**: yes — emergent from process parameters, keep the names as descriptive labels.
+
+## 9. Further rulings (2026-10-03, from the research review)
+
+- **No ceiling.** Grand's "clever pet, not planner" is a description of his stopping point, not ours. The goal is human-level intelligence; what happens after that is undecided.
+- **The universe is amoral.** No built-in welfare policy in the architecture. The world does not moralize; natural selection runs. (The keeper's benevolence is a personal posture — Thoth/Hermes guidance, never rescue — not a property of the universe.)
