@@ -24,6 +24,16 @@
 // paths for the creature overlay). No text calls — ever.
 
 import { MAT, MAT_PROPS, CELL_PX } from './grid.js';
+import { neutralPose } from './portrait.js';
+
+// Stateless per-individual hash for decorative placement (spots, scars).
+// (seed, x, y, purpose) salt keeps it independent of worldgen hashes.
+function h4(a, b, c) {
+  let h = Math.imul(a | 0, 374761393) ^ Math.imul((b | 0) + 0x51ab, 668265263) ^ Math.imul(c | 0, 1442695041);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
 
 // --- stateless hash -> [0,1) -------------------------------------------------
 // Same mixer family as worldgen's hash2; the extra salt keeps render-space
@@ -344,73 +354,329 @@ function drawCreature(ctx, c, px, py, scale) {
   ctx.restore();
 }
 
-// --- M2: the grown body ------------------------------------------------------
-// Draws bodyDrawing() output: torso + per-limb segments + tail, in the
-// genome's hue. Scarred limbs draw thinner and paler — the world writes on
-// the body and the renderer doesn't look away.
+// --- ART PASS (2026-10-03, "the tanglekin looks too simple") -------------------
+// The grown body, drawn as the animal it is: articulated two-segment limbs
+// with real joints (2-bone IK), a torso that breathes, a prehensile tail
+// with curl, a face with eyes/brow/muzzle/ears that reads the affect system,
+// and genome-driven individuality — coat coloration per body region,
+// spots/stripes/plain patterning, fur, ear shape, scars that stay visible.
+//
+// d = portraitFor() output: static bodyDrawing + .pose + .affect.
+// Callers passing a bare bodyDrawing() get the neutral pose.
+// Pure function of (drawing, tick) — it never touches sim state.
 function drawGrownBody(ctx, c, px, py, scale) {
   const d = c.drawing;
+  const pose = d.pose || neutralPose();
+  const id = d.creatureId || 0;
   ctx.save();
   ctx.translate(px(c.x), py(c.y));
   ctx.scale(scale * (c.facing >= 0 ? 1 : -1), scale);
+
   const H = d.heightPx, W = d.widthPx;
-  const fur = `hsl(${d.hueDeg}, 32%, 26%)`;
-  const furLight = `hsl(${d.hueDeg}, 30%, 40%)`;
-  const scarCol = `hsl(${d.hueDeg}, 18%, 52%)`;
+  const coatH = d.coatHue01 * 360, coatS = d.coatSat01 * 100;
+  const col = (pig, L, sMul = 1) =>
+    `hsl(${(coatH + pig.hueDeg + 360) % 360}, ${Math.max(8, Math.min(90, coatS * sMul + pig.satShift))}%, ${L}%)`;
+  const furTorso = col(d.pigTorso, 27), furLimb = col(d.pigLimbs, 23),
+    furHead = col(d.pigHead, 30), furPale = col(d.pigTorso, 43, 0.8),
+    furDark = col(d.pigTorso, 16), markDark = col(d.pigTorso, 15, 0.9),
+    scarCol = `hsl(${coatH}, 22%, 64%)`, handCol = col(d.pigLimbs, 18);
 
-  // tail: back-swept curve, length from the genome
-  const tailLen = d.tailLenPx || 40;
-  ctx.strokeStyle = fur;
-  ctx.lineWidth = Math.max(2.5, W * 0.14);
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(-W * 0.3, -H * 0.3);
-  ctx.quadraticCurveTo(-W * 0.3 - tailLen * 0.6, -H * 0.35, -W * 0.3 - tailLen * 0.35, -H * 0.75);
-  ctx.stroke();
+  if (pose.curled > 0.5) { drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol, coatH); ctx.restore(); return; }
 
-  // limbs: shoulder/hip arms + legs, dorsal/mid/neck buds as smaller nubs.
-  // Grasp limbs reach; membrane/sail/fin/gill buds draw as short flaps.
-  for (const l of d.limbs) {
-    const isLeg = l.site === 'hip';
-    const baseX = l.side === 'L' ? -W * 0.18 : W * 0.18;
-    const baseY = l.site === 'shoulder' ? -H * 0.62 : l.site === 'hip' ? -H * 0.3 : -H * 0.75;
-    ctx.strokeStyle = l.scarred ? scarCol : fur;
-    if (l.type === 'grasp') {
-      ctx.lineWidth = l.scarred ? 3 : 5.5;
-      ctx.beginPath();
-      ctx.moveTo(baseX, baseY);
-      const reachX = baseX + (l.side === 'L' ? -1 : 1) * l.lenPx * 0.5;
-      const reachY = isLeg ? 0 : baseY + l.lenPx * 0.45;
-      ctx.quadraticCurveTo(reachX, (baseY + reachY) / 2, l.side === 'L' ? reachX - 3 : reachX + 3, reachY);
-      ctx.stroke();
-    } else {
-      // bud flap: membrane / sail / fin / gill
-      ctx.fillStyle = l.scarred ? scarCol : furLight;
-      ctx.globalAlpha = 0.85;
-      ctx.beginPath();
-      ctx.ellipse(baseX, baseY - l.lenPx * 0.3, l.lenPx * 0.32, l.lenPx * 0.5, l.side === 'L' ? 0.5 : -0.5);
-      ctx.fill();
-      ctx.globalAlpha = 1;
+  // --- skeleton ------------------------------------------------------------
+  const crouch = pose.crouch;
+  const hipY = -H * 0.32 + crouch * H * 0.20;
+  const torsoLen = H * 0.34;
+  const lean = pose.spineLean + pose.sway * 0.12;
+  const shX = Math.sin(lean) * torsoLen, shY = hipY - Math.cos(lean) * torsoLen;
+  const torsoW = W * 0.42 * (1 + pose.breath * 0.03);
+  const legLen = H * (0.26 + 0.14 * d.legLength01);
+  const armLen = H * 0.30;
+  const headR = W * 0.30;
+
+  // two-bone IK: joint position for (root → target), bending to bendSign.
+  const ik = (rx, ry, tx, ty, l1, l2, bendSign) => {
+    let dx = tx - rx, dy = ty - ry, dist = Math.hypot(dx, dy) || 1e-6;
+    const maxD = l1 + l2 - 0.01;
+    if (dist > maxD) { const k = maxD / dist; dx *= k; dy *= k; dist = maxD; tx = rx + dx; ty = ry + dy; }
+    const cosA = Math.max(-1, Math.min(1, (l1 * l1 + dist * dist - l2 * l2) / (2 * l1 * dist)));
+    const ang = Math.atan2(dy, dx) + bendSign * Math.acos(cosA);
+    return { jx: rx + l1 * Math.cos(ang), jy: ry + l1 * Math.sin(ang), tx, ty };
+  };
+  const limb2 = (rx, ry, tx, ty, l1, l2, bendSign, w, color, scarred) => {
+    const k = ik(rx, ry, tx, ty, l1, l2, bendSign);
+    ctx.strokeStyle = color; ctx.lineCap = 'round'; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(k.jx, k.jy); ctx.lineTo(k.tx, k.ty); ctx.stroke();
+    if (scarred) { // pale slashes across the segment — the world stays visible
+      ctx.strokeStyle = scarCol; ctx.lineWidth = Math.max(1.2, w * 0.35);
+      const mx = (rx + k.jx) / 2, my = (ry + k.jy) / 2;
+      ctx.beginPath(); ctx.moveTo(mx - w * 0.7, my - w * 0.4); ctx.lineTo(mx + w * 0.7, my + w * 0.4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(mx - w * 0.5, my + w * 0.5); ctx.lineTo(mx + w * 0.6, my - w * 0.5); ctx.stroke();
     }
+    return k;
+  };
+
+  const graspArm = d.limbs.find((l) => l.site === 'shoulder' && l.type === 'grasp');
+  const graspLeg = d.limbs.find((l) => l.site === 'hip' && l.type === 'grasp');
+  const armScar = !!(graspArm && graspArm.scarred), legScar = !!(graspLeg && graspLeg.scarred);
+  const armW = Math.max(3, W * 0.13), legW = Math.max(3.5, W * 0.15);
+
+  // gait targets
+  const sw = Math.sin(pose.gaitPhase), swF = Math.sin(pose.gaitPhase + Math.PI);
+  const limpK = pose.limp ? 1 - 0.5 * pose.limp : 1;
+  const nearFoot = { x: sw * pose.gaitAmp, y: -Math.max(0, Math.cos(pose.gaitPhase)) * pose.gaitAmp * 0.45 };
+  const farFoot = { x: swF * pose.gaitAmp * limpK, y: -Math.max(0, Math.cos(pose.gaitPhase + Math.PI)) * pose.gaitAmp * 0.45 * limpK };
+
+  // hand targets: reach forward + counter-swing + dig oscillation
+  const reach = pose.armReach;
+  const digY = Math.sin(pose.digPhase) * pose.digOsc * H * 0.06;
+  const nearHand = {
+    x: shX + W * 0.22 + reach * armLen * 0.75 - sw * pose.gaitAmp * 0.55,
+    y: shY + armLen * 0.62 - reach * armLen * 0.35 + digY,
+  };
+  const farHand = {
+    x: shX + W * 0.02 + reach * armLen * 0.7 - swF * pose.gaitAmp * 0.55,
+    y: shY + armLen * 0.55 - reach * armLen * 0.25,
+  };
+
+  // --- far side (darker, behind) -------------------------------------------
+  ctx.globalAlpha = 0.72;
+  limb2(-W * 0.10, hipY, farFoot.x - W * 0.06, farFoot.y, legLen * 0.52, legLen * 0.52, -1, legW, furDark, false);
+  limb2(shX - W * 0.14, shY, farHand.x, farHand.y, armLen * 0.5, armLen * 0.5, 1, armW, furDark, false);
+  ctx.globalAlpha = 1;
+
+  // --- tail: segmented, prehensile, curl + raise + sway ----------------------
+  drawTail(ctx, d, pose, id, -W * 0.22, hipY + H * 0.03, furLimb);
+
+  // --- fur halo (shaggy bodies read soft) ------------------------------------
+  if (d.fur > 0.35) {
+    ctx.save();
+    ctx.translate(shX / 2, (hipY + shY) / 2); ctx.rotate(lean);
+    ctx.globalAlpha = 0.10 * d.fur; ctx.fillStyle = furPale;
+    ctx.beginPath(); ctx.ellipse(0, 0, torsoW * 1.12, torsoLen * 0.68, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore(); ctx.globalAlpha = 1;
   }
 
-  // torso
-  ctx.fillStyle = fur;
-  ctx.beginPath();
-  ctx.ellipse(0, -H * 0.45, W * 0.42, H * 0.32, 0);
-  ctx.fill();
+  // --- torso -----------------------------------------------------------------
+  ctx.save();
+  ctx.translate(shX / 2, (hipY + shY) / 2); ctx.rotate(lean);
+  ctx.fillStyle = furTorso;
+  ctx.beginPath(); ctx.ellipse(0, 0, torsoW * 0.80, torsoLen * 0.72, 0, 0, Math.PI * 2); ctx.fill();
+  // belly: paler front
+  ctx.fillStyle = furPale; ctx.globalAlpha = 0.85;
+  ctx.beginPath(); ctx.ellipse(torsoW * 0.26, torsoLen * 0.06, torsoW * 0.36, torsoLen * 0.52, 0.15, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  drawCoatPattern(ctx, d, id, torsoW, torsoLen, markDark, furPale);
+  drawTorsoScars(ctx, d, id, torsoW, torsoLen, scarCol);
+  ctx.restore();
 
-  // head + muzzle
-  const headR = W * 0.36;
-  ctx.beginPath();
-  ctx.arc(W * 0.12, -H * 0.88, headR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = furLight;
-  ctx.beginPath();
-  ctx.ellipse(W * 0.12 + headR * 0.45, -H * 0.86, headR * 0.5, headR * 0.42, 0);
-  ctx.fill();
+  // --- bud flaps (membrane / sail / fin / gill) -------------------------------
+  // Small fins hugging the torso — anchored at the body surface, never
+  // floating. They are real anatomy (the genome grew them), drawn honestly
+  // but humbly.
+  for (const l of d.limbs) {
+    if (l.type === 'grasp') continue;
+    const fw = Math.min(l.lenPx * 0.20, W * 0.16), fh = Math.min(l.lenPx * 0.30, H * 0.10);
+    let fx, fy, rot;
+    if (l.site === 'dorsal') { fx = shX / 2 - W * 0.05; fy = (hipY + shY) / 2 - torsoLen * 0.55; rot = -0.5; }
+    else if (l.site === 'neck') { fx = shX + W * 0.05; fy = shY - torsoLen * 0.15; rot = 0.4; }
+    else { fx = (l.side === 'L' ? -1 : 1) * torsoW * 0.72 + shX / 2; fy = (hipY + shY) / 2; rot = l.side === 'L' ? -1.1 : 1.1; }
+    ctx.save();
+    ctx.translate(fx, fy); ctx.rotate(rot);
+    ctx.fillStyle = l.scarred ? scarCol : furTorso; ctx.globalAlpha = 0.95;
+    ctx.beginPath(); ctx.ellipse(fw * 0.5, 0, fw * 0.7, fh * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+
+  // --- near-side limbs ----------------------------------------------------------
+  const nk = limb2(W * 0.10, hipY, nearFoot.x + W * 0.04, nearFoot.y, legLen * 0.52, legLen * 0.52, -1, legW, furLimb, legScar);
+  limb2(shX + W * 0.16, shY, nearHand.x, nearHand.y, armLen * 0.5, armLen * 0.5, 1, armW, furLimb, armScar);
+  // feet + hands: grasping pads
+  ctx.fillStyle = handCol;
+  ctx.beginPath(); ctx.ellipse(nk.tx + 2, nk.ty - 1.5, legW * 0.75, legW * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(nearHand.x + 1.5, nearHand.y, armW * 0.62, 0, Math.PI * 2); ctx.fill();
+
+  // --- head + face: the affect readout ------------------------------------------
+  drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, furDark, scarCol, coatH);
 
   ctx.restore();
+}
+
+// The prehensile tail: chained segments, base angle steered by tailRaise,
+// progressive curl (+ prehensile tip scaled by tailGrip), idle sway.
+function drawTail(ctx, d, pose, id, bx, by, color) {
+  const nTails = Math.max(1, Math.min(3, d.tails || 1));
+  for (let t = 0; t < nTails; t++) {
+    const segs = 6, segLen = d.tailLenPx / segs;
+    let ang = Math.PI - 0.35 + pose.tailRaise * 1.05 + (t - (nTails - 1) / 2) * 0.22;
+    let x = bx, y = by;
+    ctx.strokeStyle = color; ctx.lineCap = 'round';
+    for (let s = 0; s < segs; s++) {
+      const tipK = s >= segs - 2 ? 1 + d.tailGrip * 1.6 : 1; // prehensile tip
+      ang += pose.tailCurl * 0.30 * tipK + pose.tailSway * 0.10 * Math.sin(s * 0.9);
+      const nx = x + Math.cos(ang) * segLen, ny = y + Math.sin(ang) * segLen;
+      ctx.lineWidth = Math.max(1.6, (1 - s / segs) * 5);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
+      x = nx; y = ny;
+    }
+  }
+}
+
+// Coat patterning in the torso's local frame (already translated+rotated).
+// Spots / stripes / plain grain — density from the genome, placement from
+// the individual's hash salt. Deterministic, decorative, never sim.
+function drawCoatPattern(ctx, d, id, torsoW, torsoLen, markDark, furPale) {
+  const dens = d.patternDensity;
+  if (d.pattern === 'spots') {
+    const n = Math.round(dens * 16);
+    ctx.fillStyle = markDark;
+    for (let i = 0; i < n; i++) {
+      const a = h4(id, 200 + i, 7) * Math.PI * 2, r = 0.15 + h4(id, 300 + i, 7) * 0.62;
+      const sx = Math.cos(a) * torsoW * 0.80 * r, sy = Math.sin(a) * torsoLen * 0.72 * r;
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath(); ctx.ellipse(sx, sy, 1.6 + h4(id, 400 + i, 7) * 2.6, 1.4 + h4(id, 500 + i, 7) * 2.0, a, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  } else if (d.pattern === 'stripes') {
+    const n = 3 + Math.round(dens * 6);
+    ctx.fillStyle = markDark;
+    for (let i = 0; i < n; i++) {
+      const fy = -0.75 + (i + h4(id, 210 + i, 7) * 0.6) / n * 1.5;
+      const sy = fy * torsoLen * 0.72, wdt = torsoW * 0.80 * Math.sqrt(Math.max(0.1, 1 - fy * fy));
+      ctx.globalAlpha = 0.42;
+      ctx.beginPath(); ctx.ellipse(0, sy, wdt, torsoLen * 0.05, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  } else {
+    // plain: a whisper of grain so the coat isn't flat
+    ctx.fillStyle = furPale;
+    for (let i = 0; i < 8; i++) {
+      const a = h4(id, 220 + i, 7) * Math.PI * 2, r = 0.2 + h4(id, 320 + i, 7) * 0.6;
+      ctx.globalAlpha = 0.13;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * torsoW * 0.68 * r, Math.sin(a) * torsoLen * 0.62 * r, 2.2, 1.4, a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Torso scars: pale slashes where the world wrote on the body.
+function drawTorsoScars(ctx, d, id, torsoW, torsoLen, scarCol) {
+  const n = d.torsoScarCount || 0;
+  ctx.strokeStyle = scarCol; ctx.lineCap = 'round';
+  for (let i = 0; i < n; i++) {
+    const a = h4(id, 600 + i, 7) * Math.PI * 2, r = 0.25 + h4(id, 700 + i, 7) * 0.5;
+    const sx = Math.cos(a) * torsoW * 0.62 * r, sy = Math.sin(a) * torsoLen * 0.60 * r;
+    const len = 5 + h4(id, 800 + i, 7) * 7, rot = h4(id, 900 + i, 7) * Math.PI;
+    ctx.globalAlpha = 0.8; ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(sx - Math.cos(rot) * len / 2, sy - Math.sin(rot) * len / 2);
+    ctx.lineTo(sx + Math.cos(rot) * len / 2, sy + Math.sin(rot) * len / 2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// The head: skull, ears per genome, and the face — eyes (openness = affect),
+// brow (fear/pain), muzzle + mouth (eating/calling). Drawn in a head-local
+// frame rotated by spine lean + head pitch, facing +x.
+function drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, furDark, scarCol, coatH) {
+  const pitch = lean + pose.headPitch;
+  const hx = shX + Math.sin(pitch) * headR * 1.02;
+  const hy = shY - Math.cos(pitch) * headR * 1.02;
+  ctx.save();
+  ctx.translate(hx, hy);
+  ctx.rotate(pitch);
+
+  // skull
+  ctx.fillStyle = furHead;
+  ctx.beginPath(); ctx.arc(0, 0, headR, 0, Math.PI * 2); ctx.fill();
+
+  // ears: genome shape, set into the side of the skull, pinned back by fear
+  const earBack = pose.earBack;
+  const ex = -headR * (0.80 + earBack * 0.15), ey = -headR * (0.08 - earBack * 0.18);
+  ctx.fillStyle = furHead;
+  const es = d.earScale;
+  if (d.earShape === 'pointy') {
+    ctx.beginPath();
+    ctx.moveTo(ex - headR * 0.22 * es, ey + headR * 0.16 * es);
+    ctx.lineTo(ex - headR * 0.02 * es, ey - headR * 0.34 * es);
+    ctx.lineTo(ex + headR * 0.20 * es, ey + headR * 0.10 * es);
+    ctx.closePath(); ctx.fill();
+  } else if (d.earShape === 'floppy') {
+    ctx.beginPath();
+    ctx.ellipse(ex - headR * 0.06 * es, ey + headR * 0.26 * es, headR * 0.17 * es, headR * 0.32 * es, 0.3 + earBack * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.arc(ex, ey, headR * 0.22 * es, 0, Math.PI * 2); ctx.fill();
+  }
+  // inner ear
+  ctx.fillStyle = furPale; ctx.globalAlpha = 0.7;
+  ctx.beginPath(); ctx.arc(ex, ey, headR * 0.10 * es, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // eye: size from the genome, openness from the affect readout
+  const erx = headR * (0.15 + 0.24 * d.eyeSize), ery = Math.max(0.6, erx * pose.eyeOpenNow);
+  const exx = headR * 0.40, eyy = -headR * 0.08;
+  ctx.fillStyle = '#1c1410';
+  ctx.beginPath(); ctx.ellipse(exx, eyy, erx, ery, 0, 0, Math.PI * 2); ctx.fill();
+  if (pose.eyeOpenNow > 0.25) { // catchlight — the eye is a window, not a bead
+    ctx.fillStyle = 'rgba(240, 235, 225, 0.9)';
+    ctx.beginPath(); ctx.arc(exx + erx * 0.3, eyy - ery * 0.3, Math.max(0.8, erx * 0.22), 0, Math.PI * 2); ctx.fill();
+  }
+
+  // brow: a light ridge that lowers and angles with fear / pain
+  const bd = pose.browDrop;
+  ctx.strokeStyle = furDark; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1, headR * 0.07);
+  ctx.globalAlpha = 0.55 + bd * 0.45;
+  ctx.beginPath();
+  ctx.moveTo(exx - erx * 0.85, eyy - ery - headR * 0.24);
+  ctx.lineTo(exx + erx * 0.80, eyy - ery - headR * 0.24 + bd * headR * 0.30);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // muzzle: tucked under the eye, sized by the mouth gene — no beak
+  const mzx = headR * 0.52, mzy = headR * 0.42;
+  const mrx = headR * (0.34 + 0.26 * d.mouthSize), mry = headR * (0.28 + 0.20 * d.mouthSize);
+  ctx.fillStyle = furPale;
+  ctx.beginPath(); ctx.ellipse(mzx, mzy, mrx, mry, 0.1, 0, Math.PI * 2); ctx.fill();
+  // nose
+  ctx.fillStyle = '#241a12';
+  ctx.beginPath(); ctx.arc(mzx + mrx * 0.62, mzy - mry * 0.30, Math.max(1, headR * 0.08), 0, Math.PI * 2); ctx.fill();
+  // mouth: a line that opens with eating / calling / display
+  const mo = pose.mouthOpen;
+  ctx.strokeStyle = '#241a12'; ctx.lineWidth = Math.max(1.2, headR * 0.07);
+  if (mo > 0.25) {
+    ctx.fillStyle = '#3a1f16';
+    ctx.beginPath(); ctx.ellipse(mzx + mrx * 0.2, mzy + mry * 0.55, mrx * 0.40 * mo, mry * 0.48 * mo, 0, 0, Math.PI * 2); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.moveTo(mzx - mrx * 0.30, mzy + mry * 0.42); ctx.lineTo(mzx + mrx * 0.38, mzy + mry * 0.36); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// Sleep: the curled ball. Head tucked, limbs folded, tail wrapped —
+// recognizable at a glance, drawn from the same coat.
+function drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol, coatH) {
+  const R = H * 0.26;
+  const breathe = 1 + pose.breath * 0.04;
+  ctx.fillStyle = furTorso;
+  ctx.beginPath(); ctx.ellipse(0, -R * 0.9, R * 1.05 * breathe, R * 0.95, 0.2, 0, Math.PI * 2); ctx.fill();
+  // tail wrapped around the ball
+  ctx.strokeStyle = furTorso; ctx.lineCap = 'round'; ctx.lineWidth = 4.5;
+  ctx.beginPath(); ctx.arc(0, -R * 0.9, R * 1.02, 0.4, 2.6); ctx.stroke();
+  // tucked head: just the crown + closed eye line
+  ctx.fillStyle = furHead;
+  ctx.beginPath(); ctx.arc(R * 0.42, -R * 1.15, R * 0.52, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#1c1410'; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(R * 0.30, -R * 1.18); ctx.lineTo(R * 0.62, -R * 1.14); ctx.stroke();
+  // folded limbs: short nubs
+  ctx.strokeStyle = furTorso; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(-R * 0.3, -R * 0.35); ctx.quadraticCurveTo(-R * 0.7, -R * 0.5, -R * 0.5, -R * 0.9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(R * 0.5, -R * 0.4); ctx.quadraticCurveTo(R * 0.9, -R * 0.55, R * 0.65, -R * 0.95); ctx.stroke();
+  drawCoatPattern(ctx, d, id, R * 1.05, R * 0.95, `hsl(${coatH}, 30%, 15%)`, furPale);
 }
 
 // --- M2: INSPECT VIEW ----------------------------------------------------------

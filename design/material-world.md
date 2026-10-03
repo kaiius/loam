@@ -351,3 +351,39 @@ yet — the stills step in manually). Proposed, not silently shrunk.
 **Stills:** previews/material-m2/ (m2-living-world, m2-inspect, m2-burrow).
 **Animation:** proven feasible — 24-frame clip pipeline renders in ~3s,
   encodes to mp4 via ffmpeg (probes/material-m2-clip.mjs).
+
+## 11. Creature-art pass (2026-10-03, Joshua's verdict "the tanglekin looks too simple")
+
+His answer to "which dimension matters most" was all three — so all three shipped.
+
+- **Finer anatomy** (render.js `drawGrownBody` rewritten): articulated
+  two-segment limbs with real joints (2-bone IK — knees bend forward,
+  elbows back), a torso that breathes, a segmented prehensile tail with
+  curl + prehensile tip + raise/tuck/sway, grasping hands and feet. Gait
+  cycle, dig hunch, climb stretch, sleep curl — the pose answers the
+  action, not a sticker.
+- **Individual distinctness** (body.js `bodyDrawing` extended, additive):
+  the drawing now carries the visual vocabulary the genome already decided
+  — coat coloration per body region (head/torso/limbs pigmentation),
+  pattern (plain/spots/stripes) with density, fur (sleek→shaggy),
+  ear shape (round/pointy/floppy) + scale + tilt, eye size, mouth size,
+  tail length. Two founders side by side are distinguishable at a glance.
+  Scars draw as pale slashes on limbs and torso — the world stays visible.
+- **Expressiveness** (new material/portrait.js): `affectReadout()` names the
+  dominant deficit drive off the real biochemistry; `poseFor()` turns it
+  into posture and face — fear widens the eye, pins the ears, crouches the
+  body and tucks the tail; exhaustion halves the eye and slumps the spine;
+  contentment lifts the tail; curiosity widens the eye and tips the head.
+  Blink, breath, sway, and gait phase are deterministic functions of tick
+  with per-creature hash salts — life, not randomness.
+
+**The contract:** portrait = pure function of (creature, tick). Art never
+feeds back into sim state. Same seed/tick/creature → byte-identical SVG
+(tested). ~70–90 Canvas2D ops per creature — dozens of creatures per frame
+stay cheap.
+
+**Verification:** probes/material-art-verify.mjs — 3 founders pairwise
+visibly distinct; one founder across 4 forced affect states (face/posture
+read correctly); gait frames differ across ticks; sleep/dig/climb poses
+render; determinism holds. All checks pass; stills in previews/material-art/,
+eye-checked. Full suite green, zero regressions.

@@ -10,6 +10,7 @@ import {
   spawnMaterialCreature,
 } from '../src/material/index.js';
 import { bodyDrawing } from '../src/material/body.js';
+import { portraitFor } from '../src/material/portrait.js';
 import { renderWorldView, renderInspectView } from '../src/material/render.js';
 import { CELL_PX, MAT } from '../src/material/grid.js';
 import { createRng } from '../src/sim/rng.js';
@@ -60,8 +61,8 @@ function brownFounder(mw, rng) {
   return addFounder(mw, rng); // fallback: whatever the genome gave
 }
 
-function creatureOpt(c) {
-  return { x: c.x, y: c.y, facing: c.facing, drawing: bodyDrawing(c.body) };
+function creatureOpt(c, tick = 600) {
+  return { x: c.x, y: c.y, facing: c.facing, drawing: portraitFor(c, tick) };
 }
 
 // --- still 1: a founder living 500 ticks, world view -------------------------
@@ -78,7 +79,7 @@ function creatureOpt(c) {
     height: Math.round(c.body.heightPx), grasp: c.body.graspPairs,
   });
   const view = fitView(mw, c.x, c.y - 120, 2);
-  toPng('m2-living-world', (ctx) => renderWorldView(ctx, mw, view, { creature: creatureOpt(c) }));
+  toPng('m2-living-world', (ctx) => renderWorldView(ctx, mw, view, { creature: creatureOpt(c, mw.tick) }));
 }
 
 // --- still 2: inspect view of the same moment --------------------------------
@@ -91,7 +92,7 @@ function creatureOpt(c) {
   const view = fitView(mw, c.x, c.y - 120, 2);
   const ccx = Math.floor(c.x / CELL_PX), ccy = Math.floor(c.y / CELL_PX);
   toPng('m2-inspect', (ctx) => renderInspectView(ctx, mw, view, {
-    creature: { ...creatureOpt(c), chem: c.chem, body: c.body, minerals: c.minerals, lastReward: c.lastReward, carried: c.carried, piled: c.piled },
+    creature: { ...creatureOpt(c, mw.tick), chem: c.chem, body: c.body, minerals: c.minerals, lastReward: c.lastReward, carried: c.carried, piled: c.piled },
     actionName: lastActionName(c),
     inspect: { cx: ccx, cy: ccy },
   }));

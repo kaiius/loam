@@ -22,6 +22,8 @@ import { m2PhenoDefaults } from './genes.js';
 import { tickChem } from './chem.js';
 import { gatherMaterialSenses } from './senses.js';
 import { executeAction, gravityPhysics } from './actions.js';
+import { spawnCorpse } from './corpses.js';
+import { tempAt } from './weather.js';
 import { MAT } from './grid.js';
 
 export { ACTIONS };
@@ -66,6 +68,7 @@ export function spawnMaterialCreature(mw, genome, px, py, opts = {}) {
     _nearestOther: null,
     exploration: opts.exploration ?? 0.08,
   };
+  c.body.creatureId = c.id; // art-pass hash salt: the drawing is per-individual
   return c;
 }
 
@@ -89,6 +92,7 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
     c.stage = newStage;
     // Development rebuilt at stage transitions — the body grows honestly.
     c.body = growBody(c.genome, { stage: newStage });
+    c.body.creatureId = c.id;
   }
 
   // --- sense ---
@@ -108,7 +112,9 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   gravityPhysics(mw, c);
 
   // --- chemistry + Grand's endogenous reward ---
-  chemCtx.ambientTemp = 0.5;
+  // The sky sets the ambient temperature now — cold kills, heat stresses.
+  // (M2 hardcoded 0.5; the material world has weather now.)
+  chemCtx.ambientTemp = mw.sky ? tempAt(mw, c.x) : 0.5;
   chemCtx.daySun = 1;
   const { reward } = tickChem(b, c.pheno, dt, chemCtx);
   c.lastReward = reward;
@@ -120,9 +126,13 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   c.minerals = Math.max(0, Math.min(1, (c.minerals ?? 0.6) - 0.0004));
 
   // --- death ---
+  // Death is material: the body becomes a corpse (corpses.js) — meat for
+  // the scavengers, then rot. The amoral universe, honestly implemented.
+  const wasAlive = c.alive;
   if (b.bloodSugar <= 0 && b.fatigue >= 1) c.alive = false; // starved + exhausted
   if ((b.illness || 0) >= 1) c.alive = false;
   if ((b.injury || 0) >= 1) c.alive = false;
+  if (wasAlive && !c.alive) spawnCorpse(mw, c);
 
   return reward;
 }

@@ -65,6 +65,13 @@ function legLengthPx(plan, r) {
 
 // The body's visual description for the renderer: torso + per-limb segments
 // + tail. Marks shift the drawing (a scarred limb draws thinner/paler).
+//
+// ART PASS (2026-10-03, Joshua's verdict "the tanglekin looks too simple"):
+// the drawing now carries the full visual vocabulary the genome already
+// decided — coat coloration (regional pigmentation), pattern, fur, ears,
+// eyes, mouth, tail. Everything here is a pure function of the grown body;
+// the dynamic half (affect, action, tick) lives in portrait.js. Additive
+// only — the M2 test contract (limbs, tails, hueDeg) is untouched.
 export function bodyDrawing(body) {
   const limbs = body.plan.limbs.map((l, i) => {
     const mark = body.marks.find((m) => m.limb === i);
@@ -76,14 +83,39 @@ export function bodyDrawing(body) {
       scarred: !!(mark && mark.severity > 0.3),
     };
   });
+  const ph = body.pheno || {};
+  const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
   return {
     heightPx: body.heightPx,
     widthPx: body.widthPx,
     limbs,
     tails: body.plan.tails,
-    tailLenPx: body.bodyRadius * 1.9,
+    tailLenPx: body.bodyRadius * (0.8 + (ph.tailLength ?? 0.5) * 2.2),
+    tailGrip: ph.tailGrip ?? 0.5,
     hueDeg: body.pheno.hueDeg ?? 30,
     scarCount: body.marks.length,
+    torsoScarCount: body.marks.filter((m) => m.limb === -1).length,
+    // --- coat: the expressed coloration, per body region ---
+    coatHue01: ph.coatHue01 ?? (body.pheno.hueDeg ?? 30) / 360,
+    coatSat01: ph.coatSat01 ?? 0.55,
+    pigHead: { hueDeg: ph.pigHeadHueDeg ?? 0, satShift: ph.pigHeadSatShift ?? 0 },
+    pigTorso: { hueDeg: ph.pigTorsoHueDeg ?? 0, satShift: ph.pigTorsoSatShift ?? 0 },
+    pigLimbs: { hueDeg: ph.pigLimbsHueDeg ?? 0, satShift: ph.pigLimbsSatShift ?? 0 },
+    // --- pattern: plain | spots | stripes, with density ---
+    pattern: ph.pattern || 'plain',
+    patternDensity: clamp01(ph.patternDensity ?? 0.3),
+    // --- fur: 0 sleek … 1 shaggy (drives edge fluff, not color) ---
+    fur: clamp01(ph.fur ?? 0.5),
+    // --- head furniture ---
+    earShape: ph.earShape || 'round', // round | pointy | floppy
+    earScale: ph.earScale ?? 1,
+    earTiltRad: ph.earTiltRad ?? 0,
+    eyeSize: clamp01(ph.eyeSize ?? 0.5),
+    mouthSize: clamp01(ph.mouthSize ?? 0.5),
+    // --- proportions the art reads ---
+    legLength01: clamp01(ph.legLength ?? 0.5),
+    size01: clamp01(ph.size ?? 0.5),
+    creatureId: body.creatureId ?? 0, // set by mcreature at spawn; hash salt
   };
 }
 
