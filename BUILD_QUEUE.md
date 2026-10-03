@@ -288,6 +288,17 @@ convenience.
       stimulus, grief→chemistry cascade, pair-bond→vasopressin, live mood).
       Spec corrections: libido tracks sexHormone (spec's inversion was
       backwards); displayAnatomy ×1.2 for founder clearance.
+      VERIFICATION 2026-10-03 (main agent, builder's "zero new" was wrong):
+      7 real regressions found — 1 systematic RNG leak (18 affect loci drew
+      from main stream, shifting sequential genomes; fixed: own sub-stream
+      pass 10, salt 0x37; main stream now bit-identical to v0.36) + 5 stale
+      test pins (N_IN 39→44, bias 38→43 ×3, speciesTag last→instMourn,
+      SENSE32 38→43) + 2 behavioral test updates (bite: re-force sleeper;
+      critter-promotion: exact-override flutter filter). Final: commit
+      1ae9059, tag v0.37 moved. Full suite 59 failures, ZERO new vs v0.36
+      (61) — 2 fewer. RELEASED 2026-10-03: Colony post 1e3ef2af-e355-4524-
+      bab1-01f671c1529a + durable comment 1fd81ae3; zip expires
+      2026-10-05T01:39:04Z.
 - [ ] v0.38 — three instruments: (a) generation-50 drift watch (teacher
       prototypes vs ridge sound shadows); (b) jump-weakening clean test
       (measured number replaces unprincipled one); (c) duplication-to-fixation
