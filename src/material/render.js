@@ -198,9 +198,15 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   // --- creature overlay (optional, humble) ---------------------------------
   // M2: opts.creature may carry a `drawing` (bodyDrawing() output) — the
   // grown body. Without it, the M1 fixed silhouette (kept for old callers).
-  if (opts.creature) {
-    if (opts.creature.drawing) drawGrownBody(ctx, opts.creature, px, py, scale);
-    else drawCreature(ctx, opts.creature, px, py, scale);
+  // M3 refresh: opts.creatures draws the whole living roster (eye only —
+  // the sim never sees render positions).
+  const roster = opts.creatures || (opts.creature ? [opts.creature] : []);
+  for (const oc of roster) {
+    // Cull far-off-view creatures (eye only — the sim never sees this).
+    const sx = px(oc.x), sy = py(oc.y);
+    if (sx < -300 || sx > ctx.w + 300 || sy < -300 || sy > ctx.h + 300) continue;
+    if (oc.drawing) drawGrownBody(ctx, oc, px, py, scale);
+    else drawCreature(ctx, oc, px, py, scale);
   }
 
   return { scale, ox, oy };
