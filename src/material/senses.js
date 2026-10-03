@@ -12,6 +12,7 @@ import { MAT, CELL_PX } from './grid.js';
 import { sampleMat, isSolid, isClimbable, supportBelow } from './locomotion.js';
 import { sense43_45 } from './creature.js';
 import { coldSense, heatSense } from '../sim/biochem.js';
+import { nearestCorpse } from './corpses.js';
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const DEFAULT_RANGE = 420;
@@ -44,9 +45,16 @@ export function lightAt(mw, x, y) {
 }
 
 function nearestFood(mw, c, range) {
-  // Fruiting canopies first (the honest food), buried stores second.
+  // Fruiting canopies first (the honest food), buried stores second,
+  // corpses third — but only for meat-eaters. The vulture's long-range
+  // corpse detection rides this sense (platform: foodDist covers corpses).
   let best = null;
   const g = mw.grid;
+  const diet = (c.pheno && c.pheno.diet) || 'omnivore';
+  if (diet !== 'herbivore') {
+    const k = nearestCorpse(mw, c.x, c.y, range * 1.5); // carrion smell carries
+    if (k) best = { d: k.d, dx: k.dx, kind: 'corpse', corpse: k.corpse };
+  }
   if (mw.plants) {
     for (const p of mw.plants) {
       if (!p.fruiting || (p.fruit || 0) <= 0) continue;

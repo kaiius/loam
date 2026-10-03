@@ -22,6 +22,8 @@ import { MAT, MAT_PROPS, CELL_PX } from './grid.js';
 import { sampleMat, isSolid, isClimbable, supportBelow } from './locomotion.js';
 import { digTargetCell } from './creature.js';
 import { nudgeBond } from '../sim/social.js';
+import { nearestCorpse } from './corpses.js';
+import { seedFromFeeding } from './plants.js';
 
 export const WALK_SPEED = 2.2; // px/tick — the M1 pace, kept
 export const GRAVITY = 0.6;
@@ -183,6 +185,49 @@ export function executeAction(mw, c, action, s, ctx = {}) {
       chemCtx.active = 0.4;
       break;
     }
+    case 13: { // glide — needs real wings (dorsal membranes expressed).
+      // Anatomy gate: wingArea > 0.3 or the bird falls like a stone.
+      const wing = (c.pheno && c.pheno.wingArea) || 0;
+      if (wing > 0.3 && !c.grounded) {
+        c.vy = Math.min(c.vy + GRAVITY * 0.25, 1.4); // wings fight gravity
+        c.x += c.facing * (1.6 + wing * 2.2);        // forward on the glide
+        c.y += c.vy;
+        chemCtx.active = 0.85;
+      } else if (wing > 0.3 && c.grounded) {
+        // Launch: a winged creature that chooses glide takes off.
+        c.vy = -3.5; c.grounded = false;
+        chemCtx.active = 1.0;
+      } else {
+        walkPhysics(mw, c); // no wings, no glide — honest fallback
+        chemCtx.active = 0.65;
+      }
+      break;
+    }
+    case 23: { // bite — strike the nearest creature in range. The attack
+      // verb, ordinary machinery (platform v0.22): damage = mouthSize ×
+      // mass vs spike armor; fatigue-billed; the wound is real (injury).
+      const o = c._nearestOther;
+      const reach = (c.body ? c.body.reachPx : 40) + 24;
+      if (o && o.alive && Math.hypot(o.x - c.x, o.y - c.y) < reach) {
+        const mouth = (c.pheno && c.pheno.mouthSize) || 0.3;
+        const mass = c.bodyMass || 1;
+        const armor = (o.pheno && o.pheno.spikes) || 0;
+        const dmg = Math.max(0, mouth * mass * 0.55 - armor * 0.4);
+        if (dmg > 0) {
+          // Uncapped on application: biochem clamps and heals each tick, so
+          // a capped 1.0 would heal to 0.994 and nothing could ever die of
+          // wounds. Overkill stays lethal until the body heals below 1.
+          o.chem.injury = (o.chem.injury || 0) + dmg;
+          // The world marks the body — scars are how the world writes.
+          if (o.body && o.body.marks) {
+            o.body.marks.push({ tick: mw.tick || 0, kind: 'bite', limb: -1, severity: Math.min(1, dmg), note: c.species || 'predator' });
+          }
+          c._lastBiteDmg = dmg;
+        }
+        chemCtx.active = 1.0;
+      }
+      break;
+    }
     default: { // unported actions (M3): hold position, stay honest
       c._unportedAction = action;
       chemCtx.active = 0.4;
@@ -195,14 +240,31 @@ export function executeAction(mw, c, action, s, ctx = {}) {
 }
 
 // --- eating ------------------------------------------------------------
-// Fruit from fruiting canopies (preferred), buried stores, carried food.
+// Fruit from fruiting canopies (preferred), corpse meat for the
+// meat-eaters, buried stores, carried food. Diet gates: herbivores refuse
+// meat; bitterness cuts fruit nutrition (the plant's defense is real).
 function tryEat(mw, c, s) {
   const g = mw.grid;
+  const diet = (c.pheno && c.pheno.diet) || 'omnivore';
+  // 0. Corpses: the meat-eaters' food. Vultures and midden beetles live
+  //    off this; herbivores walk past.
+  if (diet !== 'herbivore') {
+    const k = nearestCorpse(mw, c.x, c.y, 70);
+    if (k && k.corpse.meat > 0) {
+      const eff = { carnivore: 1.0, omnivore: 0.7 }[diet] || 0.5;
+      k.corpse.meat = Math.max(0, k.corpse.meat - 0.25);
+      return 0.45 * eff; // meat is dense
+    }
+  }
   // 1. Fruit: a fruiting plant with fruit left, canopy within reach.
   const f = c._foodTarget;
   if (f && f.kind === 'fruit' && f.d < 120 && f.plant && (f.plant.fruit || 0) > 0) {
     f.plant.fruit -= 1;
-    return 0.35; // ate → bloodSugar (ctx.ate scale: see biochem)
+    const bitter = (f.plant.pheno && f.plant.pheno.bitterness) || 0;
+    const size = (f.plant.pheno && f.plant.pheno.fruitSize) || 0.5;
+    // A seed may ride along — endozoochory (plants.js).
+    seedFromFeeding(mw, f.plant, c);
+    return 0.35 * (1 - 0.5 * bitter) * (0.7 + 0.6 * size);
   }
   // 2. Buried: a food cell within a body length.
   if (g.food) {

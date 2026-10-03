@@ -645,6 +645,9 @@ function buildWorld(seed, size, attempt, gentle, log) {
   // 7. spawn + gate
   const world = { seed, size, grid, cols, rows, surf, seaRow, lakes, plants, labels, orphansDeleted, log };
   world.spawn = pickSpawn(world);
+  // M3: keep the climate fields — the sky initializes from them.
+  world.Tclim = T;
+  world.Mclim = M;
   return world;
 }
 
@@ -667,6 +670,8 @@ function finalize(world, extra) {
     lakes: world.lakes,
     surf: world.surf,
     log: world.log,
+    Tclim: world.Tclim,
+    Mclim: world.Mclim,
     ...extra,
   };
 }

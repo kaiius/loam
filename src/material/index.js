@@ -17,6 +17,11 @@ import { renderWorldView, renderInspectView } from './render.js';
 // M2: the living creature
 import { spawnMaterialCreature, spawnFounder, tickMaterialCreature, lastActionName } from './mcreature.js';
 import { createBonds, tickBonds } from '../sim/social.js';
+// M3: the living world — sky, plants with genomes, corpses, the roster
+import { createSky, tickSky, SKY_EVERY } from './weather.js';
+import { attachPlantGenomes, tickPlants, tickSeeds } from './plants.js';
+import { tickCorpses } from './corpses.js';
+import { createRng } from '../sim/rng.js';
 
 export { generateMaterialWorld, tickMaterials };
 // M1 creature API — kept for the M1 tests and probes.
@@ -36,6 +41,27 @@ export function createMaterialWorld(seed, size = 1, opts = {}) {
   // M2: the social substrate — bonds live on the world, creatures reference it.
   mw.bonds = createBonds();
   mw.m2creatures = [];
+  // M3: the sky — initialized from the world's climate fields (T/M per
+  // column), so the first sky matches the painted biomes. Own sub-stream.
+  const widthPx = mw.grid.cols * 10;
+  mw.sky = createSky(seed, widthPx, {
+    T: (i) => {
+      const t = mw.Tclim;
+      if (!t || !t.length) return 0.5;
+      const ti = Math.max(0, Math.min(t.length - 1, Math.floor(((i + 0.5) * 100) / 20)));
+      return t[ti];
+    },
+    soil: (i) => {
+      const m = mw.Mclim;
+      if (!m || !m.length) return 0.4;
+      const mi = Math.max(0, Math.min(m.length - 1, Math.floor(((i + 0.5) * 100) / 20)));
+      return m[mi];
+    },
+  });
+  // M3: the dead have bodies — corpses, seeds, and plant genomes.
+  mw.corpses = [];
+  mw.seeds = [];
+  attachPlantGenomes(mw.plants, createRng(((seed * 31 + 0x5eed) >>> 0) || 1));
   return mw;
 }
 
@@ -50,6 +76,10 @@ export function tickMaterialWorld(mw, creatures = []) {
 // One tick of the M2 loop: materials, then every living creature
 // (sense → decide → act → chemistry → learn), then the social substrate.
 // ctx is forwarded to each creature (shared perception context).
+//
+// M3: the slow systems tick at decoupled rates — the sky every 20 ticks,
+// seeds every 10, plants and corpses every 50. Like a real sky, weather
+// moves slower than paws.
 export function tickMaterialWorldM2(mw, ctx = {}) {
   tickMaterials(mw);
   const creatures = mw.m2creatures;
@@ -57,12 +87,20 @@ export function tickMaterialWorldM2(mw, ctx = {}) {
   for (const c of creatures) {
     if (c.alive) tickMaterialCreature(mw, c, cctx);
   }
+  // M3: the sky.
+  if ((mw.tick % SKY_EVERY) === 0) tickSky(mw, SKY_EVERY);
+  // M3: seeds drift on the wind.
+  if ((mw.tick % 10) === 0) tickSeeds(mw);
   // Fruit regrows slowly on fruiting plants (the food economy breathes).
   if (mw.plants && mw.tick % 50 === 0) {
     for (const p of mw.plants) {
       if (p.fruiting && (p.fruit || 0) < 5) p.fruit = Math.min(5, (p.fruit || 0) + 1);
     }
+    // M3: the plant slow tick — growth, stress, death, generations.
+    tickPlants(mw);
   }
+  // M3: corpses rot.
+  if (mw.tick % 50 === 0) tickCorpses(mw);
   // Social substrate: bonds decay/drift. The adapter maps the material
   // world onto social.js's expected interface (M2 foundation — full troops
   // and tribe detection in M3).

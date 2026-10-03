@@ -131,7 +131,8 @@ test('probe: GEOPHAGY does nothing when minerals are fine', () => {
 
 test('probe: EAT takes fruit from a fruiting plant', () => {
   const mw = microWorld();
-  mw.plants = [{ seedX: 320, seedY: 150, fruiting: true, fruit: 3 }];
+  // seedX/seedY are CELL coords (cell-vs-pixel fix); creature at px (300,200).
+  mw.plants = [{ seedX: 32, seedY: 15, fruiting: true, fruit: 3 }];
   const c = spawnAt2(mw, 300, 200);
   c.grounded = true;
   const sugar0 = c.chem.bloodSugar;
