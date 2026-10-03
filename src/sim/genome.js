@@ -138,6 +138,11 @@ export const SENSE32 = [
   // never renumbered
   'pain', // v0.32 "Nervous system": nociception — recent injury, decaying —
   // appended, never renumbered
+  'libido', // v0.37 "Affect": the felt need for mating (sexHormone readout)
+  'curiosity', // v0.37: the felt need for novelty (stimulus readout)
+  'attachment', // v0.37: longing for the pair-bonded partner (vasopressin × absence)
+  'care', // v0.37: the need to tend young (prolactin × offspring need)
+  'pairNear', // v0.37: pair-bond strength with the nearest creature (0 if none)
 ];
 // The pre-v0.17 vocabulary — family-C genes name senses against these
 // indices, which are never renumbered.
@@ -268,6 +273,13 @@ for (let i = 0; i < 4; i++) {
 for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) {
   GENES.push(_f(`drv${d}Gain`, 0.5), _f(`drv${d}Base`, 0.5));
 }
+// === GENOME v0.37 "Affect": the affect family (append-only) =================
+// design/affect-expansion.md — the tanglekin inner life, v2. Four new
+// drives (libido, curiosity, attachment, care) with the same gain/baseline
+// tuning as Family D: selection tunes the emotional volume. Plus the chronic-
+// state loci: griefTime (grief-timer duration), pairBondRate (vasopressin
+// gain), sexHormoneRate (libido chemistry gain), serotoninRate (long-horizon
+// mood gain). All float, founder 0.5, identity mapping like v2 (D).
 // === GENOME v0.14 "Voices": the voice family (append-only) ================
 // Speech — Paul's v0.15, converged early. Tanglekins emit grounded calls
 // (type from real state, never free choice) with an evolvable pitch.
@@ -539,6 +551,35 @@ GENES.push(
   { key: 'reflFearFleeThr', kind: 'float', founder: 0.65 },
 );
 // === end GENOME v0.32 loci ==================================================
+// === GENOME v0.37 "Affect": the emotion loci (append-only) ==================
+// These loci mutate through the affectRng sub-stream (salt 55) — see
+// AFFECT_LOCI and inherit() below. Joshua's directive 2026-10-02: "all the
+// emotions I mentioned and the ones I didn't mention should be possible."
+// Appended at the END so all earlier RNG sequences stay bit-identical.
+for (const d of ['Libido', 'Curiosity', 'Attachment', 'Care']) {
+  GENES.push(_f(`drv${d}Gain`, 0.5), _f(`drv${d}Base`, 0.5));
+}
+GENES.push(
+  _f('griefTime', 0.5), // grief-timer duration × (0.5 + value) (founder → ×1.0 ≈ 1 day)
+  _f('pairBondRate', 0.5), // vasopressin rise rate × (0.5 + value)
+  _f('sexHormoneRate', 0.5), // sexHormone synthesis × (0.5 + value)
+  _f('serotoninRate', 0.5), // serotonin rise/fall × (0.5 + value)
+);
+// v0.37 "Affect": the six new verbs each get an instinct gene (Paul's v0.5
+// rule: every new action needs one). Senses 38–42 are the new affect senses
+// (libido, curiosity, attachment, care, pairNear); actions 24–29 are the new
+// verbs (display, inspect, cuddle, tend, seekBond, mourn). instMourn wires
+// from loneliness (sense 3): grief spikes the social drive (§3.2), so the
+// bereaved seek company — and if a death site is known, they go there.
+GENES.push(
+  { key: 'instDisplay', kind: 'float', sense: 38, action: 24, founder: 0.5 },
+  { key: 'instInspect', kind: 'float', sense: 39, action: 25, founder: 0.5 },
+  { key: 'instCuddle', kind: 'float', sense: 40, action: 26, founder: 0.5 },
+  { key: 'instTend', kind: 'float', sense: 41, action: 27, founder: 0.5 },
+  { key: 'instSeekBond', kind: 'float', sense: 40, action: 28, founder: 0.5 },
+  { key: 'instMourn', kind: 'float', sense: 3, action: 29, founder: 0.5 },
+);
+// === end GENOME v0.37 =====================================================
 export const NERVES32_KEYS = new Set(GENES.slice(NERVES32_START).map((g) => g.key));
 
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
@@ -561,6 +602,9 @@ for (let i = 0; i < 6; i++) {
 for (let i = 0; i < 4; i++) _chrS.push(`st${i}event`, `st${i}val`, `st${i}int`);
 const _chrD = [];
 for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) _chrD.push(`drv${d}Gain`, `drv${d}Base`);
+// v0.37 "Affect": the four new drives' tuning loci ride the drives chromosome.
+for (const d of ['Libido', 'Curiosity', 'Attachment', 'Care']) _chrD.push(`drv${d}Gain`, `drv${d}Base`);
+_chrD.push('griefTime', 'pairBondRate', 'sexHormoneRate', 'serotoninRate');
 export const CHROMOSOMES = [
   // 1 — Morphology (+ v2 family M: bulk, tail, regional pigment, ears, arms)
   ['bodyHue', 'patternDensity', 'size', 'tailLength', 'eyeSize', 'pattern', 'earShape',
@@ -614,6 +658,9 @@ export const CHROMOSOMES = [
    // v0.32 "Nervous system": the reflex arcs ride the instinct chromosome —
    // withdrawal and startle are nature, not nurture, or meiosis drops them.
    'reflPainFlee', 'reflPainFleeThr', 'reflFearFlee', 'reflFearFleeThr',
+   // v0.37 "Affect": the six new verbs' instincts ride the instinct
+   // chromosome — display, inspect, cuddle, tend, seekBond, mourn.
+   'instDisplay', 'instInspect', 'instCuddle', 'instTend', 'instSeekBond', 'instMourn',
    ..._chrS],
   // 5 — Drives (v2: drive tuning + receptors — the chemistry/sense interface)
   [..._chrD, ..._chrC],
@@ -946,13 +993,29 @@ export function meiosis(genome, rng) {
   return { gamete, gameteMarks, gameteExtra };
 }
 
-export function inherit(momGenome, dadGenome, rng, mutationRate = MUTATION_RATE) {
+// v0.37 "Affect": the loci whose mutation draws come from the dedicated
+// affectRng sub-stream (salt 55), never the caller's rng. Per the standing
+// rule (new-version loci own RNG sub-stream) and the rng-boundary leak
+// criterion: these draws are causal (drive gains steer behavior → selection
+// sees them), so they live on their own sequential stream.
+export const AFFECT_LOCI = new Set([
+  'drvLibidoGain', 'drvLibidoBase', 'drvCuriosityGain', 'drvCuriosityBase',
+  'drvAttachmentGain', 'drvAttachmentBase', 'drvCareGain', 'drvCareBase',
+  'griefTime', 'pairBondRate', 'sexHormoneRate', 'serotoninRate',
+  'instDisplay', 'instInspect', 'instCuddle', 'instTend', 'instSeekBond', 'instMourn',
+]);
+export function inherit(momGenome, dadGenome, rng, mutationRate = MUTATION_RATE, affectRng = null) {
   const m = meiosis(momGenome, rng);
   const d = meiosis(dadGenome, rng);
   const alleles = {};
   const marks = {};
   for (const gene of GENES) {
-    alleles[gene.key] = [mutateAllele(gene, m.gamete[gene.key], rng, mutationRate), mutateAllele(gene, d.gamete[gene.key], rng, mutationRate)];
+    // v0.37: the affect loci mutate on their own sub-stream — the main
+    // sequence never sees these draws (the rng-boundary probe's affect arm
+    // asserts this). Meiosis stays on the caller's rng for all loci: the
+    // crossover ordering IS the per-version reproducibility contract.
+    const mrng = (affectRng && AFFECT_LOCI.has(gene.key)) ? affectRng : rng;
+    alleles[gene.key] = [mutateAllele(gene, m.gamete[gene.key], mrng, mutationRate), mutateAllele(gene, d.gamete[gene.key], mrng, mutationRate)];
     marks[gene.key] = 1.0 + (((m.gameteMarks[gene.key] || 1) + (d.gameteMarks[gene.key] || 1)) / 2 - 1.0);
   }
   // v0.14: gene duplication — the evolvable-complexity machinery.
@@ -1067,9 +1130,17 @@ export function phenotype(genome) {
   p.climbSpeed = 40 + p.legLength * 40 + p.tailLength * 20 + p.tailGrip * 30
     + Math.max(0, _bp.graspPairs - 2) * 15; // px/sec vertical
   p.groomReach = 40 + p.size * 30 + _bp.reachBonus - Math.max(0, _bp.bodySegs - 1) * 10;
+  // v0.37 "Affect": displayAnatomy — the display prerequisite (design §5.1).
+  // Derived from tail area + coloration: tails are for waving. The founder
+  // has it (tailLength ~0.6 + patternDensity ~0.3, scaled to clear 1.0).
+  // Not a genetic locus — it's what the anatomy affords, computed from
+  // what the genes built.
+  p.displayAnatomy = ((p.tailLength || 0) + (p.patternDensity || 0)) * 1.2;
   // v2 (D): drive tuning — gain + baseline on the chemical→drive readout.
   // Founder defaults are the identity: gain 1.0, baseline 0.
-  for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) {
+  // v0.37 "Affect": the four new drives tune the same way — selection sets
+  // the emotional volume.
+  for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear', 'Libido', 'Curiosity', 'Attachment', 'Care']) {
     p['driveGain' + d] = 2 * p['drv' + d + 'Gain'];
     p['driveBase' + d] = (p['drv' + d + 'Base'] - 0.5) * 0.4;
   }

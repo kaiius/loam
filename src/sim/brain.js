@@ -49,9 +49,22 @@ export const ACTIONS = [
   'bite', // strike the nearest creature in range — the attack verb, ordinary
   // machinery (v0.22 Web of Life). Damage = f(mouthSize × mass) vs
   // spikeArmor; fatigue-billed; spikes retaliate. No prey-finding cheats.
+  'display', // v0.37 "Affect": courtship display — rhythmic movement + coloration
+  // flashing; intensity scales with sexHormone. ANATOMY: displayAnatomy ≥ 1
+  // (design §5.1 — derived from tail area + coloration; the founder has it).
+  'inspect', // v0.37: slow approach to the novel object; the look satisfies.
+  // ANATOMY: none — novelty-seeking is the anatomy (design §5.2).
+  'cuddle', // v0.37: close body contact — juveniles with adults, adults with
+  // juveniles or pair-bonded partners. ANATOMY: graspPairs ≥ 1 (design §5.3).
+  'tend', // v0.37: stay near offspring, share food, stand ground.
+  // ANATOMY: graspPairs ≥ 1 (design §5.4 — food-sharing needs hands or a mouth).
+  'seekBond', // v0.37: go to the absent pair-bonded partner's last known position.
+  // ANATOMY: locomotion — graspPairs ≥ 1 or slitherSpeed > 0 (design §5.5).
+  'mourn', // v0.37: go to the death site; stay; the grief call.
+  // ANATOMY: locomotion — graspPairs ≥ 1 or slitherSpeed > 0 (design §5.6).
 ];
 
-export const N_IN = 39; // 38 senses + bias... see senseVector
+export const N_IN = 44; // 43 senses + bias... see senseVector
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -65,7 +78,8 @@ const MIN_ASSOC = 16; // pruning never goes below this
 //           climbUp, climbDown, groomNear, jumpNear, callHeard, callPitch,
 //           wasteOdor, airborne, farLedge, submerged, waterNear,
 //           thirst, cold, heat, buriedNear, objectNear, heldWeight, falling,
-//           creatureSize, phaseSleepiness, pain, bias]
+//           creatureSize, phaseSleepiness, pain, libido, curiosity,
+//           attachment, care, pairNear, bias]
 // v0.12 rule kept: never renumber. New senses append before the bias.
 export function senseVector(s) {
   return [
@@ -82,6 +96,11 @@ export function senseVector(s) {
     s.creatureSize || 0, // v0.22 "Web of Life": relative mass of nearest creature, no identity
     s.phaseSleepiness || 0, // v0.28 "Day and night": the phase-sleepiness sense — appended, never renumbered
     s.pain || 0, // v0.32 "Nervous system": nociception — appended, never renumbered
+    s.libido || 0, // v0.37 "Affect": the felt need for mating — appended, never renumbered
+    s.curiosity || 0, // v0.37: the felt need for novelty
+    s.attachment || 0, // v0.37: longing for the pair-bonded partner
+    s.care || 0, // v0.37: the need to tend young
+    s.pairNear || 0, // v0.37: pair-bond strength with the nearest creature
     1,
   ];
 }
@@ -168,6 +187,12 @@ export function createBrain(pheno, rng) {
   biasM[20] = 0.02; // grasp — hands are curious (v0.20 Hands)
   biasM[21] = 0; // carry — wielding unheld nothing is silence
   biasM[22] = 0.02; // drop — the put-down whisper (v0.20 Hands)
+  biasM[24] = 0.03; // display — courtship starts as a whisper (v0.37 Affect)
+  biasM[25] = 0.03; // inspect — novelty deserves a look
+  biasM[26] = pheno.sociability * 0.2; // cuddle — the intimate social instinct
+  biasM[27] = 0.04; // tend — the young are worth a nudge
+  biasM[28] = 0.03; // seekBond — longing starts as a whisper
+  biasM[29] = 0.02; // mourn — grief's whisper is quiet
 
   return {
     nAssoc,

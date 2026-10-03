@@ -11,7 +11,7 @@ import {
 } from './nerves.js';
 import { createMemory, writeEpisode, shouldWrite, recall, consolidate, OBSERVE_RANGE, OBSERVE_DISCOUNT } from './memory.js';
 import { foundGrove, adoptTradition, traditionVotes, groveTarget, groveAim, fidelityOf, getTradition, GROVE_MEALS, GROVE_WINDOW, GROVE_RADIUS, GROVE_NEARBY, foundCraft, CRAFT_USES, CRAFT_WINDOW, CRAFT_RADIUS } from './culture.js';
-import { pedigreeKin, getBond, nudgeBond } from './social.js';
+import { pedigreeKin, getBond, nudgeBond, getPairBond } from './social.js';
 import { climbLinksFrom, disperseSeed, tickGutSeeds, emitCall, callsHeardBy, zoneAt, noteDeath, excrete, addFood, digAt, WASTE_FRACTION, wasteOdorOf, CONTAM_ILLNESS, SCRAP_FRACTION, SCRAP_ROT, SCRAP_NUTRITION, TISSUE_FRACTION, mineralType, addPebble, addStick, ledgerOut, bodyMassOf, releaseBodyMass, soilAt } from './world.js';
 import { createLexicon, lexSlots, lexLearnRate, speakFromLexicon, registerHeard, registerSpoken, decayLexicon, pushContextWindow, hearerSalientContext, lexiconDistance } from './language.js';
 import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA } from './evodevo.js';
@@ -19,7 +19,7 @@ import { expressBuds, developmentalGrowth01, deriveAquaticPheno, SWIM_FLAIL_AREA
 // waters, ground. Pure geography; every call NaN-guarded at use.
 import { biomeAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, groundYAt } from './biomes.js';
 import { findRegion } from './worldgen.js';
-import { windAt, tempAt, cloudAt, seasonSun } from './weather.js';
+import { windAt, tempAt, cloudAt, seasonSun, seasonBreedMul } from './weather.js';
 
 let nextId = 1;
 
@@ -496,6 +496,17 @@ export function gatherSenses(c, world) {
           (o.pheno.gillArea || 0) + (o.pheno.finArea || 0);
         score += novelChoosy * Math.min(1, novelty);
       }
+      // v0.37 "Affect": vasopressin gates libido TARGETING — above 0.6
+      // vasopressin for partner P, the mate action prefers P over nearer
+      // valid mates. A preference weight (1.2× default), not a hard gate:
+      // founder economics, not forced monogamy. A lineage can evolve it
+      // away. The brain never learns "mate" as a label — it feels the
+      // pull toward the familiar.
+      const pv = c.biochem.vasopressin ?? 0;
+      if (pv > 0.6) {
+        const pb = getPairBond(world.pairBonds, c, o);
+        if (pb > 0.5) score *= 1.2;
+      }
       if (score > best) { best = score; mate = o; mateDist = d / range; }
     }
   }
@@ -583,6 +594,16 @@ export function gatherSenses(c, world) {
     _toy: toy && toy.obj,
     _mate: mate,
     _mateDist: mateDist,
+    // v0.37 "Affect": the felt drives as senses — the brain reads what the
+    // body feels. libido/curiosity/attachment/care are the §2 drives;
+    // pairNear is the pair-bond strength with the nearest creature (0 if
+    // none) — the third primitive for the kind() readout. The brain never
+    // receives kind LABELS (design §4.2b, §9).
+    libido: b.libido,
+    curiosity: b.curiosity,
+    attachment: b.attachment,
+    care: b.care,
+    pairNear: otherObj ? getPairBond(world.pairBonds, c, otherObj) : 0,
   };
   // v2 (C): receptors — chemical levels modulate senses. Each receptor gene
   // adds gain × max(0, chem − thr) to its target sense. Founder gains are 0:
@@ -1121,6 +1142,10 @@ export function groundCallType(c, s) {
   const b = c.biochem;
   const stage = ageStage(b, c.pheno);
   if (b.fear > 0.6) return 'alarm';
+  // v0.37 "Affect": grief has a call — the vocal action uses it while the
+  // grief timer runs. Not a label the brain receives; it's the body's own
+  // salient state, like alarm.
+  if ((c.griefT || 0) > 0) return 'grief';
   if (s.foodDist < 0.3 && s._food) return 'food';
   if (b.social > 0.6 && (stage === 'adult' || stage === 'senior')) return 'mate';
   return 'contact';
@@ -1140,6 +1165,10 @@ export function ownSalientContext(c, s) {
 
 function executeAction(c, world, dt, s) {
   const rng = world.rng;
+  // v0.37 "Affect": the action cases need the life stage (cuddle/tend gate
+  // on it). Computed here — executeAction doesn't receive updateCreature's
+  // devStage.
+  const devStage = ageStage(c.biochem, c.pheno);
   // v0.18: the water verbs (swim/dive/drink) read c._water — refresh it
   // here so they see this tick's state (executeAction runs before
   // stepPhysics in the tick).
@@ -1350,6 +1379,7 @@ function executeAction(c, world, dt, s) {
       if (other && Math.abs(other.x - c.x) < reach && other.platformIndex === c.platformIndex) {
         c.grooming = true; // consumed by tickBiochem (oxytocin)
         other._groomed = true; // the groomed feels it next tick
+        c._groomedTarget = other; // v0.37 "Affect": the chemistry needs to know WHO (pair-bond vs bonded mate)
         c.actionLabel = `grooming ${other.name}`;
         c.reward += 0.2 * dt;
         if (world.bonds) nudgeBond(world, c, other, 0.06 * dt);
@@ -1771,6 +1801,184 @@ function executeAction(c, world, dt, s) {
       }
       break;
     }
+    // v0.37 "Affect": the emotion actions — design §5. Each declares its
+    // anatomical prerequisites (Joshua's doctrine): parts hard-gate verbs,
+    // traits scale strengths. displayAnatomy ≥ 1 for display; graspPairs ≥
+    // 1 for cuddle and tend (holding); locomotion for seekBond and mourn.
+    case 'display': {
+      // Posture, vocalize, show off — the court's opening bid. Priming:
+      // watching a display raises the watcher's sexHormone (+0.05/tick,
+      // capped). Costs energy (honest signals are expensive).
+      c.actionLabel = 'displaying';
+      c._active = 0.5;
+      if ((c.pheno.displayAnatomy || 0) >= 1) {
+        c.reward += 0.1 * dt;
+        c._displaying = true; // watchers read it (priming)
+        // The honest-signal cost: display burns fuel.
+        c._active = Math.max(c._active || 0, 0.7);
+      } else {
+        c.actionLabel = 'displaying (no anatomy)';
+      }
+      break;
+    }
+    case 'inspect': {
+      // Approach the most novel stimulus — the epistemic behavior the
+      // curiosity drive buys. No anatomical gate: novelty-seeking is the
+      // anatomy. (Paul's §5.4 — inspection is the interest drive's verb.)
+      c.actionLabel = 'inspecting';
+      c._active = 0.4;
+      // Move toward the nearest other creature (the usual novel stimulus);
+      // if none, drift toward sensed food.
+      const insp = s._other || s._food;
+      if (insp) {
+        const tx = insp.x !== undefined ? insp.x : c.x;
+        moveToward(c, world, tx, dt, 0.8);
+        c.reward += 0.05 * dt;
+      } else {
+        moveAlong(c, world, c.wanderDir || 1, dt, 0.5);
+      }
+      break;
+    }
+    case 'cuddle': {
+      // Contact comfort — requires graspPairs ≥ 1 (anatomy gates the verb).
+      // Juveniles may cuddle adults; adults may cuddle juveniles or
+      // pair-bonded partners. Both get oxytocin; the cuddled gets the
+      // _groomed-flag chemistry (contact comfort reads like grooming).
+      c.actionLabel = 'cuddling';
+      c._active = 0.2;
+      const graspPairs = c.bodyPlan ? c.bodyPlan.graspPairs : (c.pheno.graspPairs ?? 2);
+      const other = s._other;
+      const ost = other ? ageStage(other.biochem, other.pheno) : null;
+      const pairOk = other && getPairBond(world.pairBonds, c, other) > 0.5;
+      const ageOk = other && ((devStage === 'baby' || devStage === 'child') ||
+        ost === 'baby' || ost === 'child' || pairOk);
+      if (graspPairs >= 1 && other && ageOk &&
+          Math.abs(other.x - c.x) < 60 && other.platformIndex === c.platformIndex) {
+        other._groomed = true; // contact comfort rides the oxytocin path
+        c.grooming = true;
+        c._groomedTarget = other;
+        c.actionLabel = `cuddling ${other.name}`;
+        c.reward += 0.15 * dt;
+        if (world.bonds) nudgeBond(world, c, other, 0.04 * dt);
+      } else if (other && ageOk && other.platformIndex === c.platformIndex) {
+        moveToward(c, world, other.x, dt, 0.8);
+      } else {
+        moveAlong(c, world, c.wanderDir || 1, dt, 0.5);
+      }
+      break;
+    }
+    case 'tend': {
+      // Parental care — requires graspPairs ≥ 1 and prolactin > 0.3
+      // (the hormonal gate: without it, the verb is empty). Adult tends
+      // its own young (kin ≥ 0.5, baby/child): approach, then feed (food
+      // transfer through doEat — mass-conserving) and groom. Presence,
+      // not fussing, satisfies the care drive.
+      c.actionLabel = 'tending';
+      c._active = 0.4;
+      const graspPairs = c.bodyPlan ? c.bodyPlan.graspPairs : (c.pheno.graspPairs ?? 2);
+      const prol = c.biochem.prolactin || 0;
+      if (graspPairs >= 1 && prol > 0.3 && (devStage === 'adult' || devStage === 'senior')) {
+        // Find the neediest own young in range.
+        let young = null, youngNeed = 0;
+        const range = c.pheno.sightRange || 400;
+        for (const o of world.creatures) {
+          if (!o.alive || o.id === c.id || o.platformIndex !== c.platformIndex) continue;
+          if (Math.abs(o.x - c.x) > range) continue;
+          if (pedigreeKin(world, c, o) < 0.5) continue;
+          const ost = ageStage(o.biochem, o.pheno);
+          if (ost !== 'baby' && ost !== 'child') continue;
+          const need = Math.max(o.biochem.hunger, o.biochem.fear, 1 - o.biochem.energy);
+          if (need > youngNeed) { youngNeed = need; young = o; }
+        }
+        if (young) {
+          if (Math.abs(young.x - c.x) < 60) {
+            // Feed: transfer food mass through the eating path (conserved).
+            if (c._ate > 0 || (c.biochem.bloodSugar || 0) > 0.5) {
+              young._ate = (young._ate || 0) + 0.5 * dt;
+              c.biochem.bloodSugar = Math.max(0, (c.biochem.bloodSugar || 0) - 0.02 * dt);
+            }
+            young._groomed = true;
+            c.grooming = true;
+            c._groomedTarget = young;
+            c.actionLabel = `tending ${young.name}`;
+            c.reward += 0.1 * dt;
+          } else {
+            moveToward(c, world, young.x, dt, 0.9);
+          }
+        }
+      } else {
+        moveAlong(c, world, c.wanderDir || 1, dt, 0.5);
+      }
+      break;
+    }
+    case 'seekBond': {
+      // Move toward the strongest bond (the attachment drive's verb).
+      // Requires locomotion: graspPairs ≥ 1, or a serpentine body plan
+      // (slitherSpeed > 0) — the realized body decides.
+      c.actionLabel = 'seeking bond';
+      c._active = 0.5;
+      const graspPairs = c.bodyPlan ? c.bodyPlan.graspPairs : (c.pheno.graspPairs ?? 2);
+      const canMove = graspPairs >= 1 || (c.pheno.slitherSpeed || 0) > 0;
+      if (canMove) {
+        // Prefer the pair-bonded partner; fall back to the strongest bond.
+        let target = null, bestV = 0;
+        if (world.pairBonds) {
+          for (const [k, e] of world.pairBonds) {
+            const [ia, ib] = k.split('-').map(Number);
+            if (ia !== c.id && ib !== c.id) continue;
+            if (e.v > bestV) {
+              const oid = ia === c.id ? ib : ia;
+              const o = world.creatures.find((x) => x.id === oid);
+              if (o && o.alive && o.platformIndex === c.platformIndex) { bestV = e.v; target = o; }
+            }
+          }
+        }
+        if (!target && world.bonds) {
+          let bestB = 0;
+          for (const [k, e] of world.bonds) {
+            const [ia, ib] = k.split('-').map(Number);
+            if (ia !== c.id && ib !== c.id) continue;
+            if (e.v > bestB) {
+              const oid = ia === c.id ? ib : ia;
+              const o = world.creatures.find((x) => x.id === oid);
+              if (o && o.alive && o.platformIndex === c.platformIndex) { bestB = e.v; target = o; }
+            }
+          }
+        }
+        if (target) {
+          moveToward(c, world, target.x, dt, 0.9);
+          c.actionLabel = `seeking ${target.name}`;
+          c.reward += 0.05 * dt;
+        } else {
+          moveAlong(c, world, c.wanderDir || 1, dt, 0.5);
+        }
+      }
+      break;
+    }
+    case 'mourn': {
+      // Return to the death site (griefX) and stay near it while the grief
+      // timer runs. Requires locomotion. When the timer expires, the verb
+      // empties (the behavior returns to baseline — the honest end of grief
+      // as a BEHAVIOR; the serotonin mark persists in the chemistry).
+      c.actionLabel = 'mourning';
+      c._active = 0.2;
+      const graspPairs = c.bodyPlan ? c.bodyPlan.graspPairs : (c.pheno.graspPairs ?? 2);
+      const canMove = graspPairs >= 1 || (c.pheno.slitherSpeed || 0) > 0;
+      if (canMove && (c.griefT || 0) > 0 && c.griefX !== undefined &&
+          c.griefPlatform === c.platformIndex) {
+        const d = Math.abs(c.griefX - c.x);
+        if (d > 80) {
+          moveToward(c, world, c.griefX, dt, 0.6);
+        } else {
+          // Stay: quiet at the site. The reward is small and negative —
+          // grief is not reinforced, it's endured.
+          c.reward -= 0.02 * dt;
+        }
+      } else {
+        moveAlong(c, world, c.wanderDir || 1, dt, 0.3);
+      }
+      break;
+    }
     case 'wander':
     default:
       c.actionLabel = 'wandering';
@@ -1953,6 +2161,68 @@ export function updateCreature(c, world, dt) {
   // the developmental cost through hunger (the chemistry bills it below);
   // adults pay maintenance upkeep after the tick. Founder 0 → silent.
   const devStage = ageStage(b, pheno);
+  // v0.37 "Affect": the emotion context — design/affect-expansion.md §1.
+  // Computed from last tick's senses and world state (chemistry runs before
+  // fresh senses are gathered — one tick of delay, fine for slow chemistry).
+  const _sPrev = c._senses || {};
+  const _mated = !!c._mated;
+  const _matedInfidelity = !!c._matedInfidelity;
+  c._mated = false; c._matedInfidelity = false; c._matedPartner = null;
+  const _gaveBirth = !!c._gaveBirth;
+  c._gaveBirth = false;
+  // Reward delta for zest: this tick's reward vs the slow moving average
+  // (the governor). The average updates here, after the delta is read.
+  const _rewardAvg = c._rewardAvg || 0;
+  const _rewardDelta = (c.reward || 0) - _rewardAvg;
+  c._rewardAvg = _rewardAvg + 0.05 * ((c.reward || 0) - _rewardAvg);
+  // Grooming target tracking (set by the groom action): who was groomed.
+  const _groomTarget = c._groomedTarget || null;
+  c._groomedTarget = null;
+  const _groomBondedMate = !!(wasGrooming && _groomTarget && _groomTarget.sex !== c.sex &&
+    getBond(world.bonds, c, _groomTarget) > 0.3);
+  const _groomPair = !!(wasGrooming && _groomTarget &&
+    getPairBond(world.pairBonds, c, _groomTarget) > 0.5);
+  // Pair-bonded partner: nearest pair-bonded other in sense range, and
+  // whether any pair bond exists but the partner is absent (longing).
+  let _pairNearId = -1, _pairNearDist = Infinity, _hasPairBond = false;
+  if (world.pairBonds) {
+    for (const [k, e] of world.pairBonds) {
+      const [ia, ib] = k.split('-').map(Number);
+      if (ia !== c.id && ib !== c.id) continue;
+      if (e.v > 0.3) _hasPairBond = true;
+      const oid = ia === c.id ? ib : ia;
+      const o = world.creatures.find((x) => x.id === oid);
+      if (o && o.alive && o.platformIndex === c.platformIndex) {
+        const d = Math.abs(o.x - c.x);
+        if (d < _pairNearDist) { _pairNearDist = d; _pairNearId = oid; }
+      }
+    }
+  }
+  const _partnerAbsent = (_hasPairBond && _pairNearId < 0) ? 1 : 0;
+  const _nearPairContent = (_pairNearId >= 0 && _pairNearDist < 120 && b.fear < 0.4 && b.hunger < 0.4) ? true : false;
+  // Offspring: own young (pedigree kin ≥ 0.5, baby/child stage) in sense range.
+  let _offspringNear = 0, _offspringNeed = 0;
+  {
+    const range = c.pheno.sightRange || 400;
+    for (const o of world.creatures) {
+      if (!o.alive || o.id === c.id || o.platformIndex !== c.platformIndex) continue;
+      if (Math.abs(o.x - c.x) > range) continue;
+      const kin = pedigreeKin(world, c, o);
+      if (kin < 0.5) continue;
+      const ost = ageStage(o.biochem, o.pheno);
+      if (ost !== 'baby' && ost !== 'child') continue;
+      _offspringNear = 1;
+      const need = Math.max(o.biochem.hunger, o.biochem.fear, 1 - o.biochem.energy);
+      if (need > _offspringNeed) _offspringNeed = need;
+    }
+  }
+  // Grief timer ticks down here (set by noteDeath's broadcast).
+  if (c.griefT > 0) c.griefT = Math.max(0, c.griefT - dt);
+  b.griefT = c.griefT || 0; // mood() reads it
+  // v0.37 "Affect": display priming — watching a display raises the
+  // watcher's sexHormone (+0.05/tick, capped in the chemistry). The
+  // watcher's _sPrev._other is last tick's nearest other.
+  const _displayWatched = !!(_sPrev._other && _sPrev._other._displaying);
   tickBiochem(b, pheno, dt, {
     sleeping: c.sleeping,
     playing: c.playing,
@@ -1985,6 +2255,22 @@ export function updateCreature(c, world, dt) {
     // v0.28 "Day and night": basking follows the diurnal sun too — no
     // midnight sunbathing (else creatures bypass night by basking).
     daySun: world.light ?? 1,
+    // v0.37 "Affect": the emotion context — design/affect-expansion.md §1.
+    mated: _mated,
+    mateNear: !!(_sPrev && _sPrev._mate),
+    groomBondedMate: _groomBondedMate,
+    groomPair: _groomPair,
+    nearPairContent: _nearPairContent,
+    matedInfidelity: _matedInfidelity,
+    offspringNear: _offspringNear,
+    gaveBirth: _gaveBirth,
+    grieving: (c.griefT || 0) > 0,
+    novelty: !!c._noveltyEvent,
+    rewardDelta: _rewardDelta,
+    partnerAbsent: _partnerAbsent,
+    offspringNeed: _offspringNeed,
+    seasonBreed: seasonBreedMul(world),
+    displayWatched: _displayWatched,
   });
   // v0.18: flailing (swimming without membranes) costs 3× the oxygen.
   // The chemistry doesn't read a flail flag, so the surcharge is billed
@@ -2022,6 +2308,22 @@ export function updateCreature(c, world, dt) {
   if (!c.sleeping) {
     c.sleepTicks = 0;
     const s = gatherSenses(c, world);
+    // v0.37 "Affect": novelty detection (Paul's §5.4, adopted per the
+    // Gemini P2 fix — no more hard threshold). The sense vector's
+    // frame-to-frame delta, normalized by dt, over a threshold derived
+    // from Paul's own scale analysis: the same math his probes used.
+    // Analytic — no RNG. Consumed by next tick's chemistry (stimulus).
+    {
+      const prev = c._senses;
+      if (prev) {
+        const vec = senseVector(s), pvec = senseVector(prev);
+        let delta = 0;
+        for (let i = 0; i < vec.length && i < pvec.length; i++) delta += Math.abs(vec[i] - pvec[i]);
+        c._noveltyEvent = (delta / Math.max(dt, 1e-6)) > 0.8;
+      } else {
+        c._noveltyEvent = false;
+      }
+    }
     c._senses = s;
     // v0.32: the peripheral loop. The fresh sense vector rides the sensory
     // delay line; reflex arcs evaluate on fresh senses and preempt the
@@ -2198,7 +2500,12 @@ export function updateCreature(c, world, dt) {
       // when an N_IN reshuffle gave a founder brain a pathological sleep
       // bias; it slept through bites at fear 0.98, out-healing them 5×.)
       if (b.fear > 0.55 && chosen === 'sleep') {
-        chosen = 'flee';
+        // v0.37 "Affect": the prolactin override — a parent with high
+        // prolactin and young nearby does NOT flee (the anti-instinct).
+        // The fear-override was never hard-coded; it was always conditional,
+        // and now the condition is explicit. The mother stands her ground.
+        const standsGround = (b.prolactin || 0) > 0.5 && _offspringNear > 0;
+        if (!standsGround) chosen = 'flee';
       }
       // Breeding opportunity (v0.5, retargeted v2): a lonely adult that senses
       // a nearby VALID mate courts instead of dithering. v2 reads s._mate
@@ -2225,6 +2532,17 @@ export function updateCreature(c, world, dt) {
       ) {
         chosen = 'mate';
       }
+      // v0.37 "Affect": libido-driven retargeting — high libido with no
+      // valid mate redirects to display (the honest signal — advertise) if
+      // the anatomy allows. A retargeting in the backstop, not a new brain
+      // output. Libido is the drive; display is what the body does with
+      // unmet libido. Fires when the brain chose mate without a target, OR
+      // when it chose wander while libido burns (the drive redirects the
+      // dither).
+      if (b.libido > 0.5 && !partner && stage === 'adult' &&
+          (chosen === 'mate' || chosen === 'wander')) {
+        chosen = (c.pheno.displayAnatomy || 0) >= 1 ? 'display' : 'wander';
+      }
       // v2 (E): emitters — committing to an action releases a chemical pulse
       // (once per commitment, not per tick). Founder amounts are small
       // nudges; evolution can turn them into floods.
@@ -2244,7 +2562,11 @@ export function updateCreature(c, world, dt) {
       else c._reflexOverrode = true;
       c.episodeInput = input;
       c.episodeAction = ACTIONS.indexOf(chosen);
-      c.actionTimer = rng.range(0.8, 2.4) * (0.6 + pheno.boldness * 0.8);
+      // v0.37 "Affect": psychomotor slowing — the depressed regime doubles
+      // the commitment timer (design §3.1). Everything takes longer to
+      // start; nothing is forbidden, everything is heavier.
+      c.actionTimer = rng.range(0.8, 2.4) * (0.6 + pheno.boldness * 0.8) *
+        (b.serotonin < 0.35 ? 2.0 : 1.0);
     }
     // v0.32: the motor outbox ticks down here — reflexes (0-tick) land this
     // tick; brain commands land when their signal arrives.

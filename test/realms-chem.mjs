@@ -177,8 +177,8 @@ test('v0.18: the four realms instinct genes — indices and founders', () => {
 });
 
 test('v0.18: index contract — N_IN 39, N_OUT 24, append-only', () => {
-  assert.equal(N_IN, 39, '38 senses + bias'); // v0.32: +pain
-  assert.equal(N_OUT, 24, '23 old actions + bite'); // v0.22
+  assert.equal(N_IN, 44, '43 senses + bias'); // v0.37: +5 affect senses
+  assert.equal(N_OUT, 30, '29 old actions + 6 affect'); // v0.37
   assert.equal(ACTIONS[17], 'drink');
   assert.equal(ACTIONS[18], 'bask');
   assert.equal(ACTIONS[19], 'dig');
@@ -186,7 +186,9 @@ test('v0.18: index contract — N_IN 39, N_OUT 24, append-only', () => {
   assert.equal(ACTIONS[21], 'carry'); // v0.20
   assert.equal(ACTIONS[22], 'drop'); // v0.20
   assert.equal(ACTIONS[23], 'bite'); // v0.22 "Web of Life": appended, never renumbered
-  assert.equal(SENSE32.length, 38); // v0.32: 37 + the pain sense
+  assert.equal(ACTIONS[24], 'display'); // v0.37 "Affect": appended, never renumbered
+  assert.equal(ACTIONS[29], 'mourn'); // v0.37: appended, never renumbered
+  assert.equal(SENSE32.length, 43); // v0.37: 38 + 5 affect senses
   assert.deepEqual(SENSE32.slice(0, 24), SENSE24, 'the old 24 untouched');
   assert.equal(SENSE32[28], 'thirst');
   assert.equal(SENSE32[29], 'cold');

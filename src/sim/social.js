@@ -99,6 +99,133 @@ export function pedigreeKin(world, a, b) {
   return 0;
 }
 
+// Pair bonds — v0.37 "Affect" (design/affect-expansion.md §1.4, §4).
+// Oxytocin is general sociability; vasopressin is SPECIFIC attachment —
+// the vole steal. pairBonds is a Map like bonds, storing { v: 0..1, t }
+// per pair: strengthened by mating (+0.3) and repeated exclusive grooming,
+// weakened by mating others (×0.5 — the price of exclusivity), decaying
+// over days. It is NOT exposed as a sense label; the brain receives only
+// pairNear (strength with the nearest creature). Relationship KIND is a
+// derived observer readout (kindOf, below) — never the brain's input.
+export function createPairBonds() {
+  return new Map(); // key -> { v: 0..1, t: last update time }
+}
+
+export function getPairBond(pairBonds, a, b) {
+  if (!pairBonds) return 0;
+  const e = pairBonds.get(bondKey(a.id ?? a, b.id ?? b));
+  return e ? e.v : 0;
+}
+
+// Nudge a pair bond, clamped to [0, 1]. Returns the new value.
+export function nudgePairBond(world, a, b, delta) {
+  if (!a || !b || a === b || !world.pairBonds) return 0;
+  const k = bondKey(a.id, b.id);
+  let e = world.pairBonds.get(k);
+  if (!e) {
+    e = { v: 0, t: world.time };
+    world.pairBonds.set(k, e);
+  }
+  e.v = Math.max(0, Math.min(1, e.v + delta));
+  e.t = world.time;
+  return e.v;
+}
+
+// Halve a creature's strongest pair bond (infidelity's price — design §8d).
+export function halvePairBond(world, c) {
+  if (!world.pairBonds) return;
+  let bestK = null, bestV = 0;
+  for (const [k, e] of world.pairBonds) {
+    const [ia, ib] = k.split('-').map(Number);
+    if (ia !== c.id && ib !== c.id) continue;
+    if (e.v > bestV) { bestV = e.v; bestK = k; }
+  }
+  if (bestK) {
+    const e = world.pairBonds.get(bestK);
+    e.v *= 0.5;
+    e.t = world.time;
+  }
+}
+
+// Per-tick pair-bond dynamics: very slow decay (days, not minutes),
+// pruning of the dead. Mirrors tickBonds.
+export function tickPairBonds(world, dt) {
+  const pb = world.pairBonds;
+  if (!pb) return;
+  const alive = new Set(world.creatures.map((c) => c.id));
+  for (const [k, e] of pb) {
+    const [ia, ib] = k.split('-').map(Number);
+    if (!alive.has(ia) || !alive.has(ib)) {
+      pb.delete(k);
+      continue;
+    }
+    e.v -= e.v * 0.0002 * dt; // days-long decay — bonds outlive moods
+    if (e.v < 0.01 && world.time - e.t > 3600) pb.delete(k);
+  }
+}
+
+// Relationship kind — the derived observer readout (design §4.2).
+// 'romantic' | 'family' | 'friend' | 'rival' | 'stranger'.
+// The brain NEVER receives this: it gets bondNear, kinNear, pairNear
+// (the three primitives). The kind is what an observer calls the pattern;
+// the creature lives the pattern. Pure function — safe to call anywhere.
+export function kindOf(world, a, b) {
+  if (!a || !b || a === b) return 'stranger';
+  const pair = getPairBond(world.pairBonds, a, b);
+  if (pair > 0.5) return 'romantic';
+  const kin = pedigreeKin(world, a, b);
+  if (kin >= 0.5) return 'family';
+  const bond = world.bonds ? getBond(world.bonds, a, b) : 0;
+  if (bond > 0.3) return 'friend';
+  if (bond < -0.3) return 'rival';
+  return 'stranger';
+}
+
+// Tracked emergence — Joshua's ruling 2026-10-02 (design §4.2b).
+// Kinds EMERGE (kindOf derives them; the brain never sees labels), but the
+// world TRACKS them: world.kindHistory holds per-dyad last-known kind +
+// timestamp, and a kind transition writes a chronicle event ("X and Y
+// became mates", "the bond between X and Y soured into rivalry") — the
+// stories get their first-class facts without the brain getting labels it
+// didn't earn. A friend becomes a rival when the bond goes negative —
+// and now the world NOTICES.
+export function tickKindHistory(world) {
+  if (!world.kindHistory) return;
+  const seen = new Set(); // dyads checked this tick
+  const check = (aId, bId) => {
+    const k = bondKey(aId, bId);
+    if (seen.has(k)) return;
+    seen.add(k);
+    const a = world.creatures.find((c) => c.id === aId);
+    const b = world.creatures.find((c) => c.id === bId);
+    if (!a || !b || !a.alive || !b.alive) return;
+    const kind = kindOf(world, a, b);
+    const prev = world.kindHistory.get(k);
+    if (!prev) {
+      // First sighting: record silently unless it's already meaningful.
+      world.kindHistory.set(k, { kind, t: world.time });
+      return;
+    }
+    if (prev.kind !== kind) {
+      world.kindHistory.set(k, { kind, t: world.time });
+      world.events.push({ type: 'kindChanged', a: aId, b: bId, from: prev.kind, to: kind, t: world.time });
+    }
+  };
+  if (world.bonds) {
+    for (const k of world.bonds.keys()) {
+      const [ia, ib] = k.split('-').map(Number);
+      check(ia, ib);
+    }
+  }
+  if (world.pairBonds) {
+    for (const k of world.pairBonds.keys()) {
+      const [ia, ib] = k.split('-').map(Number);
+      check(ia, ib);
+    }
+  }
+}
+// Returns [{ id, name, color, homeX, members }]. Identity is analytical —
+// recomputed from scratch, so bands can form, merge, and dissolve.
 // Tribe detection: greedy clustering of living creatures by homeX.
 // Returns [{ id, name, color, homeX, members }]. Identity is analytical —
 // recomputed from scratch, so bands can form, merge, and dissolve.

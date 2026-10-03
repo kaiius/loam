@@ -23,7 +23,7 @@ import { gatherSenses, visionLightFactor, phaseSleepiness, predatorVigor, spawnP
 import { seasonalForcing, SEASON_AMP_MAX } from '../src/sim/weather.js';
 
 test('v0.28: exactly two new loci — activityPhase + instPhaseSleep (GENES 232)', () => {
-  assert.equal(GENES.length, 239); // v0.32: 233 + six nerve loci
+  assert.equal(GENES.length, 257); // v0.37: 239 + 18 affect loci
   assert.deepEqual([...DAYNIGHT28_KEYS].sort(), ['activityPhase', 'instPhaseSleep']);
   const chr4 = CHROMOSOMES[3];
   assert.ok(chr4.includes('activityPhase'), 'activityPhase rides the behavior chromosome');
@@ -60,7 +60,7 @@ test('v0.32: one new sense — pain at index 37, N_IN 39', () => {
   assert.equal(SENSE32.length, 38);
   assert.equal(SENSE32[36], 'phaseSleepiness');
   assert.equal(SENSE32[37], 'pain');
-  assert.equal(N_IN, 39);
+  assert.equal(N_IN, 44); // v0.37: +5 affect senses (libido, curiosity, attachment, care, pairNear)
   const s = {};
   for (const k of SENSE32) s[k] = 0;
   s.phaseSleepiness = 0.7;

@@ -254,7 +254,7 @@ test('v0.16: troop census clusters shared words every 30s', () => {
   assert.ok(Array.isArray(world.troopWords), 'census ran');
 });
 
-const N_SENSES = 37; // v0.28: 36 + phaseSleepiness; canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor + v0.17's airborne, farLedge, submerged, waterNear + v0.18's thirst, cold, heat, buriedNear + v0.20's objectNear, heldWeight, falling + v0.22's creatureSize + v0.28's phaseSleepiness
+const N_SENSES = 43; // v0.37: 38 + 5 affect senses (libido, curiosity, attachment, care, pairNear); v0.32: 37 + pain; v0.28: 36 + phaseSleepiness; canopy: v0.12's 18 + climbUp, climbDown, groomNear, jumpNear + v0.14's callHeard, callPitch, wasteOdor + v0.17's airborne, farLedge, submerged, waterNear + v0.18's thirst, cold, heat, buriedNear + v0.20's objectNear, heldWeight, falling + v0.22's creatureSize + v0.28's phaseSleepiness
 
 function testPheno(seed, overrides = {}) {
   const p = phenotype(randomGenome(createRng(seed)));
@@ -283,7 +283,7 @@ const MID_SENSES = {
 
 test('instinct genes map to valid sense/action indices', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 36, 'v0.28: +instPhaseSleep'); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts + v0.18's 4 realms instincts + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.28's instPhaseSleep
+  assert.equal(inst.length, 42, 'v0.37: +6 affect instincts (instDisplay, instInspect, instCuddle, instTend, instSeekBond, instMourn)'); // v0.12: 13 + canopy's instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts + v0.18's 4 realms instincts + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.28's instPhaseSleep + v0.37's 6 affect instincts
   for (const g of inst) {
     assert.ok(g.sense >= 0 && g.sense < N_SENSES, g.key);
     assert.ok(g.action >= 0 && g.action < ACTIONS.length, g.key);
@@ -605,13 +605,13 @@ test('memory capacity is set by an evolvable gene', () => {
 
 test('v0.5: mate finally has an instinct pathway', () => {
   const inst = GENES.filter((g) => g.sense !== undefined);
-  assert.equal(inst.length, 36, 'v0.28: +instPhaseSleep'); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts + v0.18's 4 realms instincts + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.28's instPhaseSleep
+  assert.equal(inst.length, 42, 'v0.37: +6 affect instincts'); // canopy: v0.12's 13 + instClimbUp/Down, instLonelyGroom, instJump + v0.14's instHeardVocal, instLonelyVocal, instWasteFlee + v0.17's 5 organ instincts + v0.18's 4 realms instincts + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.28's instPhaseSleep + v0.37's 6 affect instincts
   const g = GENES.find((g) => g.key === 'instLonelyMate');
   assert.ok(g, 'instLonelyMate is a registered gene');
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 239); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci
+  assert.equal(GENES.length, 257); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -1167,7 +1167,7 @@ test('v0.8: leaves are bitter — weak reward when healthy', () => {
 
 test('v0.8: illness is the 15th brain input', () => {
   const v = senseVector({ ...MID_SENSES, illness: 0.7 });
-  assert.equal(v.length, 39, 'thirty-nine entries: 38 senses + bias'); // v0.32: +pain
+  assert.equal(v.length, 44, 'forty-four entries: 43 senses + bias'); // v0.37: +5 affect senses
   assert.equal(v[13], 0.7, 'illness rides at index 13');
   assert.equal(v[14], 0, 'homeDist defaults to 0');
   assert.equal(v[15], 0, 'kinNear defaults to 0');
@@ -2310,11 +2310,13 @@ test('v0.13.1: non-finite eligibility traces reset instead of spreading', () => 
 
 test('v0.14: vocal is the 13th action; voice genes are registered', () => {
   assert.equal(ACTIONS[12], 'vocal', 'vocal appended, never renumbered');
-  assert.equal(ACTIONS.length, 24); // v0.14's 13 + v0.17's glide, brachiate, swim, dive + v0.18's drink, bask, dig + v0.20's grasp, carry, drop + v0.22's bite
+  assert.equal(ACTIONS.length, 30); // v0.14's 13 + v0.17's glide, brachiate, swim, dive + v0.18's drink, bask, dig + v0.20's grasp, carry, drop + v0.22's bite + v0.37's 6 affect actions
   for (const k of ['vocalPitch', 'vocalRange', 'vocalVolume', 'vocalImitate', 'matePrefCall']) {
     assert.ok(GENES.find((g) => g.key === k), `${k} is a registered gene`);
   }
   assert.equal(ACTIONS[23], 'bite', 'bite appended, never renumbered');
+  assert.equal(ACTIONS[24], 'display', 'display appended, never renumbered'); // v0.37
+  assert.equal(ACTIONS[29], 'mourn', 'mourn appended, never renumbered'); // v0.37
   const hv = GENES.find((g) => g.key === 'instHeardVocal');
   assert.equal(hv.sense, 21, 'hearing calls drives vocalizing');
   assert.equal(hv.action, 12, 'onto the vocal action');
@@ -3684,9 +3686,9 @@ function evoGenome(rng, overrides) {
 }
 
 test('v0.17: 217 loci, 9 chromosomes — the evo-devo 25 ride together', () => {
-  assert.equal(GENES.length, 239); // v0.17's 223 + v0.20's 3 hands instincts + instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci
+  assert.equal(GENES.length, 257); // v0.17's 223 + v0.20's 3 hands instincts + instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci (8 drive + 4 rate + 6 instinct)
   assert.equal(EVO17_KEYS.size, 25);
-  assert.equal(new Set(GENES.map((g) => g.key)).size, 239, 'no duplicate keys');
+  assert.equal(new Set(GENES.map((g) => g.key)).size, 257, 'no duplicate keys');
   assert.equal(CHROMOSOMES.length, 9);
   for (const k of EVO17_KEYS) {
     assert.ok(CHROMOSOMES[8].includes(k), `${k} rides the new chromosome 9`);
@@ -3694,7 +3696,7 @@ test('v0.17: 217 loci, 9 chromosomes — the evo-devo 25 ride together', () => {
 });
 
 test('v0.18: SENSE32 — four realms senses appended, never renumbered', () => {
-  assert.equal(SENSE32.length, 38); // v0.18's 32 + v0.20's objectNear, heldWeight, falling + v0.22's creatureSize + v0.28's phaseSleepiness + v0.32's pain
+  assert.equal(SENSE32.length, 43); // v0.18's 32 + v0.20's objectNear, heldWeight, falling + v0.22's creatureSize + v0.28's phaseSleepiness + v0.32's pain + v0.37's 5 affect senses
   assert.deepEqual(SENSE32.slice(0, 24), SENSE24, 'the old 24 are untouched');
   assert.equal(SENSE32[24], 'airborne');
   assert.equal(SENSE32[25], 'farLedge');
@@ -3711,7 +3713,7 @@ test('v0.18: SENSE32 — four realms senses appended, never renumbered', () => {
 });
 
 test('v0.18: three realms actions appended — drink 17, bask 18, dig 19', () => {
-  assert.equal(ACTIONS.length, 24); // v0.18's 20 + v0.20's grasp 20, carry 21, drop 22 + v0.22's bite 23
+  assert.equal(ACTIONS.length, 30); // v0.18's 20 + v0.20's grasp 20, carry 21, drop 22 + v0.22's bite 23 + v0.37's 6 affect (24-29)
   assert.deepEqual(ACTIONS.slice(0, 13), ACT13, 'the old 13 are untouched');
   assert.equal(ACTIONS[13], 'glide');
   assert.equal(ACTIONS[14], 'brachiate');
@@ -3729,7 +3731,7 @@ test('v0.18: three realms actions appended — drink 17, bask 18, dig 19', () =>
 
 test('v0.18: the brain takes 33 inputs; the realms senses land at 28–31', () => {
   const v = senseVector({ ...MID_SENSES, airborne: 0.5, farLedge: 0.3, submerged: 0, waterNear: 0.9, thirst: 0.6, cold: 0.2, heat: 0, buriedNear: 0.4, objectNear: 0.7, heldWeight: 0.3, falling: 0.8 });
-  assert.equal(v.length, 39, '38 senses + bias'); // v0.32: +pain
+  assert.equal(v.length, 44, '43 senses + bias'); // v0.37: +5 affect senses
   assert.equal(v[24], 0.5, 'airborne rides at index 24');
   assert.equal(v[25], 0.3, 'farLedge rides at index 25');
   assert.equal(v[26], 0, 'submerged rides at index 26');
@@ -3744,7 +3746,7 @@ test('v0.18: the brain takes 33 inputs; the realms senses land at 28–31', () =
   assert.equal(v[35], 0, 'creatureSize rides at index 35'); // v0.22 — unset here
   assert.equal(v[36], 0, 'phaseSleepiness rides at index 36'); // v0.28 — unset here
   assert.equal(v[37], 0, 'pain rides at index 37'); // v0.32 — unset here
-  assert.equal(v[38], 1, 'bias still last');
+  assert.equal(v[43], 1, 'bias still last'); // v0.37: 43 senses + bias
 });
 
 test('v0.17: the founder body plan is the legacy animal', () => {
@@ -4659,13 +4661,18 @@ test('v0.20: the falling sense is quiet on the branch, live in a real fall', () 
 });
 
 test('v0.20: senseVector carries falling at index 34; N_IN is 38', () => {
-  assert.equal(N_IN, 39, '38 senses + bias'); // v0.32: +pain
+  assert.equal(N_IN, 44, '43 senses + bias'); // v0.37: +5 affect senses
   const v = senseVector({ falling: 0.7, creatureSize: -0.4 });
-  assert.equal(v.length, 39);
+  assert.equal(v.length, 44);
   assert.equal(v[34], 0.7, 'falling sits at index 34 — appended, never renumbered');
   assert.equal(v[35], -0.4, 'creatureSize sits at index 35 — appended, never renumbered');
   assert.equal(v[36], 0, 'phaseSleepiness sits at index 36 — appended, never renumbered'); // v0.28
   assert.equal(v[37], 0, 'pain sits at index 37 — appended, never renumbered'); // v0.32
+  assert.equal(v[38], 0, 'libido sits at index 38 — appended, never renumbered'); // v0.37
+  assert.equal(v[39], 0, 'curiosity sits at index 39 — appended, never renumbered'); // v0.37
+  assert.equal(v[40], 0, 'attachment sits at index 40 — appended, never renumbered'); // v0.37
+  assert.equal(v[41], 0, 'care sits at index 41 — appended, never renumbered'); // v0.37
+  assert.equal(v[42], 0, 'pairNear sits at index 42 — appended, never renumbered'); // v0.37
   assert.equal(v[38], 1, 'bias still last');
 });
 

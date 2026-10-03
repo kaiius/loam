@@ -34,6 +34,8 @@ const NOTABLE = new Set([
   'hatch', 'death', 'mating', 'speciation', 'traditionFounded',
   'traditionAdopted', 'epimark', 'novelGenome', 'beautifulMutant', 'seedDispersed',
   'soilRich', 'strandedFall', // v0.20 "Falling": a canopy-to-floor fall is an event
+  'grieved', 'kindChanged', // v0.37 "Affect": grief names the mourners; kind
+  // transitions are the world's tracked emergence (Joshua 2026-10-02)
 ]);
 
 const dayOf = (t) => `Day ${Math.floor((t || 0) / DAY_LENGTH) + 1}`;

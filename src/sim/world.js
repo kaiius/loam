@@ -15,7 +15,7 @@ import { rollLayout, canonicalLayout, computeClimbLinks, findRegion, ZONE_KEYS }
 export { BIOMES, biomeAt, biomeKeyAt, biomeCenterX, ambientCold, ambientHeat, ambientTemp, waterAt, waterDepthAt, waterRects, groundYAt, floraFor, WORLD_W, WORLD_H };
 import { ageStage } from './biochem.js';
 import { createCulture, sampleCulture, pruneExtinct, adoptTradition, fidelityOf } from './culture.js';
-import { createBonds, tickBonds, detectTribes, nudgeBond } from './social.js';
+import { createBonds, tickBonds, detectTribes, nudgeBond, createPairBonds, tickPairBonds, tickKindHistory, getPairBond, nudgePairBond, halvePairBond, getBond } from './social.js';
 import { createTeacher, tickTeacher, teacherDemo } from './teacher.js';
 import { sizePitchFactor, hearThresh, baseLoud, pushUtterance, acousticDistance, lexiconDistance, wordName, LEX_CONTEXTS, pushContextWindow } from './language.js';
 import { tickMicrobes, decompMultiplier, sterilizeZone, bacteriaOf, BACT_FOUNDER } from './microbes.js';
@@ -88,6 +88,8 @@ export function createWorld(seed = 1, opts = {}) {
     culture: createCulture(), // v0.7: the tradition registry — inheritance that isn't DNA
     lineage: new Map(), // v0.10: every creature ever born — { id: { id, name, parents, generation, bornAt, traits } }. Dead ancestors stay resolvable for the lineage view.
     bonds: createBonds(), // v0.12: pairwise social bonds — memory, not genetics
+    pairBonds: createPairBonds(), // v0.37 "Affect": specific attachment (vasopressin) — the vole steal
+    kindHistory: new Map(), // v0.37: tracked emergence (Joshua 2026-10-02) — per-dyad last-known kind + t
     tribes: [], // v0.12: detected bands (recomputed periodically, never assigned)
     exam: null, // v0.8: exam mode — { patches:[{x1,x2}], hot, hotInterval, coldInterval } | null
     onMeal: null, // v0.8: opt-in telemetry hooks for the exam harness (unset in play)
@@ -110,6 +112,13 @@ export function createWorld(seed = 1, opts = {}) {
     // current field itself is pure geometry (no draws — worldgen order is
     // load-bearing).
     disperseRng: createRng((seed * 7919 + 35) >>> 0),
+    // v0.37 "Affect": the new affect loci mutate on their own sub-stream
+    // (salt 55 — 17 pebbles, 35 dispersal, 55 affect). Used ONLY for
+    // mutation draws on AFFECT_LOCI (genome.js) — the main sequence never
+    // sees these draws. The chemistry itself is analytic (zero per-tick
+    // draws); the vasopressin-gated mate preference and display priming
+    // are causal but draw-free.
+    affectRng: createRng((seed * 7919 + 55) >>> 0),
     driftSeeds: [], // v0.35 hydrochory: seeds riding the water [{x, y, ...}]
     currents: buildCurrents(layout), // v0.35: per-water-body current field
     // v0.13 "Roots":
@@ -806,7 +815,9 @@ export function tryMate(a, b) {
   const lexD = lexiconDistance(mom.lexicon, dad.lexicon);
   const parentDist = genomeDistance(mom.genome, dad.genome) + 0.35 * lexD;
   for (let i = 0; i < nEggs; i++) {
-    const eg = inherit(mom.genome, dad.genome, world.rng);
+    // v0.37 "Affect": the new affect loci mutate on their own sub-stream
+    // (world.affectRng, salt 55) — the main sequence never sees those draws.
+    const eg = inherit(mom.genome, dad.genome, world.rng, undefined, world.affectRng);
     // v0.14: gene duplication/deletion events enter the world's record —
     // the evolution tracker marks them on the timeline.
     for (const e of eg.dupLog || []) {
@@ -817,12 +828,39 @@ export function tryMate(a, b) {
     mom.children.push('egg');
     dad.children.push('egg');
   }
+  mom._gaveBirth = true; // v0.37 "Affect": the prolactin event — birth spikes parental care
   a.mateCooldown = 90;
   b.mateCooldown = 90;
   a.reward += 0.8;
   b.reward += 0.8;
   // v0.12: mating forms a pair bond — the strongest positive bond event.
   nudgeBond(world, a, b, 0.4);
+  // v0.37 "Affect": the vasopressin pair-bond. Mating the SAME partner
+  // strengthens the specific bond (+0.3); mating a DIFFERENT partner while
+  // pair-bonded elsewhere halves the strongest existing pair bond
+  // (infidelity's price — design §8d) and flags the chemistry for the
+  // vasopressin penalty. The mated flags feed tickBiochem (sexHormone
+  // refractory drop, vasopressin rise).
+  for (const [self, other] of [[a, b], [b, a]]) {
+    let bondedElsewhere = false;
+    if (world.pairBonds) {
+      for (const [k, e] of world.pairBonds) {
+        const [ia, ib] = k.split('-').map(Number);
+        const involves = ia === self.id || ib === self.id;
+        const isThisPair = (ia === self.id && ib === other.id) || (ia === other.id && ib === self.id);
+        if (involves && !isThisPair && e.v > 0.3) { bondedElsewhere = true; break; }
+      }
+    }
+    if (bondedElsewhere) {
+      halvePairBond(world, self);
+      self._matedInfidelity = true;
+    } else {
+      self._matedInfidelity = false;
+    }
+    nudgePairBond(world, self, other, 0.3);
+    self._mated = true; // consumed by tickBiochem (refractory), cleared in updateCreature
+    self._matedPartner = other;
+  }
   // v0.13: beautiful-mutant watch — a novel-genome parent that reproduces
   // proved its combination. Reproduction is the only fitness that counts.
   for (const p of [mom, dad]) {
@@ -914,6 +952,33 @@ export function noteDeath(world, c, cause) {
   world.events.push({ type: 'death', creature: c, t: world.time, cause });
   const rec = world.lineage.get(c.id);
   if (rec) { rec.diedAt = world.time; rec.cause = cause; }
+  // v0.37 "Affect": grief — bond rupture as sustained stress (design §3.2).
+  // Every living creature with bond > 0.5 to the dead one (or a pair bond
+  // of any strength) receives the grief event: adrenaline +0.8 (shock),
+  // oxytocin −0.4 (the hole), serotonin −0.15 (the mark), and the grief
+  // timer (griefTime locus, ~1 day). The dead are pruned from world.bonds
+  // by tickBonds; grief reads the EVENT, not the map. Multiple losses
+  // stack the serotonin marks — a creature that loses its whole troop can
+  // slide into the depressed regime through grief alone (the honest causal
+  // chain, not a scripted tragedy). No phenomenal claim: this is a stress
+  // response with the dynamics of rupture, not felt loss (design §9).
+  if (world.bonds || world.pairBonds) {
+    for (const o of world.creatures) {
+      if (!o.alive || o.id === c.id) continue;
+      const bond = world.bonds ? getBond(world.bonds, o, c) : 0;
+      const pair = getPairBond(world.pairBonds, o, c);
+      if (bond > 0.5 || pair > 0.05) {
+        const ob = o.biochem;
+        ob.adrenaline = Math.max(0, Math.min(1, ob.adrenaline + 0.8));
+        ob.oxytocin = Math.max(0, Math.min(1, ob.oxytocin - 0.4));
+        ob.serotonin = Math.max(0, Math.min(1, ob.serotonin - 0.15));
+        o.griefT = (0.5 + (o.pheno.griefTime ?? 0.5)) * 86400; // ~1 day of world time
+        o.griefX = c.x; // the death site — the mourn verb goes here
+        o.griefPlatform = c.platformIndex;
+        world.events.push({ type: 'grieved', mourner: o.id, dead: c.id, t: world.time });
+      }
+    }
+  }
   releaseBodyMass(world, c); // v0.24: gut spills, held tools drop — nothing vanishes with the body
   // v0.18 §13.4: the dead leave a corpse at the death position — edible via
   // eat (scavenging is possible from v0.18; predation is not scripted).
@@ -2157,6 +2222,10 @@ export function tickWorld(world, dt) {
   // v0.12: bond dynamics run on the fresh positions — familiarity,
   // play-together, decay, and pruning of the dead.
   tickBonds(world, dt);
+  // v0.37 "Affect": pair-bond dynamics (vasopressin map) and tracked
+  // emergence — kind transitions per dyad, chronicle events on change.
+  tickPairBonds(world, dt);
+  tickKindHistory(world);
   // v0.12: tribe detection every 60 sim-seconds — bands are detected,
   // never assigned.
   if (Math.floor(world.time / 60) !== Math.floor((world.time - dt) / 60)) {

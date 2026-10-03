@@ -18,7 +18,7 @@ import {
 // --- the locus ---------------------------------------------------------------
 
 test('v0.30: speciesTag locus exists — choice over the species keys, on the morphology chromosome', () => {
-  assert.equal(GENES.length, 239, 'v0.32: 233 + six nerve loci');
+  assert.equal(GENES.length, 257, 'v0.37: 239 + 18 affect loci');
   const g = GENES.find((x) => x.key === 'speciesTag');
   assert.ok(g, 'speciesTag in GENES');
   assert.equal(g.kind, 'choice');
