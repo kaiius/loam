@@ -210,7 +210,7 @@ test('v0.18: index contract — N_IN 39, N_OUT 24, append-only', () => {
   assert.equal(ACT20[21], 'carry'); // v0.20
   assert.equal(ACT20[22], 'drop'); // v0.20
   const v = senseVector({ thirst: 0.7, cold: 0.1, heat: 0, buriedNear: 0.4 });
-  assert.equal(v.length, 39, '38 senses + bias'); // v0.32: +pain
+  assert.equal(v.length, 44, '43 senses + bias'); // v0.37: +5 affect senses
   assert.equal(v[28], 0.7, 'thirst rides at index 28');
   assert.equal(v[29], 0.1, 'cold rides at index 29');
   assert.equal(v[30], 0, 'heat rides at index 30');

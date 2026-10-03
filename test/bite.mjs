@@ -95,6 +95,10 @@ test('v0.22.1: biting is billed — exertion set, blood sugar drains faster than
   const sleeper = mkIdle('sleep');
   for (let t = 0; t < 120; t++) {
     biter.action = 'bite'; biter.actionTimer = 100000; // re-force: miss resets the timer
+    // v0.37: re-force sleep too — the woken sleeper's brain now has 5 new
+    // affect senses, so its post-wake action choice differs from v0.36.
+    // The test isolates activity cost, not action selection.
+    sleeper.action = 'sleep'; sleeper.actionTimer = 100000; sleeper.sleeping = true;
     tickWorld(w2, 0.1);
   }
   assert.ok(biter.biochem.bloodSugar < sleeper.biochem.bloodSugar,

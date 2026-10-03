@@ -66,7 +66,7 @@ test('v0.32: one new sense — pain at index 37, N_IN 39', () => {
   s.phaseSleepiness = 0.7;
   s.pain = 0.9;
   const v = senseVector(s);
-  assert.equal(v.length, 39);
+  assert.equal(v.length, 44); // v0.37: 43 senses + bias
   assert.equal(v[36], 0.7);
   assert.equal(v[37], 0.9);
   assert.equal(v[38], 1); // bias

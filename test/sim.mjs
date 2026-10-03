@@ -1193,7 +1193,12 @@ test('v0.8: illness is the 15th brain input', () => {
   assert.equal(v[35], 0, 'creatureSize defaults to 0'); // v0.22 "Web of Life"
   assert.equal(v[36], 0, 'phaseSleepiness defaults to 0'); // v0.28 "Day and night"
   assert.equal(v[37], 0, 'pain defaults to 0'); // v0.32 "Nervous system"
-  assert.equal(v[38], 1, 'bias still last');
+  assert.equal(v[38], 0, 'libido defaults to 0'); // v0.37 "Affect"
+  assert.equal(v[39], 0, 'curiosity defaults to 0'); // v0.37
+  assert.equal(v[40], 0, 'attachment defaults to 0'); // v0.37
+  assert.equal(v[41], 0, 'care defaults to 0'); // v0.37
+  assert.equal(v[42], 0, 'pairNear defaults to 0'); // v0.37
+  assert.equal(v[43], 1, 'bias still last'); // v0.37: 43 senses + bias
 });
 
 test('v0.8: the illness instinct points at food-seeking', () => {
@@ -4673,7 +4678,7 @@ test('v0.20: senseVector carries falling at index 34; N_IN is 38', () => {
   assert.equal(v[40], 0, 'attachment sits at index 40 — appended, never renumbered'); // v0.37
   assert.equal(v[41], 0, 'care sits at index 41 — appended, never renumbered'); // v0.37
   assert.equal(v[42], 0, 'pairNear sits at index 42 — appended, never renumbered'); // v0.37
-  assert.equal(v[38], 1, 'bias still last');
+  assert.equal(v[43], 1, 'bias still last'); // v0.37: 43 senses + bias
 });
 
 test('v0.20: a long fall raises fear mid-air — felt before the landing', () => {

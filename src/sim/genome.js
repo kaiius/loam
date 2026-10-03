@@ -743,6 +743,7 @@ const PIN_SALT_SEASONS = 0x27; // v0.27 seasons pass (pantCapacity)
 const PIN_SALT_DAYNIGHT = 0x28; // v0.28 day/night pass (activityPhase, instPhaseSleep)
 const PIN_SALT_SPECIES30 = 0x30; // v0.30 species pass (speciesTag)
 const PIN_SALT_NERVES32 = 0x32; // v0.32 nervous-system pass
+const PIN_SALT_AFFECT37 = 0x37; // v0.37 affect pass
 export function randomGenome(rng, opts = {}) {
   // opts.pinSub (number): when set, the language (v0.16), evo-devo (v0.17),
   // realms (v0.18), hands/falling (v0.20), web-of-life (v0.22) and seasons
@@ -796,7 +797,9 @@ export function randomGenome(rng, opts = {}) {
   const isNew28 = (k) => DAYNIGHT28_KEYS.has(k);
   const isNew30 = (k) => SPECIES30_KEYS.has(k);
   const isNew32 = (k) => NERVES32_KEYS.has(k);
-  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k) || isNew30(k) || isNew32(k);
+  const isNew37 = (k) => AFFECT_LOCI.has(k);
+
+  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k) || isNew30(k) || isNew32(k) || isNew37(k);
   for (const gene of GENES) {
     if (gene.key.startsWith('lex') || isNewer(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
@@ -826,7 +829,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h3 = 0x18ea1d;
   for (const gene of GENES) {
-    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
+    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
     for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
   }
   const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
@@ -842,7 +845,7 @@ export function randomGenome(rng, opts = {}) {
   // falling gene draws after the hands genes, deterministically.
   let h4 = 0x20a05;
   for (const gene of GENES) {
-    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
+    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
     for (const a of alleles[gene.key]) h4 = (Math.imul(h4, 31) + Math.floor(a * 1e9)) | 0;
   }
   const handsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_HANDS) : h4 >>> 0);
@@ -855,7 +858,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h5 = 0x22022;
   for (const gene of GENES) {
-    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
+    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
     for (const a of alleles[gene.key]) h5 = (Math.imul(h5, 31) + Math.floor(a * 1e9)) | 0;
   }
   const web22Rng = createRng(pinned ? hashPin(pinSub, PIN_SALT_WEB22) : h5 >>> 0);
@@ -868,7 +871,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h6 = 0x27027;
   for (const gene of GENES) {
-    if (isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
+    if (isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
     for (const a of alleles[gene.key]) h6 = (Math.imul(h6, 31) + Math.floor(a * 1e9)) | 0;
   }
   const seasonsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SEASONS) : h6 >>> 0);
@@ -881,7 +884,7 @@ export function randomGenome(rng, opts = {}) {
   // own sub-stream in pass 7 — new loci never shift the main RNG sequence.
   let h7 = 0x28028;
   for (const gene of GENES) {
-    if (isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key)) continue;
+    if (isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
     for (const a of alleles[gene.key]) h7 = (Math.imul(h7, 31) + Math.floor(a * 1e9)) | 0;
   }
   const daynightRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_DAYNIGHT) : h7 >>> 0);
@@ -895,7 +898,7 @@ export function randomGenome(rng, opts = {}) {
   // pass stays bit-identical to v0.29.
   let h8 = 0x30030;
   for (const gene of GENES) {
-    if (isNew30(gene.key) || isNew32(gene.key)) continue;
+    if (isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
     for (const a of alleles[gene.key]) h8 = (Math.imul(h8, 31) + Math.floor(a * 1e9)) | 0;
   }
   const speciesRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SPECIES30) : h8 >>> 0);
@@ -909,13 +912,27 @@ export function randomGenome(rng, opts = {}) {
   // pass stays bit-identical to v0.31.
   let h9 = 0x32032;
   for (const gene of GENES) {
-    if (isNew32(gene.key)) continue;
+    if (isNew32(gene.key) || isNew37(gene.key)) continue;
     for (const a of alleles[gene.key]) h9 = (Math.imul(h9, 31) + Math.floor(a * 1e9)) | 0;
   }
   const nervesRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_NERVES32) : h9 >>> 0);
   for (const gene of GENES) {
     if (!isNew32(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, nervesRng), randomAllele(gene, nervesRng)];
+    marks[gene.key] = 1.0;
+  }
+  // v0.37 "Affect": the emotion loci (drives, rates, 6 verb instincts) draw
+  // from their own sub-stream in pass 10 — new loci never shift the main
+  // RNG sequence. Every earlier pass stays bit-identical to v0.36.
+  let h10 = 0x37037;
+  for (const gene of GENES) {
+    if (isNew37(gene.key)) continue;
+    for (const a of alleles[gene.key]) h10 = (Math.imul(h10, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const affectInitRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_AFFECT37) : h10 >>> 0);
+  for (const gene of GENES) {
+    if (!isNew37(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, affectInitRng), randomAllele(gene, affectInitRng)];
     marks[gene.key] = 1.0;
   }
   // v0.18: allele overrides — applied after the draws, so a sweep can pin

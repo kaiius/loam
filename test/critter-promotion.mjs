@@ -92,7 +92,10 @@ test('v0.22.2: world.critters is retired — the field is gone', () => {
 test('v0.22.2: genesis grows 6 flutters + 8 grubs on the one engine', () => {
   const world = bindWorld(createWorld(117));
   populateGenesis(world);
-  const flutters = world.creatures.filter((c) => isPromotedLineage(c) && c.pheno.bodyHue > 0.85);
+  // v0.37: filter by the species overrides (exact), not the loose
+  // isPromotedLineage heuristic — a tanglekin founder can match the
+  // heuristic's size/hue bands without being a promoted flutter.
+  const flutters = world.creatures.filter((c) => c.pheno.bodyHue === 0.92 && c.pheno.size === 0.12);
   const grubs = world.creatures.filter((c) => isPromotedLineage(c) && c.pheno.bodyHue < 0.15);
   assert.equal(flutters.length, 6, 'six flutters');
   assert.equal(grubs.length, 8, 'eight grubs');
