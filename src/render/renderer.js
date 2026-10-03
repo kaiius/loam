@@ -229,12 +229,28 @@ export function render(r, world, ui, t) {
     ctx.restore();
   }
 
-  // Combo pass: platforms are branches now — tapered organic limbs with
-  // bark, moss caps, and twig offshoots. Same geometry (creatures stand at
-  // pl.y); only the paint changed.
+  // Structural rethink (v0.38): the congruent world. Ground is ONE
+  // continuous silhouette (not platform rectangles); trees are trunks with
+  // branch limbs; cliffs are rock faces with ledges. The sim's platform
+  // geometry is untouched — this is all presentation.
+  const layout = world.layout;
+  if (layout) {
+    drawContinuousGround(ctx, r, world, B, light, t);
+    // Trees behind branches; cliffs behind shelves.
+    for (const tree of (layout.trees || [])) drawTreeTrunk(ctx, r, world, tree, t, light);
+    for (const cliff of (layout.cliffs || [])) drawCliffFace(ctx, r, world, cliff, t, light);
+  }
+  // Platforms: 'ground' kind is covered by the continuous silhouette —
+  // creatures still walk on its geometry, but we don't paint it twice.
+  // 'rock'/'ridge' are solid masses: draw as grounded formations, not slabs.
   for (const pl of world.platforms) {
     if (pl.kind === 'floe') {
       drawDriftwood(ctx, pl, light);
+      continue;
+    }
+    if (pl.kind === 'ground') continue;
+    if (pl.kind === 'rock' || pl.kind === 'ridge') {
+      drawRockFormation(ctx, r, world, pl, t, light);
       continue;
     }
     drawBranch(ctx, pl, t, light);
@@ -647,6 +663,296 @@ function drawDriftwood(ctx, pl, light) {
   ctx.quadraticCurveTo(pl.x1 + pw * 0.5, pl.y + 7, pl.x2, pl.y + 2);
   ctx.stroke();
 }
+
+// --- Structural rethink (v0.38): the congruent world ---
+// Ground is ONE continuous terrain silhouette (not platform rectangles).
+// Trees are trunks rising from the ground through their branch tiers.
+// Cliffs are rock faces with ledges. All drawn from layout metadata;
+// the sim's platform interface is untouched.
+
+// Continuous ground: filled silhouette from the terrain elevation field,
+// tinted per biome column. Null columns (open water) are skipped — water
+// is drawn separately. NOTE: the ctx is already translated+scaled to WORLD
+// coordinates by the caller — draw in world units, not screen units.
+function drawContinuousGround(ctx, r, world, B, light, t) {
+  const layout = world.layout;
+  if (!layout || !layout.ground) return;
+  const ground = layout.ground;
+  const TERRAIN_COL = 20;
+  const H = world.height;
+  const W = world.width;
+  // Per-biome ground tints (dark soil tones that read as earth, not wash).
+  const TINTS = {
+    jungle: [46, 72, 44], mountains: [88, 86, 92], arctic: [210, 225, 235],
+    plains: [104, 128, 72], desert: [198, 168, 112], shallows: [64, 96, 92],
+    archipelago: [168, 148, 104], deep: [20, 40, 70],
+  };
+  ctx.save();
+  // Build runs of contiguous non-null columns.
+  let run = null;
+  const flush = () => {
+    if (!run || run.pts.length < 2) { run = null; return; }
+    // Biome tint from the run's midpoint.
+    let key = 'plains';
+    try { key = B.biomeKeyAt((run.x0 + run.x1) / 2, H * 0.6, world) || 'plains'; } catch (e) {}
+    const tint = TINTS[key] || TINTS.plains;
+    ctx.beginPath();
+    ctx.moveTo(run.pts[0][0], run.pts[0][1]);
+    for (let i = 1; i < run.pts.length; i++) ctx.lineTo(run.pts[i][0], run.pts[i][1]);
+    // Down to the bottom and back.
+    ctx.lineTo(run.x1, H + 100);
+    ctx.lineTo(run.x0, H + 100);
+    ctx.closePath();
+    // Vertical gradient: lit surface → dark depth.
+    const g = ctx.createLinearGradient(0, run.topY, 0, H);
+    g.addColorStop(0, rgb(mix(tint, [255, 255, 255], 0.25 * light)));
+    g.addColorStop(0.3, rgb(tint));
+    g.addColorStop(1, rgb(mix(tint, [0, 0, 0], 0.55)));
+    ctx.fillStyle = g;
+    ctx.fill();
+    // Lit top edge — the ground line reads crisply.
+    ctx.strokeStyle = rgb(mix(tint, [255, 255, 255], 0.45 * light));
+    ctx.lineWidth = 2.5 / r.scale;
+    ctx.beginPath();
+    ctx.moveTo(run.pts[0][0], run.pts[0][1]);
+    for (let i = 1; i < run.pts.length; i++) ctx.lineTo(run.pts[i][0], run.pts[i][1]);
+    ctx.stroke();
+    run = null;
+  };
+  for (let i = 0; i < ground.length; i++) {
+    const gv = ground[i];
+    if (gv === null || gv === undefined) { flush(); continue; }
+    const x = (i + 0.5) * TERRAIN_COL;
+    if (x > W) { flush(); continue; }
+    if (!run) run = { x0: x - TERRAIN_COL / 2, x1: x + TERRAIN_COL / 2, pts: [], topY: gv };
+    run.x1 = x + TERRAIN_COL / 2;
+    if (gv < run.topY) run.topY = gv;
+    run.pts.push([x, gv]);
+  }
+  flush();
+  ctx.restore();
+}
+
+// A tree: tapered trunk from baseY to topY at tree.x, with root flare.
+// Branches (drawn separately as limbs) belong to it via branchPis.
+// World coordinates (ctx already transformed).
+function drawTreeTrunk(ctx, r, world, tree, t, light) {
+  const label = tree.label || 'jungle';
+  const isPalm = label === 'palm';
+  const isMangrove = label === 'mangrove';
+  const x0 = tree.x, y0 = tree.baseY;
+  const x1 = tree.x, y1 = tree.topY;
+  const h = y0 - y1;
+  if (h < 4) return;
+  const baseW = isPalm ? 10 : 16;
+  const topW = baseW * 0.35;
+  // Slight organic lean (deterministic from tree x).
+  const lean = Math.sin(tree.x * 0.013) * h * 0.06;
+  const barkD = isMangrove ? rgb(mix([40, 34, 30], [96, 78, 60], light))
+    : isPalm ? rgb(mix([58, 48, 36], [134, 112, 80], light))
+    : rgb(mix([34, 28, 42], [92, 70, 50], light));
+  const barkL = isMangrove ? rgb(mix([52, 44, 38], [120, 100, 78], light))
+    : isPalm ? rgb(mix([72, 60, 46], [158, 134, 98], light))
+    : rgb(mix([48, 40, 54], [124, 98, 68], light));
+  ctx.save();
+  // Trunk body (tapered).
+  ctx.fillStyle = barkD;
+  ctx.beginPath();
+  ctx.moveTo(x0 - baseW, y0);
+  ctx.quadraticCurveTo(x0 - baseW * 0.7 + lean * 0.4, (y0 + y1) / 2, x1 - topW + lean, y1);
+  ctx.lineTo(x1 + topW + lean, y1);
+  ctx.quadraticCurveTo(x0 + baseW * 0.7 + lean * 0.4, (y0 + y1) / 2, x0 + baseW, y0);
+  ctx.closePath();
+  ctx.fill();
+  // Lit edge.
+  ctx.fillStyle = barkL;
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath();
+  ctx.moveTo(x0 - baseW, y0);
+  ctx.quadraticCurveTo(x0 - baseW * 0.7 + lean * 0.4, (y0 + y1) / 2, x1 - topW + lean, y1);
+  ctx.lineTo(x1 - topW * 0.2 + lean, y1);
+  ctx.quadraticCurveTo(x0 - baseW * 0.35 + lean * 0.4, (y0 + y1) / 2, x0 - baseW * 0.45, y0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  // Root flare.
+  ctx.fillStyle = barkD;
+  ctx.beginPath();
+  ctx.ellipse(x0, y0 + 2, baseW * 1.5, baseW * 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Mangrove prop roots.
+  if (isMangrove) {
+    ctx.strokeStyle = barkD;
+    ctx.lineWidth = 3 / r.scale;
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(x0 + s * baseW * 0.5, y0 - h * 0.25);
+      ctx.quadraticCurveTo(x0 + s * baseW * 2.2, y0 - h * 0.08, x0 + s * baseW * 2.6, y0 + 4);
+      ctx.stroke();
+    }
+  }
+  // Limbs: connect the trunk to each branch platform. Branches drift from
+  // the trunk x (seeded placement), so draw the limb explicitly — the
+  // canopy reads as one organism, not floating slabs.
+  const plats = world.platforms;
+  if (plats && tree.branchPis) {
+    ctx.strokeStyle = barkD;
+    ctx.lineCap = 'round';
+    for (const pi of tree.branchPis) {
+      const pl = plats[pi];
+      if (!pl) continue;
+      const bx = (pl.x1 + pl.x2) / 2;
+      const by = pl.y + 8; // branch underside
+      // Limb from trunk (at branch height) to branch center.
+      const tx = x0 + lean * ((y0 - by) / h);
+      const lw = 7 * (1 - (y0 - by) / (h * 1.4));
+      ctx.lineWidth = Math.max(3 / r.scale, lw);
+      ctx.beginPath();
+      ctx.moveTo(tx, by - 4);
+      ctx.quadraticCurveTo((tx + bx) / 2, by - 2, bx, by);
+      ctx.stroke();
+      // Canopy foliage: leaf clusters along the branch so it reads as a
+      // tree crown, not a slab. Deterministic from branch position.
+      const frnd = hashSeed(((pl.x1 | 0) * 31 + (pl.y | 0) * 57) | 0 || 1);
+      const leafD = rgb(mix([36, 72, 40], [74, 138, 70], light));
+      const leafL = rgb(mix([52, 96, 54], [104, 176, 96], light));
+      const nLeaf = Math.max(3, Math.floor((pl.x2 - pl.x1) / 90));
+      for (let li = 0; li < nLeaf; li++) {
+        const lx = pl.x1 + (li + 0.5) / nLeaf * (pl.x2 - pl.x1) + (frnd() - 0.5) * 30;
+        const ly = pl.y - 14 - frnd() * 26;
+        const lr = 13 + frnd() * 10;
+        ctx.fillStyle = frnd() > 0.5 ? leafD : leafL;
+        ctx.globalAlpha = 0.92;
+        ctx.beginPath();
+        ctx.ellipse(lx, ly, lr, lr * 0.72, (frnd() - 0.5) * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.restore();
+}
+
+// A rock/ridge: solid mass from its top surface down to the terrain.
+// The sim treats it as solid for acoustics; visually it's a grounded
+// formation, not a floating slab. World coordinates.
+function drawRockFormation(ctx, r, world, pl, t, light) {
+  const layout = world.layout;
+  const x1 = pl.x1, x2 = pl.x2, yTop = pl.y;
+  // Find terrain below the rock's center.
+  let yBot = yTop + 120;
+  if (layout && layout.ground) {
+    const TERRAIN_COL = 20;
+    const cx = (x1 + x2) / 2;
+    const gi = Math.max(0, Math.min(layout.ground.length - 1, Math.floor(cx / TERRAIN_COL)));
+    const g = layout.ground[gi];
+    if (g !== null && g !== undefined && g > yTop) yBot = g;
+  }
+  const isDesert = (pl.zone || '') === 'desert';
+  const rockD = isDesert ? rgb(mix([150, 120, 84], [210, 180, 130], light))
+    : rgb(mix([88, 86, 92], [140, 136, 132], light));
+  const rockL = isDesert ? rgb(mix([170, 140, 100], [228, 200, 150], light))
+    : rgb(mix([110, 108, 114], [164, 160, 156], light));
+  const jag = (f) => Math.sin(x1 * 0.07 + f * 1.7) * 10;
+  ctx.save();
+  // Mass: top surface at pl.y, tapering down to the terrain.
+  const wTop = (x2 - x1) / 2;
+  const wBot = wTop * 1.35;
+  const cx = (x1 + x2) / 2;
+  ctx.fillStyle = rockD;
+  ctx.beginPath();
+  ctx.moveTo(x1 + jag(0), yTop);
+  ctx.lineTo(x2 + jag(1), yTop);
+  ctx.lineTo(cx + wBot + jag(2), yBot);
+  ctx.lineTo(cx - wBot + jag(3), yBot);
+  ctx.closePath();
+  ctx.fill();
+  // Lit top.
+  ctx.fillStyle = rockL;
+  ctx.beginPath();
+  ctx.moveTo(x1 + jag(0), yTop);
+  ctx.lineTo(x2 + jag(1), yTop);
+  ctx.lineTo(x2 - 8 + jag(1), yTop + 10);
+  ctx.lineTo(x1 + 8 + jag(0), yTop + 10);
+  ctx.closePath();
+  ctx.fill();
+  // Strata.
+  ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+  ctx.lineWidth = 1.5 / r.scale;
+  const h = yBot - yTop;
+  const nS = Math.max(1, Math.floor(h / 50));
+  for (let i = 1; i <= nS; i++) {
+    const yy = yTop + (h * i) / (nS + 1);
+    const ww = wTop + (wBot - wTop) * (i / (nS + 1));
+    ctx.beginPath();
+    ctx.moveTo(cx - ww + jag(i + 4), yy);
+    ctx.quadraticCurveTo(cx, yy + 5, cx + ww + jag(i + 7), yy);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// A cliff: rock face from baseY to topY spanning its shelves' x-range,
+// shelves drawn as ledges jutting from it. World coordinates.
+function drawCliffFace(ctx, r, world, cliff, t, light) {
+  const plats = world.platforms;
+  // X-range: cover all shelves in this cliff.
+  let x0 = cliff.x - 26, x1 = cliff.x + 26;
+  if (plats && cliff.shelfPis) {
+    for (const pi of cliff.shelfPis) {
+      const pl = plats[pi];
+      if (!pl) continue;
+      if (pl.x1 < x0) x0 = pl.x1;
+      if (pl.x2 > x1) x1 = pl.x2;
+    }
+  }
+  const y0 = cliff.baseY, y1 = cliff.topY;
+  const h = y0 - y1;
+  if (h < 8) return;
+  const cx = (x0 + x1) / 2;
+  const wTop = (x1 - x0) / 2;
+  const wBase = wTop * 1.25;
+  const rocky = (cliff.label || '') === 'arctic';
+  const rockD = rocky ? rgb(mix([140, 150, 165], [200, 210, 225], light))
+    : rgb(mix([70, 66, 72], [130, 124, 118], light));
+  const rockL = rocky ? rgb(mix([170, 180, 195], [225, 232, 240], light))
+    : rgb(mix([92, 88, 94], [158, 150, 142], light));
+  const jag = (f) => Math.sin(cx * 0.05 + f * 2.1) * 10;
+  ctx.save();
+  ctx.fillStyle = rockD;
+  ctx.beginPath();
+  ctx.moveTo(cx - wBase + jag(0), y0);
+  ctx.lineTo(cx - wTop + jag(3), y1);
+  ctx.lineTo(cx + wTop + jag(4), y1);
+  ctx.lineTo(cx + wBase + jag(1), y0);
+  ctx.closePath();
+  ctx.fill();
+  // Lit face.
+  ctx.fillStyle = rockL;
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(cx - wTop + jag(3), y1);
+  ctx.lineTo(cx - wTop * 0.3 + jag(5), y1);
+  ctx.lineTo(cx - wBase * 0.2 + jag(6), y0);
+  ctx.lineTo(cx - wBase + jag(0), y0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  // Strata lines.
+  ctx.strokeStyle = 'rgba(0,0,0,0.14)';
+  ctx.lineWidth = 1.5 / r.scale;
+  const nStrata = Math.max(2, Math.floor(h / 60));
+  for (let i = 1; i < nStrata; i++) {
+    const yy = y1 + (h * i) / nStrata;
+    const ww = wTop + (wBase - wTop) * (i / nStrata);
+    ctx.beginPath();
+    ctx.moveTo(cx - ww + jag(i), yy);
+    ctx.quadraticCurveTo(cx + jag(i + 9), yy + 4, cx + ww + jag(i + 3), yy);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 
 // Soft contact shadow under a creature — grounds it on the branch.
 function drawCreatureShadow(ctx, c, cy) {

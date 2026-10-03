@@ -368,7 +368,36 @@ function buildPlatforms(layout, gen, canonical) {
       byZone[f.zone].push(p);
     }
   }
-  return { platforms, byZone };
+  // Structural rethink (v0.38): derive trees for the canonical layout too —
+  // additive metadata only. Each branch joins the tree rooted at the ground
+  // platform below it with the most x-overlap (same zone).
+  const trees = [], cliffs = [];
+  const treeByGroundPi = new Map();
+  for (const p of platforms) {
+    if (p.kind !== 'branch') continue;
+    let best = null, bestOv = 0;
+    for (const g of platforms) {
+      if (g.kind !== 'ground' || g.zone !== p.zone) continue;
+      const ov = Math.min(p.x2, g.x2) - Math.max(p.x1, g.x1);
+      if (ov > bestOv) { bestOv = ov; best = g; }
+    }
+    if (!best || bestOv < 40) continue;
+    let ti = treeByGroundPi.get(best.pi);
+    if (ti === undefined) {
+      ti = trees.length;
+      trees.push({
+        x: Math.round((best.x1 + best.x2) / 2 * 10) / 10,
+        baseY: best.y, topY: p.y, branchPis: [],
+        regionId: -1, label: p.zone === 'shallows' ? 'mangrove' : p.zone === 'archipelago' ? 'palm' : 'jungle',
+      });
+      treeByGroundPi.set(best.pi, ti);
+    }
+    const t = trees[ti];
+    t.branchPis.push(p.pi);
+    if (p.y < t.topY) t.topY = p.y;
+    p.tree = ti;
+  }
+  return { platforms, byZone, trees, cliffs };
 }
 
 // The canonical layout: the painted world as a layout — zero noise, painted
@@ -387,9 +416,11 @@ export function canonicalLayout(size = 1) {
   };
   layout.ground = buildTerrain(0, size, zones, true);
   layout.waters = buildWaters(layout, null, true);
-  const { platforms, byZone } = buildPlatforms(layout, null, true);
+  const { platforms, byZone, trees, cliffs } = buildPlatforms(layout, null, true);
   layout.platforms = platforms;
   layout.platformsByZone = byZone;
+  layout.trees = trees || [];
+  layout.cliffs = cliffs || [];
   return layout;
 }
 
@@ -961,6 +992,24 @@ function groundSegmentsV2(layout, x0, x1) {
 function buildCanopyV2(layout, gen) {
   const platforms = [];
   const ground = layout.ground;
+  // Structural rethink (v0.38): trees and cliffs. Branches are no longer
+  // free-floating — each belongs to a TREE (trunk from ground through its
+  // branch tiers) or, on rock, to a CLIFF face (shelves as ledges). The
+  // platform interface is unchanged (x1/x2/y/kind/zone/pi); trees/cliffs are
+  // added metadata the renderer uses to draw a congruent world. No new RNG
+  // draws — trunk x positions derive from the existing anchor draws.
+  layout.trees = [];
+  layout.cliffs = [];
+  const newTree = (x, baseY, regionId, label) => {
+    const t = { x: Math.round(x * 10) / 10, baseY: Math.round(baseY), topY: Math.round(baseY), branchPis: [], regionId, label };
+    layout.trees.push(t);
+    return layout.trees.length - 1;
+  };
+  const extendTree = (ti, branchPi, branchY) => {
+    const t = layout.trees[ti];
+    t.branchPis.push(branchPi);
+    if (branchY < t.topY) t.topY = Math.round(branchY);
+  };
   const emit = (x1, x2, y, kind, regionId) => {
     const r = layout.regions[regionId];
     const p = {
@@ -1001,15 +1050,19 @@ function buildCanopyV2(layout, gen) {
   let fruitSlots = 0;
   if (frun) {
     const rx0 = frun.x0, rx1 = frun.x1;
-    // Tier 0: terrain-following ground segments.
+    // Tier 0: terrain-following ground segments. Each ground anchor starts
+    // a TREE — the trunk will rise from here through the branch tiers.
     const gsegs = groundSegmentsV2(layout, rx0, rx1);
     let anchors = [];
     for (const s of gsegs) {
       const p = emit(s.x1, s.x2, s.y, 'ground', founderRegionId);
       groundPis.push(p.pi);
-      anchors.push({ cx: (s.x1 + s.x2) / 2, x1: s.x1, x2: s.x2, y: s.y });
+      const cx = (s.x1 + s.x2) / 2;
+      const ti = newTree(cx, s.y, founderRegionId, 'jungle');
+      anchors.push({ cx, x1: s.x1, x2: s.x2, y: s.y, tree: ti });
     }
-    // 3 branch tiers; density matches the painted canopy.
+    // 3 branch tiers; density matches the painted canopy. Each branch joins
+    // its anchor's tree — the canopy IS the trees.
     const perTier = Math.min(4, 2 + Math.floor(frun.w / 600));
     for (let tier = 0; tier < 3 && anchors.length; tier++) {
       const next = [];
@@ -1017,9 +1070,11 @@ function buildCanopyV2(layout, gen) {
         const anchor = anchors[gen.int(0, anchors.length - 1)];
         const br = placeBranch(anchor, rx0, rx1, 120, 200);
         const p = emit(br.x1, br.x2, br.y, 'branch', founderRegionId);
+        p.tree = anchor.tree;
+        extendTree(anchor.tree, p.pi, br.y);
         branchPis.push(p.pi);
         fruitSlots += Math.ceil((br.x2 - br.x1) / 120);
-        next.push({ cx: br.cx, x1: br.x1, x2: br.x2, y: br.y });
+        next.push({ cx: br.cx, x1: br.x1, x2: br.x2, y: br.y, tree: anchor.tree });
       }
       anchors = next;
     }
@@ -1029,6 +1084,7 @@ function buildCanopyV2(layout, gen) {
     : null;
 
   // --- secondary canopies: other jungle regions ≥ 500px, 2 tiers × 2 ---
+  // Each a small grove — trees, not floating branches.
   for (const r of layout.regions) {
     if (r.label !== 'jungle' || r.id === founderRegionId) continue;
     if (r.x1 - r.x0 < 500) continue;
@@ -1036,7 +1092,9 @@ function buildCanopyV2(layout, gen) {
     let anchors = [];
     for (const s of gsegs) {
       const p = emit(s.x1, s.x2, s.y, 'ground', r.id);
-      anchors.push({ cx: (s.x1 + s.x2) / 2, x1: s.x1, x2: s.x2, y: s.y });
+      const cx = (s.x1 + s.x2) / 2;
+      const ti = newTree(cx, s.y, r.id, 'jungle');
+      anchors.push({ cx, x1: s.x1, x2: s.x2, y: s.y, tree: ti });
     }
     for (let tier = 0; tier < 2 && anchors.length; tier++) {
       const next = [];
@@ -1044,7 +1102,9 @@ function buildCanopyV2(layout, gen) {
         const anchor = anchors[gen.int(0, anchors.length - 1)];
         const br = placeBranch(anchor, r.x0, r.x1, 120, 200);
         const p = emit(br.x1, br.x2, br.y, 'branch', r.id);
-        next.push({ cx: br.cx, x1: br.x1, x2: br.x2, y: br.y });
+        p.tree = anchor.tree;
+        extendTree(anchor.tree, p.pi, br.y);
+        next.push({ cx: br.cx, x1: br.x1, x2: br.x2, y: br.y, tree: anchor.tree });
       }
       anchors = next;
     }
@@ -1071,17 +1131,35 @@ function buildCanopyV2(layout, gen) {
         emit(x - 100, x + 100, layout.ground[bi], 'ground', r.id);
       }
       if (w < 300) continue;
-      // 3 shelves on the steepest columns.
+      // 3 shelves on the steepest columns — ledges on a CLIFF face, not
+      // floating slabs. Shelves near each other in x share one rock face.
       const cols = [];
       const i0 = Math.floor(r.x0 / TERRAIN_COL), i1 = Math.ceil(r.x1 / TERRAIN_COL);
       for (let i = i0; i < i1; i++) cols.push(i);
       cols.sort((a, b) => layout.slope[b] - layout.slope[a]);
       const shelfPis = [];
+      const cliffByBucket = new Map();
       for (let k = 0; k < 3 && k < cols.length; k++) {
         const i = cols[k];
         const x = (i + 0.5) * TERRAIN_COL;
         const p = emit(x - 90, x + 90, ground[i] - 80 - 40 * k, 'shelf', r.id);
         shelfPis.push(p.pi);
+        // Cliff face: bucket by 200px so nearby shelves share rock.
+        const bucket = Math.round(x / 200);
+        let ci = cliffByBucket.get(bucket);
+        if (ci === undefined) {
+          ci = layout.cliffs.length;
+          layout.cliffs.push({
+            x: Math.round(x), topY: Math.round(p.y), baseY: Math.round(ground[i]),
+            shelfPis: [], regionId: r.id, label: r.label,
+          });
+          cliffByBucket.set(bucket, ci);
+        }
+        const c = layout.cliffs[ci];
+        c.shelfPis.push(p.pi);
+        if (p.y < c.topY) c.topY = Math.round(p.y);
+        if (ground[i] > c.baseY) c.baseY = Math.round(ground[i]);
+        p.cliff = ci;
       }
       // Deterministic repair pass: nudge any unlinked shelf's y toward the
       // nearest platform (links verified, not hoped).
@@ -1123,29 +1201,37 @@ function buildCanopyV2(layout, gen) {
         p.solid = true;
       }
     } else if (r.label === 'shallows') {
-      // Mangroves: seabed ground + branches constructed upward.
+      // Mangroves: trunks rising from the seabed, branches as canopy.
       const gsegs = groundSegmentsV2(layout, r.x0, r.x1);
       const anchors = [];
       for (const s of gsegs) {
         const p = emit(s.x1, s.x2, s.y, 'ground', r.id);
-        anchors.push({ cx: (s.x1 + s.x2) / 2, x1: s.x1, x2: s.x2, y: s.y });
+        const cx = (s.x1 + s.x2) / 2;
+        const ti = newTree(cx, s.y, r.id, 'mangrove');
+        anchors.push({ cx, x1: s.x1, x2: s.x2, y: s.y, tree: ti });
       }
       const nb = 2 + gen.int(0, 2);
       for (let k = 0; k < nb && anchors.length; k++) {
         const anchor = anchors[gen.int(0, anchors.length - 1)];
         const br = placeBranch(anchor, r.x0, r.x1, 120, 200);
-        emit(br.x1, br.x2, br.y, 'branch', r.id);
+        const p = emit(br.x1, br.x2, br.y, 'branch', r.id);
+        p.tree = anchor.tree;
+        extendTree(anchor.tree, p.pi, br.y);
       }
     } else if (r.label === 'archipelago') {
-      // Islands: 1 ground segment + 1–2 branches, constructive.
+      // Islands: a palm per island — single trunk, 1–2 frond branches.
       const gsegs = groundSegmentsV2(layout, r.x0, r.x1);
       for (const s of gsegs.slice(0, 1)) {
         const gp = emit(s.x1, s.x2, s.y, 'ground', r.id);
-        const anchor = { cx: (s.x1 + s.x2) / 2, x1: s.x1, x2: s.x2, y: s.y };
+        const cx = (s.x1 + s.x2) / 2;
+        const ti = newTree(cx, s.y, r.id, 'palm');
+        const anchor = { cx, x1: s.x1, x2: s.x2, y: s.y, tree: ti };
         const nb = 1 + gen.int(0, 1);
         for (let k = 0; k < nb; k++) {
           const br = placeBranch(anchor, r.x0, r.x1, 120, 180);
-          emit(br.x1, br.x2, br.y, 'branch', r.id);
+          const p = emit(br.x1, br.x2, br.y, 'branch', r.id);
+          p.tree = anchor.tree;
+          extendTree(anchor.tree, p.pi, br.y);
         }
       }
     } else if (r.label === 'deep') {
