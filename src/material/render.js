@@ -206,16 +206,19 @@ function paintTerrain(pctx, mw, view, G, W, H) {
       if (c.cloud < 0.22) continue;
       const drift = ((tick * c.windU * 0.06 + h3(seed, i, 31) * 600) % (worldW + 900) + worldW + 900) % (worldW + 900) - 450;
       const wx = i * SKY_COL_W + drift * 0.3;
-      const wy = H * (0.06 + h3(seed, i, 32) * 0.16) / 1; // screen-space band
+      const wy = H * (0.05 + h3(seed, i, 32) * 0.22); // screen-space band
       const sx = px(wx), sy = wy;
       if (sx < -400 || sx > W + 400) continue;
       const cr = cellPx * (2.2 + c.cloud * 4.5);
       const dark = clamp01(1 - (e + 0.25) / 0.6); // night clouds go dark
-      const cc = `rgba(${Math.round(235 - dark * 190)}, ${Math.round(240 - dark * 195)}, ${Math.round(248 - dark * 190)}, ${(0.10 + c.cloud * 0.22).toFixed(3)})`;
+      // Subtle, wind-tied: calm skies keep clouds faint, gales make them read.
+      // (Headless review 2026-10-03: the old flat alpha rendered as streak artifacts.)
+      const windF = clamp01(Math.abs(c.windU || 0) / 50); // 0 calm → 1 gale
+      const cc = `rgba(${Math.round(235 - dark * 190)}, ${Math.round(240 - dark * 195)}, ${Math.round(248 - dark * 190)}, ${((0.05 + c.cloud * 0.13) * (0.45 + 0.55 * windF)).toFixed(3)})`;
       pctx.fillStyle = cc;
       for (const [ox2, oy2, k] of [[0, 0, 1], [-0.9, 0.15, 0.7], [0.9, 0.18, 0.62]]) {
         pctx.beginPath();
-        pctx.ellipse(sx + ox2 * cr, sy + oy2 * cr, cr * k, cr * k * 0.34, 0, 0, Math.PI * 2);
+        pctx.ellipse(sx + ox2 * cr, sy + oy2 * cr, cr * k, cr * k * 0.46, 0, 0, Math.PI * 2);
         pctx.fill();
       }
     }
@@ -1075,12 +1078,15 @@ export function renderInspectView(ctx, mw, view, opts = {}) {
   ctx.save();
   ctx.font = `${Math.max(11, H * 0.022)}px monospace`;
   const pad = 10, lh = Math.max(15, H * 0.03);
+  // The HTML title badge floats over the canvas top-left; the page passes
+  // panelTop (canvas px) so this panel starts below it and never clips.
+  const padTop = opts.panelTop != null ? opts.panelTop : pad;
   const tw = Math.max(...lines.map((l) => ctx.measureText(l).width));
   ctx.fillStyle = 'rgba(12, 14, 18, 0.72)';
-  ctx.fillRect(pad, pad, tw + 20, lines.length * lh + 14);
+  ctx.fillRect(pad, padTop, tw + 20, lines.length * lh + 14);
   ctx.fillStyle = 'rgba(235, 240, 235, 0.95)';
   ctx.textBaseline = 'top';
-  lines.forEach((l, i) => ctx.fillText(l, pad + 10, pad + 8 + i * lh));
+  lines.forEach((l, i) => ctx.fillText(l, pad + 10, padTop + 8 + i * lh));
   ctx.restore();
 
   return { scale, ox, oy };
