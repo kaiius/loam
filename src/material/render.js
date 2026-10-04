@@ -2452,23 +2452,11 @@ function springDraw(ctx, oc, drawFn, px, py, scale, tick, dyn) {
     ctx.restore();
   }
 
-  // directional rim light from the sun/moon side (takeaway #12)
-  // curled sleepers get a rim fitted to the sleeping ball, not the standing
-  // height — otherwise the arc floats detached above the body (the "white
-  // scratch" artifact)
-  const curled = !!(oc.drawing && oc.drawing.pose && oc.drawing.pose.curled > 0.5);
-  const rimCY = s.sy - hgt * (curled ? 0.234 : 0.42);
-  const rimR = hgt * (curled ? 0.26 : 0.30);
-  const dayRim = sunE > -0.05;
-  ctx.save();
-  ctx.strokeStyle = dayRim ? 'rgba(255, 236, 200, 0.22)' : 'rgba(190, 205, 240, 0.35)';
-  ctx.lineWidth = Math.max(1, hgt * 0.02);
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  if (dayRim) ctx.arc(s.sx, rimCY, rimR, Math.PI * 0.90, Math.PI * 1.70);
-  else ctx.arc(s.sx, rimCY, rimR, Math.PI * 1.05, Math.PI * 1.95);
-  ctx.stroke();
-  ctx.restore();
+  // (The directional rim light used to live here, but it assumed a
+  // tanglekin-like body plan: on squat fauna — beetles, grubs — heightPx
+  // overstates the visual body and the arc floated detached above them.
+  // Every species already draws its own correctly-fitted rim via
+  // artHelpers.rimArc in its draw function, so this one is removed.)
 }
 
 // lightning, split: bolts before the lightmap, flash wash after
