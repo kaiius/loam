@@ -183,7 +183,10 @@ const CACHE_TICKS = 48;   // terrain repaint cadence: the diurnal light moves
 const hasDocument = typeof document !== 'undefined' && typeof document.createElement === 'function';
 
 function cacheKey(mw, view, W, H) {
-  return mw.seed + '|' + W + 'x' + H + '|' + view.x + ',' + view.y + ',' + view.w + ',' + view.h;
+  // view.x/view.y arrive pre-quantized to whole world-px (renderWorldView's
+  // anti-shimmer snap); rounding again here is belt-and-suspenders so a
+  // float key can never churn the cache on sub-pixel camera drift.
+  return mw.seed + '|' + W + 'x' + H + '|' + Math.round(view.x) + ',' + Math.round(view.y) + ',' + view.w + ',' + view.h;
 }
 
 // numeric cell color — the albedo field. Returns [r, g, b] 0-255.
@@ -192,47 +195,71 @@ function cellRGB(m, cx, cy, i, grid, mw, lit, waterCell) {
   return hsl2rgb(h, s, l);
 }
 
-// Wood as tapered strands. Per plant (grownId): walk the wood cells from
-// the base upward into a centerline, fill a tapered polygon. Branches
-// (leftover clusters) become thin continuous strands. Deterministic:
-// greedy 8-neighborhood walk with fixed preference order.
-function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
+
+// --- TREES, legibility rewrite (2026-10-04) ----------------------------------
+// The botanical truth, drawn so a first-time viewer reads it: roots in soil,
+// trunk in air, canopy in air. Three concrete fixes over the old strand pass:
+//   1. Trees paint into their OWN canvas, composited AFTER the lightmap
+//      multiply. The old pipeline baked trunks into the world canvas, where
+//      the Terraria shadow grid darkened every trunk ~50% (its own wood
+//      counted as occlusion above it) — trunks rendered as mud columns the
+//      same brown as the soil. Trees now keep authored colors; the ground
+//      keeps the moody light. Diurnal grading is explicit (lumK/moonK from
+//      the ambient), so night still reads as night.
+//   2. One trunk -> one crown. Leaf cells carry their tree's grownId, so each
+//      tree gets a single merged canopy mass anchored at its trunk top, the
+//      trunk visibly entering it — no more green puffs floating detached in
+//      the sky. paintTrees returns the claimed leaf cells; the generic puff
+//      pass skips them. Shrubs (trunk < 5 cells) keep the generic puffs.
+//   3. Trunks read as wood: drawn wider than the 1-cell worldgen column (the
+//      same tree, drawn readably), two-tone sun/shade fill, bark grain,
+//      root flare + root strokes into the soil, and a contact shadow — the
+//      cues that say "standing ON the ground".
+// Determinism: every decorative choice is a stateless h3 of (seed, gid, salt).
+
+// grade an authored-daylight [r,g,b] by the diurnal light for post-lightmap
+// painting: full color by day, dim moon-blue by night. Mirrors the old dl().
+function gradeTreeRGB(c, lumK, moonK) {
+  const r = Math.max(0, Math.min(255, c[0] * lumK + (150 - c[0]) * moonK));
+  const g = Math.max(0, Math.min(255, c[1] * lumK + (168 - c[1]) * moonK));
+  const b = Math.max(0, Math.min(255, c[2] * lumK + (226 - c[2]) * moonK));
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
+
+// grade an authored [h,s,l] the same way -> [r,g,b] 0-255.
+function gradeTreeHSL(h, s, l, lumK, moonK) {
+  const nl = Math.max(2, Math.min(96, l * lumK + 6 * moonK));
+  let nh = h + (228 - h) * moonK * 0.7;
+  nh = ((nh % 360) + 360) % 360;
+  const ns = Math.max(4, Math.min(100, s * (1 - moonK * 0.45)));
+  return hsl2rgb(nh, ns, nl);
+}
+
+// Walk every visible plant's wood cells into strands (the old greedy
+// 8-neighborhood walk, fixed preference order — deterministic), group leaves
+// by grownId. Returns { trees: [{ gid, dead, strands, set, leaves }] } sorted
+// by gid for a deterministic paint order.
+function collectTreeData(mw, G, seed) {
   const { grid, cols } = mw;
-  const { px, py, cellPx, cx0, cx1, cy0, cy1 } = G;
-  const byGid = new Map();
+  const { cx0, cx1, cy0, cy1 } = G;
+  const woodByGid = new Map(), leavesByGid = new Map();
   for (let cy = cy0; cy <= cy1; cy++) {
     for (let cx = cx0; cx <= cx1; cx++) {
       const i = cy * cols + cx, m = grid.mat[i];
-      if (m !== MAT.WOOD && m !== MAT.DEADWOOD) continue;
+      if (m !== MAT.WOOD && m !== MAT.DEADWOOD && m !== MAT.LEAF) continue;
       const gid = grid.grownId[i] || 0;
-      if (!byGid.has(gid)) byGid.set(gid, []);
-      byGid.get(gid).push({ cx, cy, dead: m === MAT.DEADWOOD });
+      const bucket = m === MAT.LEAF ? leavesByGid : woodByGid;
+      if (!bucket.has(gid)) bucket.set(gid, []);
+      bucket.get(gid).push({ cx, cy, dead: m === MAT.DEADWOOD });
     }
   }
-  const dl = (c, m = 1) => {
-    const r = (c[0] * lumK + (148 - c[0]) * moonK) * m;
-    const g = (c[1] * lumK + (168 - c[1]) * moonK) * m;
-    const b = (c[2] * lumK + (224 - c[2]) * moonK) * m;
-    return `rgb(${Math.max(0, Math.min(255, r)) | 0},${Math.max(0, Math.min(255, g)) | 0},${Math.max(0, Math.min(255, b)) | 0})`;
-  };
-  // M4: leaf-adjacency test for canopy shadow (branches inside the crown
-  // recede into darkness). grid + MAT are in scope from the caller.
-  const leafAdjCount = (cx, cy) => {
-    let n = 0;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      if (!dx && !dy) continue;
-      const nx = cx + dx, ny = cy + dy;
-      if (nx < 0 || ny < 0 || nx >= cols || ny >= mw.grid.rows) continue;
-      if (mw.grid.mat[ny * cols + nx] === MAT.LEAF) n++;
-    }
-    return n;
-  };
-  for (const [gid, cells] of byGid) {
+  const PREFS = [[0, -1], [-1, -1], [1, -1], [-1, 0], [1, 0], [0, 1], [-1, 1], [1, 1]];
+  const trees = [];
+  for (const [gid, cells] of woodByGid) {
     const key = (cx, cy) => cy * 100000 + cx;
     const set = new Set(cells.map((c) => key(c.cx, c.cy)));
     const cellByKey = new Map(cells.map((c) => [key(c.cx, c.cy), c]));
     const used = new Set();
-    const PREFS = [[0, -1], [-1, -1], [1, -1], [-1, 0], [1, 0], [0, 1], [-1, 1], [1, 1]];
     const walk = (sx, sy) => {
       const pts = [];
       let cx = sx, cy = sy;
@@ -257,26 +284,40 @@ function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
       if (used.has(key(c.cx, c.cy))) continue;
       strands.push({ pts: walk(c.cx, c.cy), trunk: false });
     }
-    for (const s of strands) {
+    trees.push({ gid, dead: cells[0].dead, strands, set, leaves: leavesByGid.get(gid) || [] });
+  }
+  trees.sort((a, b) => a.gid - b.gid);
+  return { trees };
+}
+
+// Paint every tree into tctx (a transparent canvas composited after the
+// lightmap). Returns the claimed leaf cells ("cx,cy" keys) for the generic
+// puff pass to skip.
+function paintTrees(tctx, mw, G, seed, lumK, moonK) {
+  const { px, py, cellPx } = G;
+  const { trees } = collectTreeData(mw, G, seed);
+  const claimed = new Set();
+  const key = (cx, cy) => cy * 100000 + cx;
+  const poly = (pts) => {
+    tctx.beginPath();
+    tctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) tctx.lineTo(pts[i][0], pts[i][1]);
+    tctx.closePath();
+  };
+
+  for (const t of trees) {
+    const gid = t.gid || 1;
+    const brVar = 0.85 + 0.3 * h3(seed, gid, 6110);
+    for (const s of t.strands) {
       const pts = s.pts;
       if (pts.length === 0) continue;
       const n = pts.length;
-      const dead = pts[0].dead;
-      // M4: per-tree branch gauge — seeded by grownId so adjacent trees never
-      // share a silhouette; and canopy shadow — strands buried in leaf mass
-      // recede into darkness instead of reading as bare scaffolding.
-      const brVar = 0.85 + 0.3 * h3(seed, gid || 1, 6110);
-      let shadeSum = 0;
-      for (const p of pts) shadeSum += Math.min(leafAdjCount(p.cx, p.cy), 4) / 4;
-      const dim = 1 - 0.45 * (shadeSum / n);
-      const cBase = barkRGBr3(seed, gid || 1, dead, 0.42);
-      const cTip = barkRGBr3(seed, gid || 1, dead, 0.68);
       if (n === 1) {
         // a lone wood cell: a bark dot, not a polygon (zero-area paths
         // and zero-length gradients render nothing).
         const sx = px((pts[0].cx + 0.5) * CELL_PX), sy = py((pts[0].cy + 0.5) * CELL_PX);
-        pctx.fillStyle = dl(cBase, dim);
-        pctx.beginPath(); pctx.arc(sx, sy, cellPx * 0.42, 0, Math.PI * 2); pctx.fill();
+        tctx.fillStyle = gradeTreeRGB(barkRGBr3(seed, gid, t.dead, 0.5), lumK, moonK);
+        tctx.beginPath(); tctx.arc(sx, sy, cellPx * 0.42, 0, Math.PI * 2); tctx.fill();
         continue;
       }
       const SX = [], SY = [], SW = [];
@@ -286,16 +327,38 @@ function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
         SY.push(py((p.cy + 0.5) * CELL_PX));
         let rowW = 0;
         for (let ox = -2; ox <= 2; ox++) {
-          if (set.has(key(p.cx + ox, p.cy))) rowW++;
+          if (t.set.has(key(p.cx + ox, p.cy))) rowW++;
         }
-        const t = n === 1 ? 1 : i / (n - 1);
-        const taper = s.trunk ? (0.95 - 0.73 * t) : (0.42 - 0.29 * t) * brVar;
-        // M4b: the old rowW*0.9 floor forced every strand to ~0.9 cellPx wide
-        // minimum — taper never visibly tapered, so branches read as milled
-        // beams. The mass floor now only applies to genuinely multi-cell
-        // rows; single-cell strands keep their designed taper (0.16 absolute
-        // floor so tips don't vanish).
-        SW.push(Math.max(taper, rowW > 1 ? rowW * 0.9 : 0, 0.16) * cellPx);
+        const tt = i / (n - 1);
+        // trunks readably wider than the 1-cell worldgen column; branches thin.
+        // Junction knots are capped (the old rowW*0.9 floor grew diamond
+        // bulges that read as bamboo segments).
+        let w = s.trunk ? (1.35 - 1.05 * tt) : (0.55 - 0.37 * tt) * brVar;
+        if (rowW > 1) w = Math.max(w, Math.min(rowW * 0.55, w * 1.8));
+        w = Math.max(w, 0.16);
+        if (s.trunk && i < 3) w *= 1 + 0.55 * (1 - i / 3); // root flare
+        SW.push(w * cellPx);
+      }
+      // contact shadow + roots: the trunk stands ON the ground
+      if (s.trunk) {
+        const bx = SX[0], by = SY[0];
+        tctx.fillStyle = 'rgba(10, 7, 4, 0.30)';
+        tctx.beginPath();
+        tctx.ellipse(bx, by + cellPx * 0.25, cellPx * 2.4, cellPx * 0.8, 0, 0, Math.PI * 2);
+        tctx.fill();
+        if (n >= 3) {
+          tctx.strokeStyle = gradeTreeRGB(barkRGBr3(seed, gid, t.dead, 0.30), lumK, moonK);
+          tctx.lineCap = 'round';
+          tctx.lineWidth = Math.max(1.5, SW[0] * 0.28);
+          for (const [ang, len] of [[Math.PI / 2 - 0.55, 1.6], [Math.PI / 2, 1.9], [Math.PI / 2 + 0.55, 1.6]]) {
+            tctx.beginPath();
+            tctx.moveTo(bx, by - SW[0] * 0.2);
+            tctx.quadraticCurveTo(
+              bx + Math.cos(ang) * len * cellPx * 0.5, by + Math.sin(ang) * len * cellPx * 0.6,
+              bx + Math.cos(ang) * len * cellPx, by + Math.sin(ang) * len * cellPx * 0.9);
+            tctx.stroke();
+          }
+        }
       }
       // tapered polygon via offset curve
       const L = [], R = [];
@@ -307,36 +370,109 @@ function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
         L.push([SX[i] - dy * hw, SY[i] + dx * hw]);
         R.push([SX[i] + dy * hw, SY[i] - dx * hw]);
       }
-      const grad = pctx.createLinearGradient(SX[0], SY[0], SX[n - 1], SY[n - 1]);
-      grad.addColorStop(0, dl(cBase, dim));
-      grad.addColorStop(1, dl(cTip, dim));
-      pctx.fillStyle = grad;
-      pctx.beginPath();
-      pctx.moveTo(L[0][0], L[0][1]);
-      for (let i = 1; i < n; i++) pctx.lineTo(L[i][0], L[i][1]);
-      for (let i = n - 1; i >= 0; i--) pctx.lineTo(R[i][0], R[i][1]);
-      pctx.closePath();
-      pctx.fill();
+      // shade pass: full width, dark bark
+      tctx.fillStyle = gradeTreeRGB(barkRGBr3(seed, gid, t.dead, 0.34), lumK, moonK);
+      poly([...L, ...R.slice().reverse()]);
+      tctx.fill();
+      // lit pass: narrower, offset toward the top-left sun — roundness
+      const HL = [], HR = [];
+      for (let i = 0; i < n; i++) {
+        const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
+        let dx = SX[b] - SX[a], dy = SY[b] - SY[a];
+        const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
+        const cxp = SX[i] - SW[i] * 0.16, cyp = SY[i] - SW[i] * 0.16;
+        const hw = SW[i] * 0.30;
+        HL.push([cxp - dy * hw, cyp + dx * hw]);
+        HR.push([cxp + dy * hw, cyp - dx * hw]);
+      }
+      tctx.fillStyle = gradeTreeRGB(barkRGBr3(seed, gid, t.dead, 0.62), lumK, moonK);
+      poly([...HL, ...HR.slice().reverse()]);
+      tctx.fill();
       // bark grain: two whisper-thin darker lines along the strand —
-      // trunks only (M4b: grain on thin branches read as milled timber).
+      // trunks only (grain on thin branches read as milled timber).
       if (s.trunk && n > 2 && cellPx > 7) {
-        pctx.strokeStyle = 'rgba(20, 12, 8, 0.28)';
-        pctx.lineWidth = Math.max(1, cellPx * 0.06);
-        pctx.lineCap = 'round';
+        tctx.strokeStyle = gradeTreeRGB([26, 16, 10], lumK, moonK);
+        tctx.globalAlpha = 0.35;
+        tctx.lineWidth = Math.max(1, cellPx * 0.06);
+        tctx.lineCap = 'round';
         for (const off of [-0.22, 0.22]) {
-          pctx.beginPath();
+          tctx.beginPath();
           for (let i = 0; i < n; i++) {
             const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
             let dx = SX[b] - SX[a], dy = SY[b] - SY[a];
             const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
             const gx = SX[i] - dy * SW[i] * off, gy = SY[i] + dx * SW[i] * off;
-            if (i === 0) pctx.moveTo(gx, gy); else pctx.lineTo(gx, gy);
+            if (i === 0) tctx.moveTo(gx, gy); else tctx.lineTo(gx, gy);
           }
-          pctx.stroke();
+          tctx.stroke();
         }
+        tctx.globalAlpha = 1;
       }
     }
+    // one trunk -> one crown: a merged canopy mass anchored at the trunk top,
+    // the trunk visibly entering it. Sleeve leaves lower on the trunk stay
+    // in the albedo buffer as interior texture.
+    const trunk = t.strands.length && t.strands[0].trunk ? t.strands[0] : null;
+    if (trunk && trunk.pts.length >= 5 && t.leaves.length >= 3 && !t.dead) {
+      const top = trunk.pts[trunk.pts.length - 1];
+      let minY = Infinity, maxY = -Infinity;
+      for (const lf of t.leaves) {
+        if (lf.cy < minY) minY = lf.cy;
+        if (lf.cy > maxY) maxY = lf.cy;
+      }
+      const cutY = minY + (maxY - minY) * 0.45; // the crown: the upper leaves
+      let ccx = 0, ccy = 0, nn = 0;
+      let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+      for (const lf of t.leaves) {
+        if (lf.cy > cutY && t.leaves.length > 8) continue;
+        ccx += lf.cx; ccy += lf.cy; nn++;
+        if (lf.cx < bx0) bx0 = lf.cx; if (lf.cx > bx1) bx1 = lf.cx;
+        if (lf.cy < by0) by0 = lf.cy; if (lf.cy > by1) by1 = lf.cy;
+      }
+      if (!nn) { ccx = top.cx; ccy = top.cy - 3; nn = 1; bx0 = bx1 = top.cx; by0 = by1 = top.cy - 3; }
+      else { ccx /= nn; ccy /= nn; }
+      // pull the crown toward the trunk top so the trunk always enters it
+      ccx = ccx * 0.7 + top.cx * 0.3;
+      ccy = ccy * 0.7 + (top.cy - 2) * 0.3;
+      const R = Math.max(3.5, Math.max(bx1 - bx0 + 4, by1 - by0 + 4) * 0.5) * cellPx;
+      const pxC = px((ccx + 0.5) * CELL_PX), pyC = py((ccy + 0.5) * CELL_PX);
+      // The crown: a DENSE irregular mass, not smoke. A near-solid dark core
+      // (interior shadow) first, then gradient volume, then a sun-struck top.
+      // Core ellipses are seeded per tree so adjacent crowns never match.
+      const coreK = [[0, 0.02, 0.62, 0.42], [-0.30, 0.12, 0.44, 0.34], [0.32, 0.10, 0.46, 0.32]];
+      for (const [ox, oy, rx, ry] of coreK) {
+        const jx = (h3(seed, gid, 6330 + (ox * 100 | 0)) - 0.5) * R * 0.24;
+        const jy = (h3(seed, gid, 6340 + (oy * 100 | 0)) - 0.5) * R * 0.24;
+        const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, 0.16), lumK, moonK);
+        tctx.fillStyle = `rgba(${lr},${lg},${lb},0.95)`;
+        tctx.beginPath();
+        tctx.ellipse(pxC + ox * R + jx, pyC + oy * R + jy, R * rx, R * ry, ox * 0.6, 0, Math.PI * 2);
+        tctx.fill();
+      }
+      const puffs = [
+        { dx: 0, dy: -0.10, r: 0.95, k: 0.34, a: 0.88 },
+        { dx: -0.20, dy: -0.32, r: 0.66, k: 0.52, a: 0.85 },
+        { dx: 0.22, dy: -0.28, r: 0.58, k: 0.48, a: 0.82 },
+        { dx: 0.38, dy: 0.08, r: 0.48, k: 0.30, a: 0.80, salt: 1 },
+        { dx: -0.40, dy: 0.06, r: 0.44, k: 0.32, a: 0.80, salt: 2 },
+      ];
+      for (const pf of puffs) {
+        const jx = pf.salt != null ? (h3(seed, gid, 6310 + pf.salt) - 0.5) * R * 0.3 : 0;
+        const jy = pf.salt != null ? (h3(seed, gid, 6320 + pf.salt) - 0.5) * R * 0.3 : 0;
+        const pr = R * pf.r;
+        const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, pf.k), lumK, moonK);
+        const gx = pxC + pf.dx * R + jx, gy = pyC + pf.dy * R + jy;
+        const g = tctx.createRadialGradient(gx, gy, 0, gx, gy, pr);
+        g.addColorStop(0, `rgba(${lr},${lg},${lb},${pf.a.toFixed(3)})`);
+        g.addColorStop(0.7, `rgba(${lr},${lg},${lb},${(pf.a * 0.55).toFixed(3)})`);
+        g.addColorStop(1, `rgba(${lr},${lg},${lb},0)`);
+        tctx.fillStyle = g;
+        tctx.beginPath(); tctx.arc(gx, gy, pr, 0, Math.PI * 2); tctx.fill();
+      }
+      for (const lf of t.leaves) claimed.add(key(lf.cx, lf.cy));
+    }
   }
+  return claimed;
 }
 
 // LEGACY path (stills shim / tests): per-cell rects, day-only lighting.
@@ -661,6 +797,15 @@ function drawTint(pctx, e, W, H) {
  * (doc comment from M1 kept: world view only, no text, no UI.)
  */
 export function renderWorldView(ctx, mw, view, opts = {}) {
+  // ANTI-SHIMMER (jank profile 2026-10-04): the page's camera lerp never
+  // settles — view.x/view.y drift sub-pixel every frame, which churned the
+  // float cache key (99.4% miss → a full paintTerrain per frame, ~78ms at
+  // dpr1). The paint view is snapped to whole world-px up front, so paint,
+  // key, creatures, and overlays all agree exactly: micro-motion neither
+  // invalidates the cache nor shifts the image. (The page-side deadband
+  // settles the camera itself; this keeps every consumer consistent even
+  // while it pans.)
+  view = { x: Math.round(view.x), y: Math.round(view.y), w: view.w, h: view.h };
   const { grid, cols, rows, seed } = mw;
   const W = ctx.w, H = ctx.h;
   const scale = Math.min(W / view.w, H / view.h);
@@ -739,7 +884,9 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   // diurnal tint last, over creatures too — moonlight grades the whole scene
   drawTint(ctx, dyn.sunE, W, H);
 
-  return { scale, ox, oy };
+  // qx/qy: the quantized paint origin, so overlays (inspect view) agree
+  // exactly with the snapped paint (anti-shimmer).
+  return { scale, ox, oy, qx: view.x, qy: view.y };
 }
 
 // Flood-fill AIR from the top row across the whole grid. Returns a
@@ -1297,10 +1444,12 @@ function drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol,
 //   The overlay is drawn in canvas space (top-left panel + cell highlight).
 export function renderInspectView(ctx, mw, view, opts = {}) {
   // The scene first — identical to the world view.
-  const { scale, ox, oy } = renderWorldView(ctx, mw, view, opts);
+  const { scale, ox, oy, qx, qy } = renderWorldView(ctx, mw, view, opts);
   const W = ctx.w, H = ctx.h;
-  const px = (wx) => ox + (wx - view.x) * scale;
-  const py = (wy) => oy + (wy - view.y) * scale;
+  // overlays use the quantized paint origin (anti-shimmer): the cell
+  // highlight lands exactly on the snapped paint.
+  const px = (wx) => ox + (wx - qx) * scale;
+  const py = (wy) => oy + (wy - qy) * scale;
 
   // Cell highlight.
   if (opts.inspect) {
@@ -1402,22 +1551,23 @@ export function renderInspectView(ctx, mw, view, opts = {}) {
 // One 5-stop [h, s, l] ramp per material, dark → light. Hue-shifts are
 // authored, not computed: darks drift cooler and hold saturation, lights
 // drift toward the sun. Hex equivalents (reference daylight):
-//   grass  #2f5426 → #7a9c52 · soil #341f13 → #946c42 · bark #382215 → #9a7142
-//   (soil lifted +4 L 2026-10-04 grade pass: the terrain mid-tones sank into
-//   dark brown under the multiply lightmap; bark lifted +4 L 2026-10-04: the
-//   forest mid-ground read near-black at noon; day/night variants multiply
-//   on top, so they are unaffected)
-//   leaf   #2a4a1c → #7fae5c · water #0e3a66 → #6aa3d8 · rock #1c2026 → #6a7078
+//   grass  #2f5426 → #7a9c52 · soil #3d2716 → #a37c4e · bark #4a2413 → #b07a48
+//   leaf   #2a521f → #8cba66 · water #0e3a66 → #6aa3d8 · rock #2a2f36 → #8b9098
+// (legibility rewrite 2026-10-04: soil lifted and warmed — the old umber
+// ramp rendered as flat mud under the lightmap; bark pushed red + saturated
+// so trunks separate from soil at a glance; rock cooled and lifted so stone
+// reads as stone, never as brown; day/night variants multiply on top, so
+// they are unaffected)
 export const R3PAL = {
   grass:    [[98,52,13],[102,50,22],[106,48,30],[100,44,38],[92,40,46]],
   dryGrass: [[64,46,16],[58,50,26],[52,52,36],[48,48,46],[46,42,56]],
-  soil:     [[22,46,14],[25,44,21],[27,42,28],[29,40,35],[31,38,42]],
+  soil:     [[24,50,16],[26,48,24],[28,46,32],[30,42,40],[32,38,48]],
   sand:     [[38,52,26],[42,54,36],[46,54,46],[48,50,56],[50,46,66]],
   clay:     [[10,56,18],[13,54,26],[16,52,34],[18,48,42],[20,44,50]],
-  rock:     [[214,14,12],[215,12,20],[216,10,28],[217,10,36],[218,10,44]],
-  bark:     [[22,46,15],[24,46,22],[26,44,29],[29,42,36],[32,40,43]],
+  rock:     [[215,12,16],[216,10,26],[217,9,36],[218,8,46],[219,8,56]],
+  bark:     [[16,58,14],[18,56,22],[20,54,30],[23,52,38],[26,50,46]],
   deadwood: [[28,16,16],[30,14,24],[32,12,32],[34,10,40],[36,10,48]],
-  leaf:     [[102,54,11],[107,52,18],[110,50,25],[104,46,33],[96,42,41]],
+  leaf:     [[102,58,12],[107,56,20],[110,54,28],[104,50,36],[96,46,44]],
   water:    [[210,62,12],[208,60,22],[206,56,32],[203,50,42],[200,44,52]],
   bedrock:  [[222,14,6],[223,12,10],[224,10,14],[225,10,18],[226,10,22]],
   skyshadow:[[18,34,7],[20,32,11],[22,30,15],[24,28,19],[26,26,23]],
@@ -1863,32 +2013,50 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
   const sky = floodSky(grid, cols, rows);
   const gw = cx1 - cx0 + 1, gh = cy1 - cy0 + 1;
 
-  // smooth terrain body: topmost-solid per column → Gaussian → one body
+  // smooth terrain body: topmost-solid per column → Gaussian → one body.
+  // TWO surfaces: surfH (everything solid, wood included — legacy) and gndH
+  // (ground only: wood/deadwood excluded). The old body trace used the
+  // wood-inclusive surface, so the soil body grew a collar ~11 cells up
+  // every trunk — each tree read as a brown stalagmite. The body, the grass
+  // cap, and the blades all follow gndH now: earth is earth, trees stand on it.
   const surfH = new Float32Array(gw);
+  const gndH = new Float32Array(gw);
   for (let gx = 0; gx < gw; gx++) {
     const cx = cx0 + gx;
-    let y = cy1 + 1;
+    let y = cy1 + 1, gy = cy1 + 1;
     for (let cy = cy0; cy <= cy1; cy++) {
       const i = cy * cols + cx, m = grid.mat[i];
-      if (MAT_PROPS[m].solid || isWaterCell(m, grid, i)) { y = cy; break; }
+      if (y > cy1 && (MAT_PROPS[m].solid || isWaterCell(m, grid, i))) y = cy;
+      if (gy > cy1 && m !== MAT.WOOD && m !== MAT.DEADWOOD &&
+          (MAT_PROPS[m].solid || isWaterCell(m, grid, i))) gy = cy;
+      if (y <= cy1 && gy <= cy1) break;
     }
     surfH[gx] = y;
+    gndH[gx] = gy;
   }
   for (let it = 0; it < 2; it++) {
-    const s = surfH.slice();
-    for (let gx = 1; gx < gw - 1; gx++) surfH[gx] = s[gx - 1] * 0.25 + s[gx] * 0.5 + s[gx + 1] * 0.25;
+    const s = surfH.slice(), g = gndH.slice();
+    for (let gx = 1; gx < gw - 1; gx++) {
+      surfH[gx] = s[gx - 1] * 0.25 + s[gx] * 0.5 + s[gx + 1] * 0.25;
+      gndH[gx] = g[gx - 1] * 0.25 + g[gx] * 0.5 + g[gx + 1] * 0.25;
+    }
   }
   const surfYat = (gx) => {
     const g0 = Math.max(0, Math.min(gw - 1, Math.floor(gx)));
     const g1 = Math.min(gw - 1, g0 + 1), f = Math.max(0, Math.min(1, gx - g0));
     return surfH[g0] * (1 - f) + surfH[g1] * f;
   };
+  const gndYat = (gx) => {
+    const g0 = Math.max(0, Math.min(gw - 1, Math.floor(gx)));
+    const g1 = Math.min(gw - 1, g0 + 1), f = Math.max(0, Math.min(1, gx - g0));
+    return gndH[g0] * (1 - f) + gndH[g1] * f;
+  };
   const traceGround = () => {
     pctx.beginPath();
     const step = 0.25;
     let first = true;
     for (let gx = 0; gx <= gw - 1; gx += step) {
-      const sx = px((cx0 + gx + 0.5) * CELL_PX), syy = py(surfYat(gx) * CELL_PX);
+      const sx = px((cx0 + gx + 0.5) * CELL_PX), syy = py(gndYat(gx) * CELL_PX);
       if (first) { pctx.moveTo(sx, syy); first = false; }
       else pctx.lineTo(sx, syy);
     }
@@ -1901,7 +2069,7 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
     const step = 0.5;
     let first = true;
     for (let gx = 0; gx <= gw - 1; gx += step) {
-      const sx = px((cx0 + gx + 0.5) * CELL_PX), syy = py(surfYat(gx) * CELL_PX);
+      const sx = px((cx0 + gx + 0.5) * CELL_PX), syy = py(gndYat(gx) * CELL_PX);
       if (first) { pctx.moveTo(sx, syy); first = false; }
       else pctx.lineTo(sx, syy);
     }
@@ -1909,7 +2077,7 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
 
   // earth body: soil ramp gradient, reference light — the lightmap grades it
   {
-    const gy0 = Math.max(0, Math.min(H, py(surfYat(gw / 2) * CELL_PX)));
+    const gy0 = Math.max(0, Math.min(H, py(gndYat(gw / 2) * CELL_PX)));
     const bg = pctx.createLinearGradient(0, gy0, 0, H);
     const cTop = r3RampRGB('soil', 0.66), cMid = r3RampRGB('soil', 0.44), cBot = r3RampRGB('soil', 0.26);
     bg.addColorStop(0, `rgb(${cTop[0]},${cTop[1]},${cTop[2]})`);
@@ -1950,11 +2118,35 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
           [r, g2, b] = r3RampRGB('skyshadow', 0.30 + h3(seed, cx, cy) * 0.25);
         }
       } else if (m === MAT.WOOD || m === MAT.DEADWOOD) {
-        // strands are drawn below; the buffer leaves a bark-seeded hole
+        // strands are drawn post-lightmap on the tree canvas; the buffer
+        // leaves a bark-seeded hole (alpha 0 — the strand covers it).
         [r, g2, b] = barkRGBr3(seed, grid.grownId[i] || 1, m === MAT.DEADWOOD, 0.5);
         alpha = 0;
       } else {
         [r, g2, b] = cellRGBr3(m, cx, cy, i, grid, mw);
+        // grass sward: the top cells of exposed soil/sand/clay read as
+        // meadow, not mud. Patchy by noise, gold where the vigor runs dry,
+        // kept off cliffs by the slope gate. Presentation only — grid.mat
+        // is untouched; the sim still sees soil.
+        if (m === MAT.SOIL || m === MAT.SAND || m === MAT.CLAY) {
+          const gx = cx - cx0;
+          const depth = cy - gndYat(gx);
+          if (depth >= -0.5 && depth <= 4.0) {
+            const slope = Math.abs(gndH[Math.min(gw - 1, gx + 1)] - gndH[Math.max(0, gx - 1)]) / 2;
+            const aboveM = cy > 0 ? grid.mat[i - cols] : MAT.AIR;
+            const exposed = cy === 0 || aboveM === MAT.AIR || aboveM === MAT.LEAF || isWaterCell(aboveM, grid, i - cols);
+            if (slope <= 1.6 && exposed) {
+              const wx = (cx + 0.5) * CELL_PX;
+              const vigor = r3Vigor(seed, wx);
+              const patch = vnoise2(seed, cx * 0.5, cy * 0.5, 640);
+              const kk = (1 - clamp01(depth / 4)) * sstep(0.30, 0.58, patch) * (0.45 + 0.55 * vigor);
+              if (kk > 0.02) {
+                const gc = r3GrassRGB(vigor, 0.45 + (vnoise2(seed, cx * 0.33, cy * 0.33, 641) - 0.5) * 0.25);
+                r += (gc[0] - r) * kk; g2 += (gc[1] - g2) * kk; b += (gc[2] - b) * kk;
+              }
+            }
+          }
+        }
       }
       const bx0 = (cx - cx0) * BS, by0 = (cy - cy0) * BS;
       const rr = Math.max(0, Math.min(255, r)) | 0, gg = Math.max(0, Math.min(255, g2)) | 0, bb = Math.max(0, Math.min(255, b)) | 0;
@@ -1985,16 +2177,26 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
   pctx.drawImage(buf, 0, 0, bw, bh, px(cx0 * CELL_PX), py(cy0 * CELL_PX), gw * cellPx, gh * cellPx);
   pctx.restore();
 
-  // wood as tapered strands (round-2 walk, round-3 authored bark colors)
-  drawWoodStrands(pctx, mw, G, seed, 1, 0);
+  // TREES (legibility rewrite): the tree canvas is painted here but
+  // composited AFTER the lightmap multiply in paintTerrain, so trunks and
+  // crowns keep authored colors while the ground keeps the moody light.
+  // Diurnal grading is explicit via lumK/moonK from the ambient.
+  const amb = r3LightAmbient(e);
+  const lumK = clamp01((amb[0] + amb[1] + amb[2]) / 3 / 0.99);
+  const moonK = clamp01(1 - lumK) * 0.5;
+  const treeCv = document.createElement('canvas');
+  treeCv.width = W; treeCv.height = H;
+  const claimed = paintTrees(treeCv.getContext('2d'), mw, G, seed, lumK, moonK);
 
   // canopy: foliage as merged soft masses in authored leaf greens.
   // A seeded SUBSET of leaf cells paints larger overlapping puffs — one
-  // mass per cluster, not a balloon per cell.
+  // mass per cluster, not a balloon per cell. Leaves claimed by a tree
+  // crown (paintTrees, above) are skipped: the crown is the read.
   for (let cy = cy0; cy <= cy1; cy++) {
     for (let cx = cx0; cx <= cx1; cx++) {
       const i = cy * cols + cx;
       if (grid.mat[i] !== MAT.LEAF) continue;
+      if (claimed.has(cy * 100000 + cx)) continue;
       if (h3(seed, cx * 7 + 1, cy) > 0.55) continue; // subset → masses merge (grade: 0.45→0.55, fewer puffs, clearer silhouettes)
       const sx = px(cx * CELL_PX + CELL_PX / 2), syy = py(cy * CELL_PX + CELL_PX / 2);
       if (sx < -60 || sx > W + 60 || syy < -60 || syy > H + 60) continue;
@@ -2048,7 +2250,7 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
     if (cx < 0 || cx >= cols) continue;
     const wx = (cx + 0.5) * CELL_PX;
     const vigor = r3Vigor(seed, wx);
-    const sx = px(wx), syy = py(surfYat(gx) * CELL_PX);
+    const sx = px(wx), syy = py(gndYat(gx) * CELL_PX);
     const wdt = Math.max(2.5, cellPx * 0.80);
     let c = r3GrassRGB(vigor, 0.45);
     pctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},0.95)`;
@@ -2077,7 +2279,7 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
     const dens = r3TuftDensity(seed, wx) * (0.35 + 0.65 * vigor);
     if (h3(seed, cx, 801) > dens) continue;
     const nB = 2 + Math.floor(h3(seed, cx, 802) * 3);
-    const bx = px(wx), by = py(surfYat(gx) * CELL_PX);
+    const bx = px(wx), by = py(gndYat(gx) * CELL_PX);
     for (let b = 0; b < nB; b++) {
       const hh = h3(seed, cx * 5 + b, 803);
       blades.push({
@@ -2180,7 +2382,7 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
 
   const midCx = Math.max(cx0, Math.min(cx1, Math.round((cx0 + cx1) / 2)));
   const horizonY = clamp01(py(((surf[midCx] | 0) + 1) * CELL_PX) / H) * H;
-  return { leaves, fires, waterTop, sky, pal, sunE: e, blades, shadow, skyK, cw, ch, horizonY, raining };
+  return { leaves, fires, waterTop, sky, pal, sunE: e, blades, shadow, skyK, cw, ch, horizonY, raining, treeCanvas: treeCv };
 }
 
 // --- per-frame juice (takeaway #10: the world is never static) ----------------
@@ -2517,8 +2719,11 @@ function paintTerrain(pctx, mw, view, G, W, H) {
   const wdyn = paintWorldCache(worldCtx, mw, view, G, W, H, pal, e, dayK);
   wdyn.amb = amb;
   // the lightmap is baked into the world canvas (cache cadence); the sky
-  // keeps its authored gradient untouched
+  // keeps its authored gradient untouched. Trees composite AFTER the bake:
+  // trunks and crowns keep authored colors (they carry their own diurnal
+  // grade) while the ground keeps the moody multiply light.
   bakeLightIntoWorld(worldCtx, wdyn, W, H);
+  if (wdyn.treeCanvas) worldCtx.drawImage(wdyn.treeCanvas, 0, 0);
 
   // one composited canvas per frame: sky + graded world
   const finalCv = document.createElement('canvas');
