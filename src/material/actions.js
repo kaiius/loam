@@ -43,14 +43,21 @@ function faceToward(c, tx) {
 }
 
 // Walk the facing direction when grounded; turn at cliffs/walls (M1's rule).
+// A short flip cooldown keeps a walker committed to its new heading: on a
+// support nub narrower than the 20px lookahead, both directions read as
+// "blocked" and an unguarded flip vibrates the creature in place every tick.
+// The cooldown turns the vibration into a natural pace.
 export function walkPhysics(mw, c, speed = WALK_SPEED) {
   if (!c.grounded) return;
-  const aheadX = c.x + c.facing * 20;
-  const leg = c.body ? c.body.legLengthPx : 24;
-  const bh = c.body ? c.body.heightPx : 60;
-  const supportAhead = supportBelow(mw, aheadX, c.y, leg);
-  const wallAhead = isSolid(sampleMat(mw, aheadX, c.y - bh / 2));
-  if (!supportAhead || wallAhead) c.facing = -c.facing;
+  if (c.flipCd > 0) { c.flipCd--; }
+  else {
+    const aheadX = c.x + c.facing * 20;
+    const leg = c.body ? c.body.legLengthPx : 24;
+    const bh = c.body ? c.body.heightPx : 60;
+    const supportAhead = supportBelow(mw, aheadX, c.y, leg);
+    const wallAhead = isSolid(sampleMat(mw, aheadX, c.y - bh / 2));
+    if (!supportAhead || wallAhead) { c.facing = -c.facing; c.flipCd = 6; }
+  }
   c.x += c.facing * speed;
 }
 
