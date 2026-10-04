@@ -1369,14 +1369,16 @@ export function renderInspectView(ctx, mw, view, opts = {}) {
 // One 5-stop [h, s, l] ramp per material, dark → light. Hue-shifts are
 // authored, not computed: darks drift cooler and hold saturation, lights
 // drift toward the sun. Hex equivalents (reference daylight):
-//   grass  #2f5426 → #7a9c52 · soil #241a10 → #83644f · bark #382215 → #9a7142
-//   (bark lifted +4 L 2026-10-04: the forest mid-ground read near-black at
-//   noon; day/night variants multiply on top, so they are unaffected)
+//   grass  #2f5426 → #7a9c52 · soil #341f13 → #946c42 · bark #382215 → #9a7142
+//   (soil lifted +4 L 2026-10-04 grade pass: the terrain mid-tones sank into
+//   dark brown under the multiply lightmap; bark lifted +4 L 2026-10-04: the
+//   forest mid-ground read near-black at noon; day/night variants multiply
+//   on top, so they are unaffected)
 //   leaf   #2a4a1c → #7fae5c · water #0e3a66 → #6aa3d8 · rock #1c2026 → #6a7078
 export const R3PAL = {
   grass:    [[98,52,13],[102,50,22],[106,48,30],[100,44,38],[92,40,46]],
   dryGrass: [[64,46,16],[58,50,26],[52,52,36],[48,48,46],[46,42,56]],
-  soil:     [[20,44,10],[23,42,17],[25,40,24],[27,38,31],[30,36,38]],
+  soil:     [[22,46,14],[25,44,21],[27,42,28],[29,40,35],[31,38,42]],
   sand:     [[38,52,26],[42,54,36],[46,54,46],[48,50,56],[50,46,66]],
   clay:     [[10,56,18],[13,54,26],[16,52,34],[18,48,42],[20,44,50]],
   rock:     [[214,14,12],[215,12,20],[216,10,28],[217,10,36],[218,10,44]],
@@ -2069,9 +2071,9 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
       }
       if (m === MAT.AIR && sky[gi]) {
         if (occ < 1) { shadow[o] = 1; skyK[o] = 1; }        // open sky: neutral
-        else { shadow[o] = Math.max(0.26, 1 - 0.80 * occ / 12); skyK[o] = 0; } // shaft: graded
+        else { shadow[o] = Math.max(0.33, 1 - 0.80 * occ / 12); skyK[o] = 0; } // shaft: graded
       } else {
-        shadow[o] = Math.max(0.26, 1 - 0.80 * Math.min(1, occ / 12));
+        shadow[o] = Math.max(0.33, 1 - 0.80 * Math.min(1, occ / 12));
         skyK[o] = 0;
       }
     }
