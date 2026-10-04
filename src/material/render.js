@@ -1986,6 +1986,21 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
         pctx.fillStyle = sg2;
         pctx.beginPath(); pctx.arc(sx + ox, syy + oy, sr2, 0, Math.PI * 2); pctx.fill();
       }
+      // leaf clusters (grade 2026-10-04): small high-contrast dots inside the
+      // mass — darker cores read as interior shadow, lighter dots as lit leaf
+      // tips. First step toward real canopy structure, not the final word.
+      for (let lf = 0; lf < 4; lf++) {
+        const lx = sx + (h3(seed, cx * 17 + lf, cy * 5 + 1) - 0.5) * pr * 1.5;
+        const ly = syy + (h3(seed, cx * 5 + 1, cy * 17 + lf) - 0.5) * pr * 1.2;
+        const lr = pr * (0.16 + h3(seed, cx * 11 + lf, cy * 3) * 0.12);
+        const dl3 = r3SampleRamp(R3PAL.leaf, 0.30 + h3(seed, cx * 3 + lf, cy + 2) * 0.45);
+        const dl3l = Math.max(4, Math.min(90, dl3[2] + (lf % 2 === 0 ? -12 : 10)));
+        const lg3 = pctx.createRadialGradient(lx, ly, 0, lx, ly, lr);
+        lg3.addColorStop(0, hsla(dl3[0], dl3[1], dl3l, 0.55));
+        lg3.addColorStop(1, hsla(dl3[0], dl3[1], dl3l, 0));
+        pctx.fillStyle = lg3;
+        pctx.beginPath(); pctx.arc(lx, ly, lr, 0, Math.PI * 2); pctx.fill();
+      }
     }
   }
 
