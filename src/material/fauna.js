@@ -482,36 +482,47 @@ function drawFlutter(ctx, d, pose, id, screenH = 999) {
     ctx.fillStyle = P.dark; // antennal club
     ctx.beginPath(); ctx.arc(H * 0.21, bodyY - H * 0.11 + s * H * 0.014, H * 0.010, 0, Math.PI * 2); ctx.fill();
   }
-  // wings: dainty, rooted AT the thorax (inner edge overlaps the body),
-  // spots well inside the wing — never floating beyond it. A thin dark
-  // rim separates wing from sky.
+  // wings: two SEPARATE surfaces meeting at the thorax — a bowtie, not an
+  // oval. The forewing fills the upper-back quadrant, the hindwing the
+  // lower-back quadrant; the dark body shows in the V between them.
+  // (Legibility 2026-10-04: overlapping ellipses from one root merged into
+  // a pink pill. Separated quadrants + visible dark body = butterfly.)
+  // The wings dominate the silhouette; the body is the dark knot.
+  const wingDefs = [
+    // forewing: large, high — the dominant wing
+    { cx: rootX - H * 0.06, cy: rootY - H * 0.15, rx: H * 0.20, ry: H * 0.22, tilt: -0.5, a: 1 },
+    // hindwing: smaller, back-low — clearly below the forewing
+    { cx: rootX + H * 0.07, cy: rootY + H * 0.04, rx: H * 0.14, ry: H * 0.12, tilt: -0.9, a: 0.95 },
+  ];
   for (const s of [0.5, 1]) { // far pair, near pair
     ctx.globalAlpha = s;
-    const pairs = [
-      { wr: H * 0.20, off: 0.00 },  // forewing
-      { wr: H * 0.13, off: 0.55 },  // hindwing
-    ];
-    for (const { wr, off } of pairs) {
-      const wa = wingAng + off;
-      const dx = Math.cos(wa), dy = -Math.sin(wa);
-      const cx = rootX + dx * wr * 0.55, cy = rootY + dy * wr * 0.55;
-      const wg = ctx.createLinearGradient(rootX, rootY, cx + dx * wr * 0.4, cy + dy * wr * 0.4);
+    for (const wd of wingDefs) {
+      const wg = ctx.createLinearGradient(wd.cx, wd.cy + wd.ry, wd.cx, wd.cy - wd.ry);
       wg.addColorStop(0, P.mid); wg.addColorStop(0.6, P.pale); wg.addColorStop(1, P.pale);
       ctx.fillStyle = wg;
       ctx.beginPath();
-      ctx.ellipse(cx, cy, wr, wr * 0.62, -wa, 0, Math.PI * 2);
+      ctx.ellipse(wd.cx, wd.cy, wd.rx, wd.ry, wd.tilt, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = P.dark; ctx.globalAlpha = s * 0.45; ctx.lineWidth = Math.max(1, H * 0.008);
-      ctx.beginPath(); ctx.ellipse(cx, cy, wr, wr * 0.62, -wa, 0, Math.PI * 2); ctx.stroke();
-      ctx.globalAlpha = s;
-      ctx.fillStyle = P.mark; ctx.globalAlpha = s * 0.8; // wing spot, inside the wing
+      ctx.strokeStyle = P.dark; ctx.globalAlpha = s * wd.a * 0.55;
+      ctx.lineWidth = Math.max(1.2, H * 0.009);
+      ctx.beginPath(); ctx.ellipse(wd.cx, wd.cy, wd.rx, wd.ry, wd.tilt, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = s * wd.a;
+      // wing spot, inside the wing
+      ctx.fillStyle = P.mark; ctx.globalAlpha = s * wd.a * 0.85;
       ctx.beginPath();
-      ctx.arc(rootX + dx * wr * 0.95, rootY + dy * wr * 0.95, wr * 0.16, 0, Math.PI * 2);
+      ctx.arc(wd.cx + wd.rx * 0.3, wd.cy - wd.ry * 0.3, wd.rx * 0.18, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = s;
     }
   }
   ctx.globalAlpha = 1;
+  // thorax: the dark knot of the bowtie — MUST be visible at small sizes,
+  // or the wings read as two separate pills. Drawn last, on top.
+  ctx.fillStyle = P.dark;
+  ctx.beginPath(); ctx.ellipse(rootX, rootY, H * 0.055, H * 0.11, 0.15, 0, Math.PI * 2); ctx.fill();
+  // head + eye at the front, so the front/back reads
+  ctx.beginPath(); ctx.arc(rootX + H * 0.02, rootY - H * 0.10, H * 0.038, 0, Math.PI * 2); ctx.fill();
+  drawEye(ctx, rootX + H * 0.028, rootY - H * 0.108, H * 0.020, pose.eyeOpenNow);
 }
 
 function drawGrub(ctx, d, pose, id, screenH = 999) {
@@ -550,9 +561,16 @@ function drawGrub(ctx, d, pose, id, screenH = 999) {
 }
 
 // --- sleep: the curled rest, per body plan ------------------------------------------
+// (Legibility 2026-10-04: the old featureless ellipse read as a pill or a
+// piece of candy — interchangeable with any UI blob. The sleeper now gets
+// a grounding outline, a distinct tucked head with a closed-eye curve, and
+// breathing — it reads as a sleeping animal, never a bonbon.)
 function sleepBlob(ctx, d, P, H, W, kind, screenH = 999) {
   const R = H * (kind === 'bird' ? 0.20 : kind === 'insect' ? 0.16 : 0.22);
   const breathe = 1 + (d.pose ? d.pose.breath * 0.04 : 0);
+  // grounding outline: separates the sleeper from the ground at a glance
+  ctx.fillStyle = 'rgba(14, 10, 7, 0.50)';
+  ctx.beginPath(); ctx.ellipse(0, -R * 1.2, R * 1.13 * breathe, R * 0.93, 0.15, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = vgrad(ctx, -R * 2.2, -R * 0.4, P.top, P.belly);
   ctx.beginPath(); ctx.ellipse(0, -R * 1.2, R * 1.05 * breathe, R * 0.85, 0.15, 0, Math.PI * 2); ctx.fill();
   if (kind === 'bird') { // head tucked under the wing hint
@@ -562,6 +580,11 @@ function sleepBlob(ctx, d, P, H, W, kind, screenH = 999) {
   } else {
     ctx.fillStyle = P.head;
     ctx.beginPath(); ctx.arc(R * 0.45, -R * 1.5, R * 0.5, 0, Math.PI * 2); ctx.fill();
+    // closed eye: the curve that says "asleep", not "absent"
+    ctx.strokeStyle = '#1e150e'; ctx.globalAlpha = 0.8;
+    ctx.lineWidth = Math.max(1, R * 0.07); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(R * 0.52, -R * 1.52, R * 0.20, 0.3, Math.PI - 0.3); ctx.stroke();
+    ctx.globalAlpha = 1;
   }
   if (screenH > 85) furStrokes(ctx, d.creatureId || 0, 0, -R * 1.2, R, R * 0.8, 0.3, 16, 3.5, P.pale, P.dark, 980);
   rimArc(ctx, 0, -R * 1.2, R * 1.0, R * 0.82, 0.15, P.pale, screenH > 130 ? 0.28 : 0.14, 1.4);

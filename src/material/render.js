@@ -298,21 +298,43 @@ function paintTrees(tctx, mw, G, seed, lumK, moonK) {
   const { trees } = collectTreeData(mw, G, seed);
   const claimed = new Set();
   const key = (cx, cy) => cy * 100000 + cx;
+  // Closed midpoint-quadratic curve through pts: branch/trunk outlines
+  // FLOW instead of zigzagging. The old lineTo chain turned the greedy
+  // strand-walk's 8-neighborhood corners into lightning bolts — unreadable
+  // at phone sizes. Purely depictive: the same cells, smoothed.
   const poly = (pts) => {
+    const m = pts.length;
     tctx.beginPath();
-    tctx.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) tctx.lineTo(pts[i][0], pts[i][1]);
+    let mx = (pts[0][0] + pts[m - 1][0]) / 2, my = (pts[0][1] + pts[m - 1][1]) / 2;
+    tctx.moveTo(mx, my);
+    for (let i = 0; i < m; i++) {
+      const p = pts[i], q = pts[(i + 1) % m];
+      tctx.quadraticCurveTo(p[0], p[1], (p[0] + q[0]) / 2, (p[1] + q[1]) / 2);
+    }
     tctx.closePath();
   };
 
   for (const t of trees) {
     const gid = t.gid || 1;
     const brVar = 0.85 + 0.3 * h3(seed, gid, 6110);
+    // Stub/snag read (legibility 2026-10-04): short wood columns (seedlings,
+    // young saplings, dead snags) used to render as identical bare brown
+    // triangles in fence rows — corrupted geometry, not trees. Stubs get
+    // their own depiction: living stubs are saplings (thin stem + leaf bud),
+    // dead stubs are weathered snags (jagged top, lean, gray wood).
+    const trunk0 = t.strands.length && t.strands[0].trunk ? t.strands[0] : null;
+    const trunkH = trunk0 ? trunk0.pts.length : 0;
+    const isStub = trunkH > 0 && trunkH <= 9;
+    const deadTree = !!t.dead;
+    // per-tree variation breaks the palisade: no two adjacent stubs share
+    // a lean, width, or tone (all stateless h3 of (seed, gid)).
+    const leanA = (deadTree || isStub) ? (h3(seed, gid, 6201) - 0.5) * 0.30 : 0;
+    const stubWVar = 0.80 + 0.45 * h3(seed, gid, 6205);
+    const jagSide = h3(seed, gid, 6202) < 0.5 ? -1 : 1;
     // Branch strands that never touch the trunk read as floating debris, not
     // branches (legibility: every drawn branch must visibly leave the trunk).
     // Keep only branches long enough to read (>= 6 cells) with an endpoint
     // adjacent to the trunk.
-    const trunk0 = t.strands.length && t.strands[0].trunk ? t.strands[0] : null;
     const trunkSet = new Set();
     if (trunk0) for (const p of trunk0.pts) trunkSet.add(key(p.cx, p.cy));
     const nearTrunk = (p) => {
@@ -342,10 +364,21 @@ function paintTrees(tctx, mw, G, seed, lumK, moonK) {
       const n = pts.length;
       if (n === 1) {
         // a lone wood cell: a bark dot, not a polygon (zero-area paths
-        // and zero-length gradients render nothing).
+        // and zero-length gradients render nothing). A living one gets
+        // the sprout's two-leaf bud — a seedling, never a speck.
         const sx = px((pts[0].cx + 0.5) * CELL_PX), sy = py((pts[0].cy + 0.5) * CELL_PX);
         tctx.fillStyle = gradeTreeRGB(barkRGBr3(seed, gid, t.dead, 0.5), lumK, moonK);
         tctx.beginPath(); tctx.arc(sx, sy, cellPx * 0.42, 0, Math.PI * 2); tctx.fill();
+        if (!t.dead) {
+          const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, 0.45), lumK, moonK);
+          const br2 = cellPx * 0.42;
+          tctx.fillStyle = `rgba(${lr},${lg},${lb},0.93)`;
+          for (const sgn of [-1, 1]) {
+            tctx.beginPath();
+            tctx.ellipse(sx + sgn * br2 * 0.9, sy - br2 * 1.1, br2 * 0.85, br2 * 0.5, sgn * 0.7, 0, Math.PI * 2);
+            tctx.fill();
+          }
+        }
         continue;
       }
       const SX = [], SY = [], SW = [];
@@ -361,11 +394,35 @@ function paintTrees(tctx, mw, G, seed, lumK, moonK) {
         // trunks readably wider than the 1-cell worldgen column; branches thin.
         // Junction knots are capped (the old rowW*0.9 floor grew diamond
         // bulges that read as bamboo segments).
-        let w = s.trunk ? (1.35 - 1.05 * tt) : (0.55 - 0.37 * tt) * brVar;
+        // Saplings (living stubs) are thin shoots, never triangles: no
+        // root flare, gentle taper. Dead trunks keep columnar width.
+        let w;
+        if (s.trunk && !deadTree && isStub) w = (0.62 - 0.30 * tt) * stubWVar;
+        else w = s.trunk ? (1.35 - 1.05 * tt) : (0.55 - 0.37 * tt) * brVar;
         if (rowW > 1) w = Math.max(w, Math.min(rowW * 0.55, w * 1.8));
         w = Math.max(w, 0.16);
-        if (s.trunk && i < 3) w *= 1 + 0.55 * (1 - i / 3); // root flare
+        if (s.trunk && i < 3 && !deadTree && !isStub) w *= 1 + 0.55 * (1 - i / 3); // root flare
         SW.push(w * cellPx);
+      }
+      if (s.trunk && (deadTree || isStub) && n >= 2) {
+        if (deadTree && n >= 3) {
+          // snapped, not pointed: the dead top kicks sideways and ends
+          // blunt — a break, never a spear tip.
+          SX[n - 1] += jagSide * SW[n - 1] * 0.9;
+          SX[n - 2] += jagSide * SW[n - 2] * 0.35;
+          SW[n - 1] *= 1.25; SW[n - 2] *= 1.1;
+        }
+        if (leanA !== 0) {
+          // the lean: rotate the strand around its base. Per-tree hash, so
+          // the palisade can never line up.
+          const bx = SX[0], by = SY[0];
+          const ca = Math.cos(leanA), sa = Math.sin(leanA);
+          for (let i = 1; i < n; i++) {
+            const dx = SX[i] - bx, dy = SY[i] - by;
+            SX[i] = bx + dx * ca - dy * sa;
+            SY[i] = by + dx * sa + dy * ca;
+          }
+        }
       }
       // contact shadow + roots: the trunk stands ON the ground
       if (s.trunk) {
@@ -436,12 +493,31 @@ function paintTrees(tctx, mw, G, seed, lumK, moonK) {
         }
         tctx.globalAlpha = 1;
       }
+      // sapling bud: a living stub is a baby tree, not a bare spike. Two
+      // tiny leaf puffs at the shoot tip — the sprout read (minimal,
+      // depictive: the renderer already authors crowns for readability).
+      if (s.trunk && !deadTree && isStub && n >= 2) {
+        const tipX = SX[n - 1], tipY = SY[n - 1];
+        const budR = cellPx * (0.85 + h3(seed, gid, 6203) * 0.5);
+        const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, 0.42), lumK, moonK);
+        const buds = [[0, -0.15, 1], [-0.55, 0.28, 0.72], [0.55, 0.30, 0.68]];
+        for (let bi = 0; bi < buds.length; bi++) {
+          const [ox, oy, rr] = buds[bi];
+          const jx = (h3(seed, gid, 6204 + bi) - 0.5) * budR * 0.4;
+          const jy = (h3(seed, gid, 6214 + bi) - 0.5) * budR * 0.3;
+          tctx.fillStyle = `rgba(${lr},${lg},${lb},0.93)`;
+          tctx.beginPath();
+          tctx.ellipse(tipX + ox * budR + jx, tipY + oy * budR + jy,
+            budR * rr, budR * rr * 0.70, ox * 0.6, 0, Math.PI * 2);
+          tctx.fill();
+        }
+      }
     }
     // one trunk -> one crown: a merged canopy mass anchored at the trunk top,
     // the trunk visibly entering it. Sleeve leaves lower on the trunk stay
     // in the albedo buffer as interior texture.
     const trunk = t.strands.length && t.strands[0].trunk ? t.strands[0] : null;
-    if (trunk && trunk.pts.length >= 5 && t.leaves.length >= 3 && !t.dead) {
+    if (trunk && trunk.pts.length >= 5 && t.leaves.length >= 3 && !t.dead && !isStub) {
       const top = trunk.pts[trunk.pts.length - 1];
       let minY = Infinity, maxY = -Infinity;
       for (const lf of t.leaves) {
@@ -824,6 +900,30 @@ function drawTint(pctx, e, W, H) {
  * renderWorldView(ctx, mw, view, opts) — the naturalistic painting.
  * (doc comment from M1 kept: world view only, no text, no UI.)
  */
+
+// Earth materials a creature must never be drawn inside (MAT ids from
+// grid.js). WOOD is deliberately exempt — climbing a trunk parks the
+// creature's feet inside wood cells, and that is legal.
+const UNBURY_SOLID = new Set([1, 2, 3, 4, 6, 9]); // SOIL SAND CLAY ROCK DEADWOOD BEDROCK
+
+// Renderer-only burial clamp: if the sim's position for a creature is
+// inside solid earth (or below the world grid), return a copy lifted to
+// the first non-earth cell above. The sim is untouched — this is purely
+// about never drawing an animal buried in solid ground.
+function unburyCreature(mw, oc) {
+  const { grid, cols } = mw;
+  const rows = grid.rows;
+  const ccx = Math.max(0, Math.min(cols - 1, Math.floor(oc.x / CELL_PX)));
+  const matAt = (cy) => (cy < 0 || cy >= rows ? -1 : grid.mat[cy * cols + ccx]);
+  let ccy = Math.floor(oc.y / CELL_PX);
+  const m0 = matAt(ccy);
+  if (m0 !== -1 && !UNBURY_SOLID.has(m0)) return oc;
+  ccy = Math.min(Math.max(ccy, 0), rows - 1);
+  let guard = 0;
+  while (guard++ < 120 && ccy > 0 && UNBURY_SOLID.has(matAt(ccy))) ccy--;
+  return { ...oc, y: (ccy + 1) * CELL_PX };
+}
+
 export function renderWorldView(ctx, mw, view, opts = {}) {
   // ANTI-SHIMMER (jank profile 2026-10-04): the page's camera lerp never
   // settles — view.x/view.y drift sub-pixel every frame, which churned the
@@ -930,13 +1030,19 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   // lean, squash, tail/head lag, spawn scale-in, blob shadow, rim light).
   const roster = opts.creatures || (opts.creature ? [opts.creature] : []);
   for (const oc of roster) {
-    const sx = px(oc.x), sy = py(oc.y);
+    // burial clamp (renderer-only, legibility 2026-10-04): the sim sometimes
+    // leaves a creature's position inside solid earth (probe: beetles 20+
+    // cells deep in rock, a grub below the world grid). A creature must
+    // never DRAW inside the ground — lift it to the first open cell above.
+    // WOOD is exempt (climbing a trunk is legal); tunnels (AIR) untouched.
+    const oc2 = unburyCreature(mw, oc);
+    const sx = px(oc2.x), sy = py(oc2.y);
     if (sx < -300 || sx > ctx.w + 300 || sy < -300 || sy > ctx.h + 300) continue;
-    const drawFn = (oc.drawing && oc.species && oc.species !== 'tanglekin')
+    const drawFn = (oc2.drawing && oc2.species && oc2.species !== 'tanglekin')
       ? drawSpeciesBody
-      : (oc.drawing ? drawGrownBody : drawCreature);
-    if (hasDocument) springDraw(ctx, oc, drawFn, px, py, scale, tick, dyn);
-    else drawFn(ctx, oc, px, py, scale);
+      : (oc2.drawing ? drawGrownBody : drawCreature);
+    if (hasDocument) springDraw(ctx, oc2, drawFn, px, py, scale, tick, dyn);
+    else drawFn(ctx, oc2, px, py, scale);
   }
 
   if (hasDocument) {
@@ -1636,7 +1742,11 @@ export const R3PAL = {
   clay:     [[10,56,18],[13,54,26],[16,52,34],[18,48,42],[20,44,50]],
   rock:     [[215,12,16],[216,10,26],[217,9,36],[218,8,46],[219,8,56]],
   bark:     [[16,58,14],[18,56,22],[20,54,30],[23,52,38],[26,50,46]],
-  deadwood: [[28,16,16],[30,14,24],[32,12,32],[34,10,40],[36,10,48]],
+  // deadwood: WEATHERED gray-brown, not fresh-cut brown (legibility
+  // 2026-10-04: the old dark red-brown read as corrupted geometry / mud
+  // fence; silvered wood reads "dead tree" at a glance). Lifted and
+  // desaturated; hue still drifts warm along the ramp.
+  deadwood: [[26,12,20],[28,11,28],[30,10,36],[32,10,44],[34,11,52]],
   leaf:     [[102,58,12],[107,56,20],[110,54,28],[104,50,36],[96,46,44]],
   water:    [[210,62,12],[208,60,22],[206,56,32],[203,50,42],[200,44,52]],
   bedrock:  [[222,14,6],[223,12,10],[224,10,14],[225,10,18],[226,10,22]],
@@ -1868,7 +1978,11 @@ function paintSkyCache(pctx, mw, view, G, W, H, horizonY, pal, e, dayK) {
     pctx.beginPath(); pctx.arc(mx - mr * 0.35, my - mr * 0.2, mr * 0.85, 0, Math.PI * 2); pctx.fill();
   }
 
-  // clouds: billow puffs from the live weather columns
+  // clouds: coherent billow masses with shaded bases — never polka dots.
+  // (Legibility 2026-10-04: the old many-small-puffs wash read as white
+  // wallpaper dots on a cream void and drowned the blue gradient.) Fewer,
+  // larger puffs merged into masses; a cool underside gives each mass
+  // volume; total alpha is capped so the authored sky keeps its blue.
   if (mw.sky && mw.sky.cols) {
     const worldW = cols * CELL_PX;
     for (let i = 0; i < mw.sky.cols.length; i++) {
@@ -1877,30 +1991,37 @@ function paintSkyCache(pctx, mw, view, G, W, H, horizonY, pal, e, dayK) {
       const drift = ((tick * c.windU * 0.06 + h3(seed, i, 31) * 600) % (worldW + 900) + worldW + 900) % (worldW + 900) - 450;
       const wx = i * SKY_COL_W + drift * 0.3;
       const sx = G.px(wx);
-      if (sx < -500 || sx > W + 500) continue;
+      if (sx < -600 || sx > W + 600) continue;
       const sysK = 0.25 + 0.75 * sstep(0.32, 0.72, vnoise1(seed, i * 0.33, 33));
       const sy = H * (0.05 + h3(seed, i, 32) * 0.30);
-      const cr = G.cellPx * (2.0 + c.cloud * 4.0);
+      const cr = G.cellPx * (3.4 + c.cloud * 7.5);
       const dark = clamp01(1 - (e + 0.25) / 0.6);
       const storm = clamp01((c.cloud - 0.5) / 0.4);
       // night clouds stay whisper-thin — dark smears kill the sky
       const nightDim = 0.25 + 0.75 * dayK;
-      const baseA = (0.13 + c.cloud * 0.26) * sysK * nightDim; // grade: was 0.10+0.22c
-      const nPuff = 4 + Math.round(c.cloud * 5);
+      const baseA = (0.09 + c.cloud * 0.16) * sysK * nightDim;
+      const nPuff = 2 + Math.round(c.cloud * 3);
       for (let k = 0; k < nPuff; k++) {
         const kk = i * 17 + k;
-        const px2 = sx + (h3(seed, kk, 34) - 0.5) * 2.4 * cr;
-        const py2 = sy + (h3(seed, kk, 35) - 0.5) * 1.1 * cr;
-        const pr = cr * (0.45 + h3(seed, kk, 36) * 0.75);
+        const px2 = sx + (h3(seed, kk, 34) - 0.5) * 1.6 * cr;
+        const py2 = sy + (h3(seed, kk, 35) - 0.5) * 0.7 * cr;
+        const pr = cr * (0.95 + h3(seed, kk, 36) * 1.05);
         const tr = Math.round(255 - dark * 70 - storm * 30);
         const tg = Math.round(252 - dark * 70 - storm * 28);
         const tb = Math.round(248 - dark * 60 - storm * 22);
-        const pa = (baseA * (0.75 + 0.25 * h3(seed, kk, 37))).toFixed(3);
-        // elliptical puffs (natural stratus stretch), soft radial fade —
-        // never soap-bubbles: edges always dissolve, never ring
+        const pa = (baseA * (0.8 + 0.2 * h3(seed, kk, 37))).toFixed(3);
+        // elliptical masses (natural stratus stretch), soft radial fade —
+        // edges always dissolve, never ring
         pctx.save();
         pctx.translate(px2, py2);
-        pctx.scale(1.7, 0.62);
+        pctx.scale(1.9, 0.66);
+        // cool shaded base first: the volume cue that says "cloud"
+        const bg = pctx.createRadialGradient(0, pr * 0.30, 0, 0, pr * 0.30, pr);
+        bg.addColorStop(0, `rgba(196, 212, 230, ${(pa * 0.55).toFixed(3)})`);
+        bg.addColorStop(1, 'rgba(196, 212, 230, 0)');
+        pctx.fillStyle = bg;
+        pctx.beginPath(); pctx.arc(0, pr * 0.30, pr, 0, Math.PI * 2); pctx.fill();
+        // lit crown over it
         const pg = pctx.createRadialGradient(0, 0, 0, 0, 0, pr);
         pg.addColorStop(0, `rgba(${tr},${tg},${tb},${pa})`);
         pg.addColorStop(1, `rgba(${tr},${tg},${tb},0)`);
