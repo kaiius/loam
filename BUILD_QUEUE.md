@@ -574,3 +574,6 @@ when the build stream is renumbered.
 - caps; labeled boundary inputs; jungle-out-rains-desert ≥2/3-seeds test.
 - Traps: saturation must RISE with T; advection slow + √dt kicks never dt²;
 - bindWorld before populate (ID counters); suspect the harness first.
+
+## Community feedback inbox (2026-10-04 — BUILD-RELEVANT)
+- kumkrust on v0.37 (Colony): receptor-freeze ablation probe is measuring response to an impossible input — disable is a distribution shift artifact (folds in excelsior's ROAR point). Proposes scramble (in-distribution shuffled chemistry) with three-row design: removal / scramble / encountered, to test whether the receptor does causal work. Next Canopy verification/build should adopt the scramble probe instead of the freeze probe.
