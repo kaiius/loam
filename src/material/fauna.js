@@ -135,7 +135,7 @@ const QUAD = {
   'scurrier':     { bodyLen: 0.50, bodyH: 0.15, legLen: 0.22, headR: 0.125, ear: 'round',  tail: 0.50, neck: 0.14, bulk: 0.90, snout: 'point' },
 };
 
-function drawQuadruped(ctx, d, pose, id, q) {
+function drawQuadruped(ctx, d, pose, id, q, screenH = 999) {
   const H = d.heightPx, W = d.widthPx;
   const P = palette(d);
   const crouch = pose.crouch;
@@ -179,9 +179,10 @@ function drawQuadruped(ctx, d, pose, id, q) {
     ctx.fillStyle = vgrad(ctx, bodyY - bodyH, bodyY, P.top, P.mid);
     ctx.beginPath(); ctx.ellipse(bodyL * 0.22, bodyY - bodyH * 0.42, bodyL * 0.20, bodyH * 0.34, 0, 0, Math.PI * 2); ctx.fill();
   }
-  // coat pattern whisper + fur + rim
-  furStrokes(ctx, id, 0, bodyY, bodyL * 0.45, bodyH * 0.5, Math.PI + pose.spineLean * 0.4, 26 + Math.round(d.fur * 30), 4.5, P.pale, P.dark, 900);
-  rimArc(ctx, 0, bodyY, bodyL * 0.48, bodyH * 0.60, pose.spineLean * 0.4, P.pale, 0.4, 1.6);
+  // coat pattern whisper + fur + rim — texture gated by on-screen size
+  const furNq = screenH > 130 ? 26 + Math.round(d.fur * 30) : screenH > 85 ? 12 : 0;
+  if (furNq > 0) furStrokes(ctx, id, 0, bodyY, bodyL * 0.45, bodyH * 0.5, Math.PI + pose.spineLean * 0.4, furNq, 4.5, P.pale, P.dark, 900);
+  rimArc(ctx, 0, bodyY, bodyL * 0.48, bodyH * 0.60, pose.spineLean * 0.4, P.pale, screenH > 130 ? 0.32 : 0.15, 1.6);
 
   // --- near-side legs ------------------------------------------------------------
   const f2 = { x: hipFX + Math.sin(ph + Math.PI) * amp * limpK, y: -Math.max(0, Math.cos(ph + Math.PI)) * amp * 0.4 * limpK };
@@ -213,7 +214,7 @@ function drawQuadruped(ctx, d, pose, id, q) {
   } else {
     ctx.beginPath(); ctx.arc(hx - headR * 0.55, hy - headR * 0.75 + earBack * headR * 0.3, headR * 0.34 * d.earScale, 0, Math.PI * 2); ctx.fill();
   }
-  furStrokes(ctx, id, hx, hy, headR * 0.8, headR * 0.8, 0.4, 10, 3, P.pale, P.dark, 950);
+  furStrokes(ctx, id, hx, hy, headR * 0.8, headR * 0.8, 0.4, screenH > 85 ? 10 : 0, 3, P.pale, P.dark, 950);
   // muzzle + nose
   const mzx = hx + headR * (q.snout === 'point' ? 0.72 : 0.55), mzy = hy + headR * 0.30;
   const mrx = headR * (q.snout === 'point' ? 0.55 : 0.42) * (0.7 + 0.5 * d.mouthSize);
@@ -240,7 +241,7 @@ function drawQuadruped(ctx, d, pose, id, q) {
   } else {
     ctx.beginPath(); ctx.moveTo(mzx - mrx * 0.4, mzy + headR * 0.18); ctx.lineTo(mzx + mrx * 0.4, mzy + headR * 0.16); ctx.stroke();
   }
-  rimArc(ctx, hx, hy, headR * 0.96, headR * 0.96, 0, P.pale, 0.35, 1.4);
+  rimArc(ctx, hx, hy, headR * 0.96, headR * 0.96, 0, P.pale, screenH > 130 ? 0.30 : 0.14, 1.4);
 }
 
 // --- BIRD ----------------------------------------------------------------------
@@ -251,7 +252,7 @@ const BIRD = {
   'vulture': { wing: 1.45, beak: 'hooked', bare: true, tailFan: 0.85, bulk: 1.15 },
 };
 
-function drawBird(ctx, d, pose, id, b) {
+function drawBird(ctx, d, pose, id, b, screenH = 999) {
   const H = d.heightPx, W = d.widthPx;
   const P = palette(d);
   const flying = pose.glide || pose.gaitAmp > H * 0.02;
@@ -278,7 +279,7 @@ function drawBird(ctx, d, pose, id, b) {
   // --- body ----------------------------------------------------------------------------
   ctx.fillStyle = vgrad(ctx, bodyY - bodyH, bodyY + bodyH, P.top, P.belly);
   ctx.beginPath(); ctx.ellipse(0, bodyY, bodyL * 0.5, bodyH * 0.62, -0.12, 0, Math.PI * 2); ctx.fill();
-  furStrokes(ctx, id, 0, bodyY, bodyL * 0.45, bodyH * 0.5, Math.PI * 0.9, 20, 4, P.pale, P.dark, 960);
+  if (screenH > 85) furStrokes(ctx, id, 0, bodyY, bodyL * 0.45, bodyH * 0.5, Math.PI * 0.9, 20, 4, P.pale, P.dark, 960);
 
   // --- wings: FILLED, broad, fingered primaries -------------------------------------------
   const shX = 0, shY = bodyY - bodyH * 0.5;
@@ -355,7 +356,7 @@ function drawBird(ctx, d, pose, id, b) {
     ctx.beginPath(); ctx.moveTo(-W * 0.02, bodyY + bodyH * 0.4); ctx.lineTo(-W * 0.02, 0); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(W * 0.08, bodyY + bodyH * 0.4); ctx.lineTo(W * 0.08, 0); ctx.stroke();
   }
-  rimArc(ctx, 0, bodyY, bodyL * 0.48, bodyH * 0.60, -0.12, P.pale, 0.35, 1.4);
+  rimArc(ctx, 0, bodyY, bodyL * 0.48, bodyH * 0.60, -0.12, P.pale, screenH > 130 ? 0.30 : 0.14, 1.4);
 }
 
 // the beak: straight (skimmer) or hooked (vulture), gape with mouthOpen
@@ -385,7 +386,7 @@ function drawBeak(ctx, b, hx, hy, headR, pose) {
 // --- BEETLE ----------------------------------------------------------------------
 // beetle (pollinator), beetle-detritivore (midden cleaner). Elytra with a
 // center split, six legs in tripod gait, questing antennae.
-function drawBeetle(ctx, d, pose, id, detrit) {
+function drawBeetle(ctx, d, pose, id, detrit, screenH = 999) {
   const H = d.heightPx, W = d.widthPx;
   const P = palette(d);
   const bulk = detrit ? 1.22 : 1.0;
@@ -449,7 +450,7 @@ function drawBeetle(ctx, d, pose, id, detrit) {
 // --- FLUTTER (butterfly) -----------------------------------------------------------
 // Soft prey, pollinator. Two big wing pairs held up like a resting
 // butterfly, flapping — always readable from the side.
-function drawFlutter(ctx, d, pose, id) {
+function drawFlutter(ctx, d, pose, id, screenH = 999) {
   const H = d.heightPx;
   const P = palette(d);
   const flap = Math.sin(pose.gaitPhase * 2.5 + id); // -1..1
@@ -513,7 +514,7 @@ function drawFlutter(ctx, d, pose, id) {
   ctx.globalAlpha = 1;
 }
 
-function drawGrub(ctx, d, pose, id) {
+function drawGrub(ctx, d, pose, id, screenH = 999) {
   const H = d.heightPx, W = d.widthPx;
   const P = palette(d);
   const n = 6;
@@ -545,11 +546,11 @@ function drawGrub(ctx, d, pose, id) {
     const lx = -segL * n * 0.42 + segL * (1.5 + p * 1.2);
     ctx.beginPath(); ctx.moveTo(lx, -H * 0.045); ctx.lineTo(lx + H * 0.008, 0); ctx.stroke();
   }
-  furStrokes(ctx, id, 0, -H * 0.06, segL * n * 0.4, H * 0.06, 0.2, 12, 2.5, P.pale, P.dark, 970);
+  if (screenH > 85) furStrokes(ctx, id, 0, -H * 0.06, segL * n * 0.4, H * 0.06, 0.2, 12, 2.5, P.pale, P.dark, 970);
 }
 
 // --- sleep: the curled rest, per body plan ------------------------------------------
-function sleepBlob(ctx, d, P, H, W, kind) {
+function sleepBlob(ctx, d, P, H, W, kind, screenH = 999) {
   const R = H * (kind === 'bird' ? 0.20 : kind === 'insect' ? 0.16 : 0.22);
   const breathe = 1 + (d.pose ? d.pose.breath * 0.04 : 0);
   ctx.fillStyle = vgrad(ctx, -R * 2.2, -R * 0.4, P.top, P.belly);
@@ -562,8 +563,8 @@ function sleepBlob(ctx, d, P, H, W, kind) {
     ctx.fillStyle = P.head;
     ctx.beginPath(); ctx.arc(R * 0.45, -R * 1.5, R * 0.5, 0, Math.PI * 2); ctx.fill();
   }
-  furStrokes(ctx, d.creatureId || 0, 0, -R * 1.2, R, R * 0.8, 0.3, 16, 3.5, P.pale, P.dark, 980);
-  rimArc(ctx, 0, -R * 1.2, R * 1.0, R * 0.82, 0.15, P.pale, 0.3, 1.4);
+  if (screenH > 85) furStrokes(ctx, d.creatureId || 0, 0, -R * 1.2, R, R * 0.8, 0.3, 16, 3.5, P.pale, P.dark, 980);
+  rimArc(ctx, 0, -R * 1.2, R * 1.0, R * 0.82, 0.15, P.pale, screenH > 130 ? 0.28 : 0.14, 1.4);
 }
 
 // --- dispatcher ------------------------------------------------------------------------
@@ -581,19 +582,22 @@ export function drawSpeciesBody(ctx, oc, px, py, scale) {
     sp === 'skimmer' || sp === 'vulture' ? 'bird' :
     sp === 'beetle' || sp === 'beetle-detritivore' ? 'insect' :
     sp === 'flutter' ? 'flutter' : sp === 'grub' ? 'grub' : 'quad';
+  // on-screen size gates texture detail: below ~85px, dense fur strokes are
+  // noise and hard rims become white scratches (appeal pass)
+  const screenH = H * scale;
 
   if (pose.curled > 0.5) {
-    sleepBlob(ctx, { ...d, pose }, palette(d), H, W, kind);
+    sleepBlob(ctx, { ...d, pose }, palette(d), H, W, kind, screenH);
     ctx.restore();
     return;
   }
 
-  if (sp === 'skimmer' || sp === 'vulture') drawBird(ctx, d, pose, id, BIRD[sp]);
-  else if (sp === 'beetle') drawBeetle(ctx, d, pose, id, false);
-  else if (sp === 'beetle-detritivore') drawBeetle(ctx, d, pose, id, true);
-  else if (sp === 'flutter') drawFlutter(ctx, d, pose, id);
-  else if (sp === 'grub') drawGrub(ctx, d, pose, id);
-  else drawQuadruped(ctx, d, pose, id, QUAD[sp] || QUAD['scurrier']);
+  if (sp === 'skimmer' || sp === 'vulture') drawBird(ctx, d, pose, id, BIRD[sp], screenH);
+  else if (sp === 'beetle') drawBeetle(ctx, d, pose, id, false, screenH);
+  else if (sp === 'beetle-detritivore') drawBeetle(ctx, d, pose, id, true, screenH);
+  else if (sp === 'flutter') drawFlutter(ctx, d, pose, id, screenH);
+  else if (sp === 'grub') drawGrub(ctx, d, pose, id, screenH);
+  else drawQuadruped(ctx, d, pose, id, QUAD[sp] || QUAD['scurrier'], screenH);
 
   ctx.restore();
 }

@@ -912,6 +912,7 @@ function drawGrownBody(ctx, c, px, py, scale) {
   ctx.scale(scale * (c.facing >= 0 ? 1 : -1), scale);
 
   const H = d.heightPx, W = d.widthPx;
+  const screenH = H * scale; // on-screen px: detail below ~85px is noise, not texture
   const coatH = d.coatHue01 * 360, coatS = d.coatSat01 * 100;
   const col = (pig, L, sMul = 1) =>
     `hsl(${(coatH + pig.hueDeg + 360) % 360}, ${Math.max(8, Math.min(90, coatS * sMul + pig.satShift))}%, ${L}%)`;
@@ -920,7 +921,7 @@ function drawGrownBody(ctx, c, px, py, scale) {
     furDark = col(d.pigTorso, 16), markDark = col(d.pigTorso, 15, 0.9),
     scarCol = `hsl(${coatH}, 22%, 64%)`, handCol = col(d.pigLimbs, 18);
 
-  if (pose.curled > 0.5) { drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol, coatH); ctx.restore(); return; }
+  if (pose.curled > 0.5) { drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol, coatH, screenH); ctx.restore(); return; }
 
   // --- skeleton ------------------------------------------------------------
   const crouch = pose.crouch;
@@ -928,14 +929,16 @@ function drawGrownBody(ctx, c, px, py, scale) {
   const torsoLen = H * 0.34;
   const lean = pose.spineLean + pose.sway * 0.12;
   const shX = Math.sin(lean) * torsoLen, shY = hipY - Math.cos(lean) * torsoLen;
-  const torsoW = W * 0.42 * (1 + pose.breath * 0.03);
+  const torsoW = W * 0.40 * (1 + pose.breath * 0.03); // slimmed from 0.42:
+  // the 0.80-wide torso ellipse read as a ball; a waist reads as a body
   // Primate proportions (Joshua, 2026-10-04): the tanglekin reads monkey,
   // not frog-baby — smaller head relative to the torso, long forelimbs,
   // legs that reach the ground. The genome still drives H/W/coat/ears;
   // these fractions are the art's species read.
   const legLen = H * (0.32 + 0.14 * d.legLength01);
   const armLen = H * 0.40;
-  const headR = W * 0.22;
+  const headR = W * 0.245; // up a touch from 0.22: the face needs room for
+  // readable eyes + mask at game-view sizes, still well clear of frog-baby
 
   // two-bone IK: joint position for (root → target), bending to bendSign.
   const ik = (rx, ry, tx, ty, l1, l2, bendSign) => {
@@ -996,7 +999,8 @@ function drawGrownBody(ctx, c, px, py, scale) {
   drawTail(ctx, d, pose, id, -W * 0.22, hipY + H * 0.03, furLimb);
 
   // --- fur halo (shaggy bodies read soft) ------------------------------------
-  if (d.fur > 0.35) {
+  // gated by on-screen size: below ~85px the halo is blur, not fur
+  if (d.fur > 0.35 && screenH > 85) {
     ctx.save();
     ctx.translate(shX / 2, (hipY + shY) / 2); ctx.rotate(lean);
     ctx.globalAlpha = 0.10 * d.fur; ctx.fillStyle = furPale;
@@ -1018,11 +1022,13 @@ function drawGrownBody(ctx, c, px, py, scale) {
   ctx.fillStyle = furPale; ctx.globalAlpha = 0.85;
   ctx.beginPath(); ctx.ellipse(torsoW * 0.26, torsoLen * 0.06, torsoW * 0.36, torsoLen * 0.52, 0.15, 0, Math.PI * 2); ctx.fill();
   ctx.globalAlpha = 1;
-  drawCoatPattern(ctx, d, id, torsoW, torsoLen, markDark, furPale);
+  drawCoatPattern(ctx, d, id, torsoW, torsoLen, markDark, furPale, screenH);
   drawTorsoScars(ctx, d, id, torsoW, torsoLen, scarCol);
-  // fur + rim light over the torso
-  artHelpers.furStrokes(ctx, id, 0, 0, torsoW * 0.78, torsoLen * 0.70, 0.1, 24 + Math.round(d.fur * 26), 4.5, furPale, furDark, 500);
-  artHelpers.rimArc(ctx, 0, 0, torsoW * 0.78, torsoLen * 0.70, 0, furPale, 0.38, 1.6);
+  // fur + rim light over the torso — both scaled back at game-view sizes,
+  // where dense strokes turn to noise and hard rims to white scratches
+  const furN = screenH > 130 ? 24 + Math.round(d.fur * 26) : screenH > 85 ? 12 : 0;
+  if (furN > 0) artHelpers.furStrokes(ctx, id, 0, 0, torsoW * 0.78, torsoLen * 0.70, 0.1, furN, 4.5, furPale, furDark, 500);
+  artHelpers.rimArc(ctx, 0, 0, torsoW * 0.78, torsoLen * 0.70, 0, furPale, screenH > 130 ? 0.30 : 0.16, 1.6);
   ctx.restore();
 
   // --- bud flaps (membrane / sail / fin / gill) -------------------------------
@@ -1069,7 +1075,10 @@ function drawGrownBody(ctx, c, px, py, scale) {
   }
 
   // --- head + face: the affect readout ------------------------------------------
-  drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, furDark, scarCol, coatH);
+  // neck: a soft shadow where head meets torso, so the head sits ON the body
+  ctx.fillStyle = 'rgba(10, 8, 5, 0.20)';
+  ctx.beginPath(); ctx.ellipse(shX, shY - headR * 0.35, headR * 0.55, headR * 0.42, lean * 0.5, 0, Math.PI * 2); ctx.fill();
+  drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, furDark, scarCol, coatH, screenH);
 
   ctx.restore();
 }
@@ -1098,26 +1107,34 @@ function drawTail(ctx, d, pose, id, bx, by, color) {
 // Coat patterning in the torso's local frame (already translated+rotated).
 // Spots / stripes / plain grain — density from the genome, placement from
 // the individual's hash salt. Deterministic, decorative, never sim.
-function drawCoatPattern(ctx, d, id, torsoW, torsoLen, markDark, furPale) {
+// Restraint is the design (appeal pass): stripes are soft broken dashes on
+// the upper back only — never horizontal bands around the whole torso, which
+// read as grub/watermelon. Below ~110px on screen, patterning is noise, so
+// only the grain shows. screenH defaults large for callers without a scale.
+function drawCoatPattern(ctx, d, id, torsoW, torsoLen, markDark, furPale, screenH = 999) {
   const dens = d.patternDensity;
   if (d.pattern === 'spots') {
-    const n = Math.round(dens * 16);
+    if (screenH < 110) return;
+    const n = Math.round(dens * 12);
     ctx.fillStyle = markDark;
     for (let i = 0; i < n; i++) {
       const a = h4(id, 200 + i, 7) * Math.PI * 2, r = 0.15 + h4(id, 300 + i, 7) * 0.62;
       const sx = Math.cos(a) * torsoW * 0.80 * r, sy = Math.sin(a) * torsoLen * 0.72 * r;
-      ctx.globalAlpha = 0.5;
-      ctx.beginPath(); ctx.ellipse(sx, sy, 1.6 + h4(id, 400 + i, 7) * 2.6, 1.4 + h4(id, 500 + i, 7) * 2.0, a, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.32;
+      ctx.beginPath(); ctx.ellipse(sx, sy, 1.4 + h4(id, 400 + i, 7) * 2.0, 1.2 + h4(id, 500 + i, 7) * 1.6, a, 0, Math.PI * 2); ctx.fill();
     }
     ctx.globalAlpha = 1;
   } else if (d.pattern === 'stripes') {
-    const n = 3 + Math.round(dens * 6);
+    if (screenH < 110) return;
+    const n = 2 + Math.round(dens * 3);
     ctx.fillStyle = markDark;
     for (let i = 0; i < n; i++) {
-      const fy = -0.75 + (i + h4(id, 210 + i, 7) * 0.6) / n * 1.5;
-      const sy = fy * torsoLen * 0.72, wdt = torsoW * 0.80 * Math.sqrt(Math.max(0.1, 1 - fy * fy));
-      ctx.globalAlpha = 0.42;
-      ctx.beginPath(); ctx.ellipse(0, sy, wdt, torsoLen * 0.05, 0, 0, Math.PI * 2); ctx.fill();
+      // short soft dashes along the upper back, jittered — tabby spine, not bands
+      const t = n === 1 ? 0.5 : i / (n - 1);
+      const cx = (h4(id, 210 + i, 7) - 0.5) * torsoW * 0.9;
+      const cy = -torsoLen * (0.30 + t * 0.35);
+      ctx.globalAlpha = 0.22;
+      ctx.beginPath(); ctx.ellipse(cx, cy, torsoW * (0.16 + h4(id, 230 + i, 7) * 0.10), torsoLen * 0.035, (h4(id, 240 + i, 7) - 0.5) * 0.4, 0, Math.PI * 2); ctx.fill();
     }
     ctx.globalAlpha = 1;
   } else {
@@ -1154,7 +1171,7 @@ function drawTorsoScars(ctx, d, id, torsoW, torsoLen, scarCol) {
 // The head: skull, ears per genome, and the face — eyes (openness = affect),
 // brow (fear/pain), muzzle + mouth (eating/calling). Drawn in a head-local
 // frame rotated by spine lean + head pitch, facing +x.
-function drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, furDark, scarCol, coatH) {
+function drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, furDark, scarCol, coatH, screenH = 999) {
   const pitch = lean + pose.headPitch;
   const hx = shX + Math.sin(pitch) * headR * 1.02;
   const hy = shY - Math.cos(pitch) * headR * 1.02;
@@ -1196,21 +1213,32 @@ function drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, fur
   artHelpers.furStrokes(ctx, id, 0, -headR * 0.2, headR * 0.85, headR * 0.7, 0.5, 12, 3, furPale, furDark, 510);
   artHelpers.rimArc(ctx, 0, 0, headR * 0.94, headR * 0.94, 0, furPale, 0.32, 1.3);
 
-  // eye: shaded orb, openness from the affect readout — a window, not a bead
-  const erx = headR * (0.15 + 0.24 * d.eyeSize);
+  // face mask: a soft pale field behind eyes + muzzle — the readable
+  // "monkey face" (capuchin-like: pale face, dark cap). This is what makes
+  // the eye read at game-view sizes instead of sinking into the coat.
+  ctx.fillStyle = furPale; ctx.globalAlpha = 0.55;
+  ctx.beginPath(); ctx.ellipse(headR * 0.30, headR * 0.10, headR * 0.58, headR * 0.52, 0.1, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // eye: shaded orb, openness from the affect readout — a window, not a bead.
+  // sized to read at distance: the old eye vanished below ~100px on screen.
+  const erx = headR * (0.19 + 0.30 * d.eyeSize);
   const ery = Math.max(0.6, erx * pose.eyeOpenNow);
   const exx = headR * 0.40, eyy = -headR * 0.08;
   artHelpers.drawEye(ctx, exx, eyy, erx, pose.eyeOpenNow);
 
-  // brow: a light ridge that lowers and angles with fear / pain
+  // brow: a light ridge that lowers and angles with fear / pain — quiet
+  // unless the affect is strong, so the resting face stays open
   const bd = pose.browDrop;
-  ctx.strokeStyle = furDark; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1, headR * 0.07);
-  ctx.globalAlpha = 0.55 + bd * 0.45;
-  ctx.beginPath();
-  ctx.moveTo(exx - erx * 0.85, eyy - ery - headR * 0.24);
-  ctx.lineTo(exx + erx * 0.80, eyy - ery - headR * 0.24 + bd * headR * 0.30);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
+  if (bd > 0.2 || screenH > 130) {
+    ctx.strokeStyle = furDark; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1, headR * 0.05);
+    ctx.globalAlpha = 0.30 + bd * 0.50;
+    ctx.beginPath();
+    ctx.moveTo(exx - erx * 0.85, eyy - ery - headR * 0.24);
+    ctx.lineTo(exx + erx * 0.80, eyy - ery - headR * 0.24 + bd * headR * 0.30);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
 
   // muzzle: tucked under the eye, sized by the mouth gene — no beak
   const mzx = headR * 0.52, mzy = headR * 0.42;
@@ -1236,7 +1264,7 @@ function drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, fur
 // Sleep: the curled ball. Head tucked, limbs folded, tail wrapped —
 // recognizable at a glance, drawn from the same coat (same values as the
 // awake body, so it reads as the same animal asleep, not a different one).
-function drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol, coatH) {
+function drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol, coatH, screenH = 999) {
   const R = H * 0.26;
   const breathe = 1 + pose.breath * 0.04;
   const ballGrad = ctx.createLinearGradient(0, -R * 2, 0, 0);
@@ -1256,7 +1284,7 @@ function drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol,
   ctx.strokeStyle = furTorso; ctx.lineWidth = 5;
   ctx.beginPath(); ctx.moveTo(-R * 0.3, -R * 0.35); ctx.quadraticCurveTo(-R * 0.7, -R * 0.5, -R * 0.5, -R * 0.9); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(R * 0.5, -R * 0.4); ctx.quadraticCurveTo(R * 0.9, -R * 0.55, R * 0.65, -R * 0.95); ctx.stroke();
-  drawCoatPattern(ctx, d, id, R * 1.05, R * 0.95, `hsl(${coatH}, 30%, 15%)`, furPale);
+  drawCoatPattern(ctx, d, id, R * 1.05, R * 0.95, `hsl(${coatH}, 30%, 15%)`, furPale, screenH);
 }
 
 // --- M2: INSPECT VIEW ----------------------------------------------------------
@@ -2425,14 +2453,20 @@ function springDraw(ctx, oc, drawFn, px, py, scale, tick, dyn) {
   }
 
   // directional rim light from the sun/moon side (takeaway #12)
+  // curled sleepers get a rim fitted to the sleeping ball, not the standing
+  // height — otherwise the arc floats detached above the body (the "white
+  // scratch" artifact)
+  const curled = !!(oc.drawing && oc.drawing.pose && oc.drawing.pose.curled > 0.5);
+  const rimCY = s.sy - hgt * (curled ? 0.234 : 0.42);
+  const rimR = hgt * (curled ? 0.26 : 0.30);
   const dayRim = sunE > -0.05;
   ctx.save();
   ctx.strokeStyle = dayRim ? 'rgba(255, 236, 200, 0.22)' : 'rgba(190, 205, 240, 0.35)';
   ctx.lineWidth = Math.max(1, hgt * 0.02);
   ctx.lineCap = 'round';
   ctx.beginPath();
-  if (dayRim) ctx.arc(s.sx, s.sy - hgt * 0.42, hgt * 0.30, Math.PI * 0.90, Math.PI * 1.70);
-  else ctx.arc(s.sx, s.sy - hgt * 0.42, hgt * 0.30, Math.PI * 1.05, Math.PI * 1.95);
+  if (dayRim) ctx.arc(s.sx, rimCY, rimR, Math.PI * 0.90, Math.PI * 1.70);
+  else ctx.arc(s.sx, rimCY, rimR, Math.PI * 1.05, Math.PI * 1.95);
   ctx.stroke();
   ctx.restore();
 }
