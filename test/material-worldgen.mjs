@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { generateMaterialWorld, checkViability } from '../src/material/worldgen.js';
+import { generateMaterialWorld, checkViability, treeArchParams } from '../src/material/worldgen.js';
 import { MAT, CELL_PX } from '../src/material/grid.js';
 
 const LAND_KEYS = new Set(['arctic', 'mountains', 'jungle', 'plains', 'desert', 'archipelago']);
@@ -156,4 +156,72 @@ test('material: returned world keeps the contract shape', () => {
   assert.ok(grownSeen > 0, 'world has grown cells');
   // fruiting plants exist (G1)
   assert.ok(w.plants.filter((p) => p.fruiting).length >= 8, '≥ 8 fruiting plants');
+});
+
+// --- M4 tree architecture ------------------------------------------------------
+
+test('m4: treeArchParams is deterministic and bounded', () => {
+  const a = treeArchParams(7, 3), b = treeArchParams(7, 3);
+  assert.deepEqual(a, b, 'same (seed, pid) → same params');
+  const D2R = Math.PI / 180;
+  assert.ok(Math.abs(a.lean) <= 8 * D2R + 1e-12, `lean ±8°, got ${(a.lean / D2R).toFixed(2)}°`);
+  assert.ok([4, 5, 6].includes(a.branchK), `branchK ∈ {4,5,6}, got ${a.branchK}`);
+});
+
+test('m4: per-tree variation — adjacent plants do not share architecture', () => {
+  const leans = new Set(), ks = new Set();
+  for (let pid = 1; pid <= 24; pid++) {
+    const p = treeArchParams(7, pid);
+    leans.add(p.lean.toFixed(6));
+    ks.add(p.branchK);
+  }
+  assert.ok(leans.size > 20, `leans vary per tree (got ${leans.size}/24 distinct)`);
+  assert.ok(ks.size >= 2, `branch intervals vary (got ${[...ks]})`);
+});
+
+test('m4: trees keep a dominant leader (apical dominance)', () => {
+  // For each large plant, the tallest single-column vertical wood run
+  // should be a large fraction of the plant's height — the leader climbs,
+  // branches stay subordinate.
+  const w = generateMaterialWorld(7, 1);
+  const { grid, cols, rows } = w;
+  let checked = 0;
+  for (const p of w.plants) {
+    if (p.wood < 60) continue; // jungle trees only
+    const gid = p.id % 65536;
+    let top = rows, bottom = 0;
+    const colRuns = new Map(); // x -> longest vertical run of this plant's wood
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const i = y * cols + x;
+      if (grid.mat[i] === MAT.WOOD && grid.grownId[i] === gid) {
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+    const height = bottom - top;
+    if (height < 20) continue;
+    // longest vertical run in any single column
+    let best = 0;
+    for (let x = 0; x < cols; x++) {
+      let run = 0;
+      for (let y = 0; y < rows; y++) {
+        const i = y * cols + x;
+        if (grid.mat[i] === MAT.WOOD && grid.grownId[i] === gid) { run++; best = Math.max(best, run); }
+        else run = 0;
+      }
+    }
+    assert.ok(best >= height * 0.45, `plant ${p.id}: leader run ${best} ≥ 45% of height ${height}`);
+    checked++;
+  }
+  assert.ok(checked >= 3, `checked ${checked} large trees`);
+});
+
+test('m4: branch wood stays connected and climbable (no orphans introduced)', () => {
+  const w = generateMaterialWorld(7, 1);
+  assert.equal(w.orphansDeleted, 0, `no orphans deleted, got ${w.orphansDeleted}`);
+  // every plant still grows a real crown: wood + leaf both present
+  for (const p of w.plants) {
+    assert.ok(p.wood > 0, `plant ${p.id} has wood`);
+    assert.ok(p.leaf > 0, `plant ${p.id} has leaves`);
+  }
 });

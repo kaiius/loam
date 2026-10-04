@@ -204,11 +204,23 @@ function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
       byGid.get(gid).push({ cx, cy, dead: m === MAT.DEADWOOD });
     }
   }
-  const dl = (c) => {
-    const r = c[0] * lumK + (148 - c[0]) * moonK;
-    const g = c[1] * lumK + (168 - c[1]) * moonK;
-    const b = c[2] * lumK + (224 - c[2]) * moonK;
+  const dl = (c, m = 1) => {
+    const r = (c[0] * lumK + (148 - c[0]) * moonK) * m;
+    const g = (c[1] * lumK + (168 - c[1]) * moonK) * m;
+    const b = (c[2] * lumK + (224 - c[2]) * moonK) * m;
     return `rgb(${Math.max(0, Math.min(255, r)) | 0},${Math.max(0, Math.min(255, g)) | 0},${Math.max(0, Math.min(255, b)) | 0})`;
+  };
+  // M4: leaf-adjacency test for canopy shadow (branches inside the crown
+  // recede into darkness). grid + MAT are in scope from the caller.
+  const leafAdjCount = (cx, cy) => {
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = cx + dx, ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= cols || ny >= mw.grid.rows) continue;
+      if (mw.grid.mat[ny * cols + nx] === MAT.LEAF) n++;
+    }
+    return n;
   };
   for (const [gid, cells] of byGid) {
     const key = (cx, cy) => cy * 100000 + cx;
@@ -245,13 +257,20 @@ function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
       if (pts.length === 0) continue;
       const n = pts.length;
       const dead = pts[0].dead;
+      // M4: per-tree branch gauge — seeded by grownId so adjacent trees never
+      // share a silhouette; and canopy shadow — strands buried in leaf mass
+      // recede into darkness instead of reading as bare scaffolding.
+      const brVar = 0.85 + 0.3 * h3(seed, gid || 1, 6110);
+      let shadeSum = 0;
+      for (const p of pts) shadeSum += Math.min(leafAdjCount(p.cx, p.cy), 4) / 4;
+      const dim = 1 - 0.45 * (shadeSum / n);
       const cBase = barkRGBr3(seed, gid || 1, dead, 0.42);
       const cTip = barkRGBr3(seed, gid || 1, dead, 0.68);
       if (n === 1) {
         // a lone wood cell: a bark dot, not a polygon (zero-area paths
         // and zero-length gradients render nothing).
         const sx = px((pts[0].cx + 0.5) * CELL_PX), sy = py((pts[0].cy + 0.5) * CELL_PX);
-        pctx.fillStyle = dl(cBase);
+        pctx.fillStyle = dl(cBase, dim);
         pctx.beginPath(); pctx.arc(sx, sy, cellPx * 0.42, 0, Math.PI * 2); pctx.fill();
         continue;
       }
@@ -265,8 +284,13 @@ function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
           if (set.has(key(p.cx + ox, p.cy))) rowW++;
         }
         const t = n === 1 ? 1 : i / (n - 1);
-        const taper = s.trunk ? (0.95 - 0.73 * t) : (0.42 - 0.29 * t);
-        SW.push(Math.max(taper, rowW * 0.9) * cellPx);
+        const taper = s.trunk ? (0.95 - 0.73 * t) : (0.42 - 0.29 * t) * brVar;
+        // M4b: the old rowW*0.9 floor forced every strand to ~0.9 cellPx wide
+        // minimum — taper never visibly tapered, so branches read as milled
+        // beams. The mass floor now only applies to genuinely multi-cell
+        // rows; single-cell strands keep their designed taper (0.16 absolute
+        // floor so tips don't vanish).
+        SW.push(Math.max(taper, rowW > 1 ? rowW * 0.9 : 0, 0.16) * cellPx);
       }
       // tapered polygon via offset curve
       const L = [], R = [];
@@ -279,8 +303,8 @@ function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
         R.push([SX[i] + dy * hw, SY[i] - dx * hw]);
       }
       const grad = pctx.createLinearGradient(SX[0], SY[0], SX[n - 1], SY[n - 1]);
-      grad.addColorStop(0, dl(cBase));
-      grad.addColorStop(1, dl(cTip));
+      grad.addColorStop(0, dl(cBase, dim));
+      grad.addColorStop(1, dl(cTip, dim));
       pctx.fillStyle = grad;
       pctx.beginPath();
       pctx.moveTo(L[0][0], L[0][1]);
@@ -288,8 +312,9 @@ function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
       for (let i = n - 1; i >= 0; i--) pctx.lineTo(R[i][0], R[i][1]);
       pctx.closePath();
       pctx.fill();
-      // bark grain: two whisper-thin darker lines along the strand
-      if (n > 2 && cellPx > 7) {
+      // bark grain: two whisper-thin darker lines along the strand —
+      // trunks only (M4b: grain on thin branches read as milled timber).
+      if (s.trunk && n > 2 && cellPx > 7) {
         pctx.strokeStyle = 'rgba(20, 12, 8, 0.28)';
         pctx.lineWidth = Math.max(1, cellPx * 0.06);
         pctx.lineCap = 'round';
@@ -1344,7 +1369,9 @@ export function renderInspectView(ctx, mw, view, opts = {}) {
 // One 5-stop [h, s, l] ramp per material, dark → light. Hue-shifts are
 // authored, not computed: darks drift cooler and hold saturation, lights
 // drift toward the sun. Hex equivalents (reference daylight):
-//   grass  #2f5426 → #7a9c52 · soil #241a10 → #83644f · bark #281a0e → #8a6a4a
+//   grass  #2f5426 → #7a9c52 · soil #241a10 → #83644f · bark #382215 → #9a7142
+//   (bark lifted +4 L 2026-10-04: the forest mid-ground read near-black at
+//   noon; day/night variants multiply on top, so they are unaffected)
 //   leaf   #2a4a1c → #7fae5c · water #0e3a66 → #6aa3d8 · rock #1c2026 → #6a7078
 export const R3PAL = {
   grass:    [[98,52,13],[102,50,22],[106,48,30],[100,44,38],[92,40,46]],
@@ -1353,7 +1380,7 @@ export const R3PAL = {
   sand:     [[38,52,26],[42,54,36],[46,54,46],[48,50,56],[50,46,66]],
   clay:     [[10,56,18],[13,54,26],[16,52,34],[18,48,42],[20,44,50]],
   rock:     [[214,14,12],[215,12,20],[216,10,28],[217,10,36],[218,10,44]],
-  bark:     [[22,46,11],[24,46,18],[26,44,25],[29,42,32],[32,40,39]],
+  bark:     [[22,46,15],[24,46,22],[26,44,29],[29,42,36],[32,40,43]],
   deadwood: [[28,16,16],[30,14,24],[32,12,32],[34,10,40],[36,10,48]],
   leaf:     [[102,54,11],[107,52,18],[110,50,25],[104,46,33],[96,42,41]],
   water:    [[210,62,12],[208,60,22],[206,56,32],[203,50,42],[200,44,52]],

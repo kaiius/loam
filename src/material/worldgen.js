@@ -330,6 +330,31 @@ function fillWater(g, cols, rows, surf, seaRow) {
 // previous tip cell, so the whole plant is 8-connected back to its seed by
 // construction. LEAF clusters are 3x3 around a tip (Chebyshev <= 1), so each
 // LEAF cell is 8-adjacent to its tip's WOOD.
+
+// M4 tree architecture: per-tree seeded parameters. Exported for tests.
+// lean: trunk lean from vertical, ±8°. branchK: branch-whorl interval,
+// 4–6 iterations. Stateless hash2 — deterministic for (seed, pid).
+export function treeArchParams(seed, pid) {
+  const D2R = Math.PI / 180;
+  return {
+    lean: (hash2(seed, pid, 6101) - 0.5) * 16 * D2R,
+    branchK: 4 + Math.floor(hash2(seed, pid, 6102) * 3),
+  };
+}
+
+// M4 tree architecture (2026-10-04): the old every-3rd-iteration
+// ±(30.5–49.5°) budding grew a symmetric herringbone lattice — it read as
+// construction scaffolding, not trees. New rules: apical dominance (one
+// leader keeps climbing with a seeded lean and a whisper of per-step
+// wander, never ruler-straight); subordinate branches budded on a
+// per-tree interval (4–6 iters), splayed wide (48–75° off vertical) and
+// short (4–7 cells) so none reads as a second trunk, arcing back toward
+// the sky as they extend; each branch forks once into an upward twig.
+// Tips: the leader (ord 0), then branch buds (ord 1), then twigs (ord 2).
+// {x, y, ang, life, ord, curve, side, blen0, forked}. Angles come from
+// hash2(seed, plantId, iter + salt): stateless, no stream.
+// NOTE: advancePlant (plants.js) implements the same rules for runtime
+// seedlings — the two MUST stay in sync.
 function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
   let wood = 0, leaf = 0;
   const putWood = (x, y) => {
@@ -339,10 +364,6 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
     g.mat[i] = MAT.WOOD; g.root[i] = 1; g.grownId[i] = pid; wood++;
     return true;
   };
-  // M2: lusher canopies via DENSER branching (every 3rd iteration in good
-  // climate), not bigger clusters — the 3x3 cluster keeps every leaf
-  // 8-adjacent to tip WOOD, which is what the orphan assert guarantees.
-  // (A 5x5 fringe broke it: fringe leaves touch leaf, not wood.)
   const putLeafCluster = (x, y) => {
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       const nx = x + dx, ny = y + dy;
@@ -352,28 +373,63 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
       g.mat[i] = MAT.LEAF; g.root[i] = 1; g.grownId[i] = pid; leaf++;
     }
   };
-  // Tips: the apical shoot, then branch buds. {x, y, ang, life, bud}.
-  let tips = [{ x: sx, y: sy, ang: -Math.PI / 2, life: iters, bud: false }];
+  // M4b: leaf sleeves — branches and twigs carry foliage along their length,
+  // not just a puff at the tip. One leaf every 3rd grown cell, on a seeded
+  // perpendicular side. The sleeve cell is never on the tip's forward path
+  // (perpendicular offset), so it can't block growth; every sleeve leaf is
+  // 8-adjacent to its wood cell, so the orphan assert is undisturbed.
+  const putSleeve = (t, it) => {
+    if (t.ord === 0) return;
+    if ((t.blen0 - t.life) % 3 !== 0) return;
+    const side = hash2(seed, pid, it + 6111) < 0.5 ? -1 : 1;
+    let ox = Math.round(-Math.sin(t.ang) * side), oy = Math.round(Math.cos(t.ang) * side);
+    if (ox === 0 && oy === 0) return;
+    const nx = Math.round(t.x) + ox, ny = Math.round(t.y) + oy;
+    if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) return;
+    const i = ny * cols + nx;
+    if (g.mat[i] !== MAT.AIR) return;
+    g.mat[i] = MAT.LEAF; g.root[i] = 1; g.grownId[i] = pid; leaf++;
+  };
+  const D2R = Math.PI / 180, UP = -Math.PI / 2;
+  // Per-tree architecture, seeded once: lean ±8°, branch interval 4–6.
+  const { lean, branchK } = treeArchParams(seed, pid);
+  // Tips: the apical shoot, then branch buds. {x, y, ang, life, ord, ...}.
+  let tips = [{ x: sx, y: sy, ang: UP + lean, life: iters, ord: 0, curve: 0, side: 0, blen0: 0, forked: true }];
   for (let it = 0; it < iters && tips.length; it++) {
     const next = [];
     for (const t of tips) {
-      // M2: every 3rd iteration the apical shoot buds a branch at +/-30-50deg
-      // (was 4th — denser branching = lusher canopies, same 3x3 clusters).
-      // Angles come from hash2(seed, plantId, iter): stateless, no stream.
-      // Drawn from [30.5, 49.5) — never exactly 30/60, so Math.round of the
-      // unit step never sits on a .5 boundary (float-wobble safety).
-      if (!t.bud && it > 0 && it % 3 === 0) {
-        const hr = hash2(seed, pid, it);
-        const side = hr < 0.5 ? -1 : 1;
-        const deg = 30.5 + hash2(seed, pid, it + 7919) * 19;
-        const budLen = 6 + Math.floor(hash2(seed, pid, it + 104729) * 5);
-        next.push({ x: t.x, y: t.y, ang: t.ang + side * deg * Math.PI / 180, life: budLen, bud: true });
+      if (t.ord === 0) {
+        // The leader climbs: seeded lean + a whisper of per-step wander.
+        t.ang = UP + lean + (hash2(seed, pid, it + 6103) - 0.5) * 10 * D2R;
+        if (it > 0 && it % branchK === 0) {
+          const side = hash2(seed, pid, it + 6104) < 0.5 ? -1 : 1;
+          const spread = (48 + hash2(seed, pid, it + 6105) * 27) * D2R; // 48–75° off vertical
+          const blen = 4 + Math.floor(hash2(seed, pid, it + 6106) * 4);  // 4–7: subordinate
+          const curve = -side * (2.5 + hash2(seed, pid, it + 6107) * 2) * D2R; // arcs skyward
+          next.push({
+            x: t.x, y: t.y, ang: t.ang + side * spread, life: blen,
+            ord: 1, curve, side, blen0: blen, forked: false,
+          });
+        }
+      } else {
+        // Branches and twigs arc toward the sky as they extend.
+        t.ang += t.curve;
+        if (t.ord === 1 && !t.forked && t.life <= Math.ceil(t.blen0 / 2)) {
+          // One fork per branch: a twig splitting upward.
+          const tw = (15 + hash2(seed, pid, it + 6108) * 25) * D2R;
+          const tlen = 2 + Math.floor(hash2(seed, pid, it + 6109) * 3);
+          next.push({
+            x: t.x, y: t.y, ang: t.ang - t.side * tw, life: tlen,
+            ord: 2, curve: -t.side * 2 * D2R, side: t.side, blen0: tlen, forked: true,
+          });
+          t.forked = true;
+        }
       }
       const nx = Math.round(t.x + Math.cos(t.ang));
       const ny = Math.round(t.y + Math.sin(t.ang));
       let grew = false;
-      if (t.life > 0 && putWood(nx, ny)) { t.x = nx; t.y = ny; t.life--; grew = true; }
-      if (grew && t.life === 0) putLeafCluster(nx, ny); // bud/apex terminates
+      if (t.life > 0 && putWood(nx, ny)) { t.x = nx; t.y = ny; t.life--; grew = true; putSleeve(t, it); }
+      if (grew && t.life === 0) putLeafCluster(nx, ny); // tip terminates in a crown
       else if (grew) next.push(t);
       // A tip that cannot advance dies (crowded stop) — no leaf cluster.
     }

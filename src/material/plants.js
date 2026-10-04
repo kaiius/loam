@@ -18,6 +18,7 @@
 
 import { MAT, CELL_PX } from './grid.js';
 import { hash2 } from './process.js';
+import { treeArchParams } from './worldgen.js';
 import { createRng } from '../sim/rng.js';
 import { randomPlantGenome, inheritPlant, plantPhenotype } from '../sim/plantgenome.js';
 import { tempAt, moistureAt, windAt } from './weather.js';
@@ -151,13 +152,19 @@ function tryGerminate(mw, s, cx, cy) {
   // Sprout: a new plant, generation + 1, growing from seed.
   const pid = 100000 + s.id; // runtime ids live above worldgen's
   const iters = Math.round(24 + ph.growthRate * 40);
+  // M4 tree architecture (same seeded per-tree parameters as worldgen's
+  // growPlant — via the shared treeArchParams helper, so the rule sets
+  // cannot drift apart).
+  const seedH = mw.seed || 1;
+  const { lean, branchK } = treeArchParams(seedH, pid);
   const p = {
     id: pid, seedX: cx, seedY: cy, iters,
     fruiting: false, fruit: 0,
     genome: s.genome, pheno: ph,
     growth: 0, age: 0, stress: 0,
     generation: (s.parentGen || 0) + 1,
-    tips: [{ x: cx, y: cy, ang: -Math.PI / 2, life: iters, bud: false }],
+    lean, branchK,
+    tips: [{ x: cx, y: cy, ang: -Math.PI / 2 + lean, life: iters, ord: 0, curve: 0, side: 0, blen0: 0, forked: true }],
     iterDone: 0,
     cells: [],
     wood: 0, leaf: 0,
@@ -167,8 +174,10 @@ function tryGerminate(mw, s, cx, cy) {
 }
 
 // --- runtime growth: the L-system resumes ---------------------------------
-// Same rules as worldgen's growPlant (stateless hash2 branching), advanced
-// a few iterations per plant-tick from the stored tip list.
+// Same M4 tree-architecture rules as worldgen's growPlant (stateless hash2
+// branching), advanced a few iterations per plant-tick from the stored tip
+// list. Per-tree lean/branchK are stored on the plant at germination so the
+// rule stream matches worldgen's bit-for-bit for the same (seed, id).
 
 function putWoodCell(mw, p, nx, ny) {
   const g = mw.grid;
@@ -192,23 +201,60 @@ function putLeafCluster(mw, p, x, y) {
   }
 }
 
+// M4b: leaf sleeves (same rules as worldgen's putSleeve — the two MUST stay
+// in sync). Branches and twigs carry foliage along their length.
+function putSleeve(mw, p, t, k) {
+  if (t.ord === 0) return;
+  if ((t.blen0 - t.life) % 3 !== 0) return;
+  const g = mw.grid;
+  const seed = mw.seed || 1;
+  const side = hash2(seed, p.id, k + 6111) < 0.5 ? -1 : 1;
+  const ox = Math.round(-Math.sin(t.ang) * side), oy = Math.round(Math.cos(t.ang) * side);
+  if (ox === 0 && oy === 0) return;
+  const nx = Math.round(t.x) + ox, ny = Math.round(t.y) + oy;
+  if (nx < 0 || ny < 0 || nx >= g.cols || ny >= g.rows) return;
+  const i = ny * g.cols + nx;
+  if (g.mat[i] !== MAT.AIR) return;
+  g.mat[i] = MAT.LEAF; g.root[i] = 1; g.grownId[i] = p.id % 65536;
+  p.leaf++; p.cells.push(i);
+}
+
 export function advancePlant(mw, p, steps) {
   const seed = mw.seed || 1;
+  const D2R = Math.PI / 180, UP = -Math.PI / 2;
+  const lean = p.lean || 0, branchK = p.branchK || 5;
   for (let it = 0; it < steps && p.tips && p.tips.length; it++) {
     const k = p.iterDone++;
     const next = [];
     for (const t of p.tips) {
-      if (!t.bud && k > 0 && k % 3 === 0) {
-        const hr = hash2(seed, p.id, k);
-        const side = hr < 0.5 ? -1 : 1;
-        const deg = 30.5 + hash2(seed, p.id, k + 7919) * 19;
-        const budLen = 6 + Math.floor(hash2(seed, p.id, k + 104729) * 5);
-        next.push({ x: t.x, y: t.y, ang: t.ang + side * deg * Math.PI / 180, life: budLen, bud: true });
+      if (t.ord === 0) {
+        t.ang = UP + lean + (hash2(seed, p.id, k + 6103) - 0.5) * 10 * D2R;
+        if (k > 0 && k % branchK === 0) {
+          const side = hash2(seed, p.id, k + 6104) < 0.5 ? -1 : 1;
+          const spread = (48 + hash2(seed, p.id, k + 6105) * 27) * D2R;
+          const blen = 4 + Math.floor(hash2(seed, p.id, k + 6106) * 4);
+          const curve = -side * (2.5 + hash2(seed, p.id, k + 6107) * 2) * D2R;
+          next.push({
+            x: t.x, y: t.y, ang: t.ang + side * spread, life: blen,
+            ord: 1, curve, side, blen0: blen, forked: false,
+          });
+        }
+      } else {
+        t.ang += t.curve;
+        if (t.ord === 1 && !t.forked && t.life <= Math.ceil(t.blen0 / 2)) {
+          const tw = (15 + hash2(seed, p.id, k + 6108) * 25) * D2R;
+          const tlen = 2 + Math.floor(hash2(seed, p.id, k + 6109) * 3);
+          next.push({
+            x: t.x, y: t.y, ang: t.ang - t.side * tw, life: tlen,
+            ord: 2, curve: -t.side * 2 * D2R, side: t.side, blen0: tlen, forked: true,
+          });
+          t.forked = true;
+        }
       }
       const nx = Math.round(t.x + Math.cos(t.ang));
       const ny = Math.round(t.y + Math.sin(t.ang));
       let grew = false;
-      if (t.life > 0 && putWoodCell(mw, p, nx, ny)) { t.x = nx; t.y = ny; t.life--; grew = true; }
+      if (t.life > 0 && putWoodCell(mw, p, nx, ny)) { t.x = nx; t.y = ny; t.life--; grew = true; putSleeve(mw, p, t, k); }
       if (grew && t.life === 0) putLeafCluster(mw, p, nx, ny);
       else if (grew) next.push(t);
     }
