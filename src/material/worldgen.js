@@ -447,11 +447,12 @@ function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
   // threshold grew only 38 plants in the seed-7 world — too sparse a
   // grove to feed 34 creatures. 9 / 0.30 grows a lusher world; the
   // fruiting floor (need) then has real candidates to mark.)
-  // (Grade pass, 2026-10-04: 9 -> 10 — the seed-7 canopy congested into a
-  // single dark mass; one more cell of competition spacing. The fruiting
-  // floor (need = 44*size, topped up) is count-based, not density-based,
-  // so the food economy is unaffected — verified by the adversarial gates.)
-  const SEED_GAP = 10, SEED_THRESH = 0.30;
+  // (Grade pass, 2026-10-04: 9 -> 10 was tried and REVERTED the same day —
+  // the seed-7 world re-rolled its layout, the founder spawned at light
+  // 0.000 (invariant: surface light > 0.3), and the first fruiting plant
+  // stopped regrowing. The 9/0.30 carrying-capacity tune is load-bearing;
+  // visual un-congestion stays render-side (canopy subset 0.45->0.55).)
+  const SEED_GAP = 9, SEED_THRESH = 0.30;
   const maxPlants = Math.min(400 * Math.max(1, Math.round(size)), 60000);
   let lastX = -SEED_GAP - 1, pid = 0;
   for (let c = 0; c < cols && pid < maxPlants; c++) {
