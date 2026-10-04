@@ -1956,7 +1956,7 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
     for (let cx = cx0; cx <= cx1; cx++) {
       const i = cy * cols + cx;
       if (grid.mat[i] !== MAT.LEAF) continue;
-      if (h3(seed, cx * 7 + 1, cy) > 0.45) continue; // subset → masses merge
+      if (h3(seed, cx * 7 + 1, cy) > 0.55) continue; // subset → masses merge (grade: 0.45→0.55, fewer puffs, clearer silhouettes)
       const sx = px(cx * CELL_PX + CELL_PX / 2), syy = py(cy * CELL_PX + CELL_PX / 2);
       if (sx < -60 || sx > W + 60 || syy < -60 || syy > H + 60) continue;
       const pr = cellPx * (1.6 + h3(seed, cx, cy) * 1.4);

@@ -441,13 +441,17 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
 function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
   const plants = [];
   // Seed selection: SOIL surface cells with fertility x moisture above
-  // threshold (soil fertility = 1.0), spaced >= 9 cells apart
+  // threshold (soil fertility = 1.0), spaced >= 10 cells apart
   // (competition), west -> east. Count scales with fertile area.
   // (Carrying-capacity fix, 2026-10-03: the 12-cell gap and 0.38
   // threshold grew only 38 plants in the seed-7 world — too sparse a
   // grove to feed 34 creatures. 9 / 0.30 grows a lusher world; the
   // fruiting floor (need) then has real candidates to mark.)
-  const SEED_GAP = 9, SEED_THRESH = 0.30;
+  // (Grade pass, 2026-10-04: 9 -> 10 — the seed-7 canopy congested into a
+  // single dark mass; one more cell of competition spacing. The fruiting
+  // floor (need = 44*size, topped up) is count-based, not density-based,
+  // so the food economy is unaffected — verified by the adversarial gates.)
+  const SEED_GAP = 10, SEED_THRESH = 0.30;
   const maxPlants = Math.min(400 * Math.max(1, Math.round(size)), 60000);
   let lastX = -SEED_GAP - 1, pid = 0;
   for (let c = 0; c < cols && pid < maxPlants; c++) {
