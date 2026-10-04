@@ -126,8 +126,9 @@ function sunElev(mw) {
 
 // sky palette stops, lerped by daylight. Returns [zenithHSL, midHSL, horHSL].
 function skyPalette(e, season) {
-  // day
-  const day = [[209, 58, 70], [204, 45, 79], [48, 42, 89]];
+  // day (grade 2026-10-04: deepened — the washed near-white horizon killed
+  // the sky; horizon stays light for atmosphere but blue now, not white)
+  const day = [[212, 66, 60], [206, 58, 70], [205, 55, 80]];
   // night
   const night = [[232, 42, 7], [230, 36, 12], [228, 30, 18]];
   // day arrives late: the low sun belongs to dawn/dusk, not to noon
@@ -1574,7 +1575,7 @@ function paintSkyCache(pctx, mw, view, G, W, H, horizonY, pal, e, dayK) {
     const drift = (((tick * 0.35 + h3(seed, i, 711) * 2400) % (W + 800)) + W + 800) % (W + 800) - 400;
     const cy = H * (0.04 + h3(seed, i, 712) * 0.22);
     const cw2 = W * (0.05 + h3(seed, i, 713) * 0.07);
-    const baseA = 0.025 + 0.035 * h3(seed, i, 714);
+    const baseA = 0.05 + 0.06 * h3(seed, i, 714); // grade: was 0.025+0.035h — invisible
     for (let w2 = 0; w2 < 3; w2++) {
       const ox = (h3(seed, i * 3 + w2, 715) - 0.5) * cw2 * 1.2;
       const oy = (h3(seed, i * 3 + w2, 716) - 0.5) * cw2 * 0.12;
@@ -1632,7 +1633,7 @@ function paintSkyCache(pctx, mw, view, G, W, H, horizonY, pal, e, dayK) {
       const storm = clamp01((c.cloud - 0.5) / 0.4);
       // night clouds stay whisper-thin — dark smears kill the sky
       const nightDim = 0.25 + 0.75 * dayK;
-      const baseA = (0.10 + c.cloud * 0.22) * sysK * nightDim;
+      const baseA = (0.13 + c.cloud * 0.26) * sysK * nightDim; // grade: was 0.10+0.22c
       const nPuff = 4 + Math.round(c.cloud * 5);
       for (let k = 0; k < nPuff; k++) {
         const kk = i * 17 + k;
@@ -1643,11 +1644,17 @@ function paintSkyCache(pctx, mw, view, G, W, H, horizonY, pal, e, dayK) {
         const tg = Math.round(252 - dark * 70 - storm * 28);
         const tb = Math.round(248 - dark * 60 - storm * 22);
         const pa = (baseA * (0.75 + 0.25 * h3(seed, kk, 37))).toFixed(3);
-        const pg = pctx.createRadialGradient(px2, py2, 0, px2, py2, pr);
+        // elliptical puffs (natural stratus stretch), soft radial fade —
+        // never soap-bubbles: edges always dissolve, never ring
+        pctx.save();
+        pctx.translate(px2, py2);
+        pctx.scale(1.7, 0.62);
+        const pg = pctx.createRadialGradient(0, 0, 0, 0, 0, pr);
         pg.addColorStop(0, `rgba(${tr},${tg},${tb},${pa})`);
         pg.addColorStop(1, `rgba(${tr},${tg},${tb},0)`);
         pctx.fillStyle = pg;
-        pctx.beginPath(); pctx.arc(px2, py2, pr, 0, Math.PI * 2); pctx.fill();
+        pctx.beginPath(); pctx.arc(0, 0, pr, 0, Math.PI * 2); pctx.fill();
+        pctx.restore();
       }
     }
   }
