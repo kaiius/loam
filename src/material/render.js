@@ -308,9 +308,23 @@ function paintTrees(tctx, mw, G, seed, lumK, moonK) {
   for (const t of trees) {
     const gid = t.gid || 1;
     const brVar = 0.85 + 0.3 * h3(seed, gid, 6110);
+    // Branch strands that never touch the trunk read as floating debris, not
+    // branches (legibility: every drawn branch must visibly leave the trunk).
+    // Keep only branches long enough to read (>= 6 cells) with an endpoint
+    // adjacent to the trunk.
+    const trunk0 = t.strands.length && t.strands[0].trunk ? t.strands[0] : null;
+    const trunkSet = new Set();
+    if (trunk0) for (const p of trunk0.pts) trunkSet.add(key(p.cx, p.cy));
+    const nearTrunk = (p) => {
+      for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++)
+        if (trunkSet.has(key(p.cx + dx, p.cy + dy))) return true;
+      return false;
+    };
     for (const s of t.strands) {
       const pts = s.pts;
       if (pts.length === 0) continue;
+      if (!s.trunk && (pts.length < 6 ||
+          !(nearTrunk(pts[0]) || nearTrunk(pts[pts.length - 1])))) continue;
       const n = pts.length;
       if (n === 1) {
         // a lone wood cell: a bark dot, not a polygon (zero-area paths
@@ -829,28 +843,67 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   // Round 3: the browser paints TWO cached canvases (sky + world); the
   // lightmap grades the world (and creatures) per frame while the sky keeps
   // its authored day/night gradient.
+  //
+  // OVERSCAN (jank profile 2026-10-04): painting exactly the view meant every
+  // camera move invalidated the terrain cache — a full ~78ms repaint per
+  // frame while following a walking founder. The paint now covers the view
+  // plus a margin; panning inside the margin is a cheap drawImage blit and
+  // only leaving it (or the 48-tick diurnal cadence) repaints. Paint-space
+  // overlays run under a translate so their paint-canvas coords land on the
+  // blit; view-space overlays (rain, lightning, creatures, tint) are
+  // unaffected. Eye-only: identical (world, view) still paints identical
+  // pixels, whenever it repaints.
   let dyn;
+  let blitX = 0, blitY = 0; // paint-canvas px offset of the view origin
   if (hasDocument) {
-    const key = cacheKey(mw, view, W, H);
-    if (!terrainCache || terrainCache.key !== key || (tick - terrainCache.tick) > CACHE_TICKS) {
-      const d = paintTerrain(null, mw, view, G, W, H);
-      terrainCache = { key, tick, dyn: d };
+    const M = Math.min(220, 420 / scale); // world-px margin each side
+    const tc = terrainCache;
+    const inside = tc && view.x >= tc.pvx && view.y >= tc.pvy &&
+      view.x + view.w <= tc.pvx + tc.pvw && view.y + view.h <= tc.pvy + tc.pvh;
+    if (!inside || (tick - tc.tick) > CACHE_TICKS) {
+      const pvx = Math.round(view.x - M), pvy = Math.round(view.y - M);
+      const pvw = view.w + 2 * M, pvh = view.h + 2 * M;
+      const W2 = Math.max(1, Math.round(pvw * scale));
+      const H2 = Math.max(1, Math.round(pvh * scale));
+      const G2 = {
+        px: (wx) => (wx - pvx) * scale,
+        py: (wy) => (wy - pvy) * scale,
+        scale, cellPx, ox: 0, oy: 0, vx: pvx, vw: pvw,
+        cx0: Math.max(0, Math.floor(pvx / CELL_PX) - 1),
+        cx1: Math.min(cols - 1, Math.ceil((pvx + pvw) / CELL_PX) + 1),
+        cy0: Math.max(0, Math.floor(pvy / CELL_PX) - 1),
+        cy1: Math.min(rows - 1, Math.ceil((pvy + pvh) / CELL_PX) + 1),
+        worldW: cols * CELL_PX,
+      };
+      const pv = { x: pvx, y: pvy, w: pvw, h: pvh };
+      const d = paintTerrain(null, mw, pv, G2, W2, H2);
+      terrainCache = {
+        key: cacheKey(mw, pv, W2, H2),
+        tick, dyn: d, pvx, pvy, pvw, pvh, W2, H2,
+      };
     }
     dyn = terrainCache.dyn;
-    ctx.drawImage(dyn.canvas, 0, 0);
+    blitX = Math.round((view.x - terrainCache.pvx) * scale);
+    blitY = Math.round((view.y - terrainCache.pvy) * scale);
+    ctx.drawImage(dyn.canvas, blitX, blitY, W, H, 0, 0, W, H);
+    // paint-space life, shifted onto the blit
+    ctx.save();
+    ctx.translate(-blitX, -blitY);
+    drawWaterShimmer(ctx, dyn, tick);
+    if (dyn.blades) drawBlades(ctx, dyn.blades, tick, 2.2, dyn.amb || [1, 1, 1]);
+    drawLeaves(ctx, dyn, mw, tick, dyn.amb || [1, 1, 1]);
+    drawFallingLeaves(ctx, dyn, tick, seed, dyn.amb || [1, 1, 1]);
+    drawMotes(ctx, dyn, tick, terrainCache.W2, terrainCache.H2, seed);
+    drawRipples(ctx, dyn, tick, dyn.amb || [1, 1, 1]);
+    ctx.restore();
   } else {
     dyn = paintTerrainLegacy(ctx, mw, view, G, W, H);
+    // --- per-frame life (stills path: paint == view, no blit) ---
+    drawWaterShimmer(ctx, dyn, tick);
+    if (dyn.blades) drawBlades(ctx, dyn.blades, tick, 2.2, dyn.amb || [1, 1, 1]);
+    drawLeaves(ctx, dyn, mw, tick, dyn.amb || [1, 1, 1]);
   }
-
-  // --- per-frame life ----------------------------------------------------------------------
-  drawWaterShimmer(ctx, dyn, tick);
-  if (hasDocument && dyn.blades) drawBlades(ctx, dyn.blades, tick, 2.2, dyn.amb || [1, 1, 1]);
-  drawLeaves(ctx, dyn, mw, tick, dyn.amb || [1, 1, 1]);
-  if (hasDocument) {
-    drawFallingLeaves(ctx, dyn, tick, seed, dyn.amb || [1, 1, 1]);
-    drawMotes(ctx, dyn, tick, W, H, seed);
-    drawRipples(ctx, dyn, tick, dyn.amb || [1, 1, 1]);
-  }
+  // --- view-space weather (both paths) ---
   drawRain(ctx, mw, G, W, H, tick, seed);
   if (hasDocument) drawLightningBolts(ctx, mw, G, W, H, tick, seed);
   else drawLightning(ctx, mw, G, W, H, tick, seed);
@@ -873,9 +926,12 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   }
 
   if (hasDocument) {
-    // additive glows sit on top of the lightmap-graded scene
+    // additive glows sit on top of the lightmap-graded scene (paint-space)
+    ctx.save();
+    ctx.translate(-blitX, -blitY);
     drawFireGlow(ctx, dyn, tick);
-    drawFireflyDots(ctx, dyn, tick, W, seed);
+    drawFireflyDots(ctx, dyn, tick, terrainCache.W2, seed);
+    ctx.restore();
     drawLightningFlash(ctx, mw, tick, W, H);
   } else {
     drawFireGlow(ctx, dyn, tick);
