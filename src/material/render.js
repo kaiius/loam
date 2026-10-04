@@ -71,6 +71,17 @@ function hslRgb(h, s, l) {
 // Multiply a lightness value by an occlusion factor (cheap AO, no layering).
 const shade = (l, k) => Math.max(0, Math.min(100, l * k));
 
+const hsla = (h, s, l, a) => `hsla(${r1(h)}, ${r1(s)}%, ${r1(l)}%, ${a.toFixed(3)})`;
+
+// Deterministic 1D value noise in [0,1) — ridgelines, treelines, cloud systems.
+function vnoise1(seed, x, salt) {
+  const xi = Math.floor(x), xf = x - xi;
+  const a = h3(seed, xi, salt), b = h3(seed, xi + 1, salt);
+  const u = xf * xf * (3 - 2 * xf);
+  return a + (b - a) * u;
+}
+const sstep = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+
 // numeric twin of hslRgb: [r, g, b] 0-255, for the albedo field.
 function hsl2rgb(h, s, l) {
   s = clamp01(s / 100); l = clamp01(l / 100);
@@ -162,10 +173,276 @@ function cellRGB(m, cx, cy, i, grid, mw, lit, waterCell) {
   return hsl2rgb(h, s, l);
 }
 
+// --- the painting (browser) ----------------------------------------------------
+// Sky, parallax depth, billow clouds, and the material field rendered as a
+// smoothed albedo buffer (2px/cell, bilinear upscale): boundaries melt, the
+// ground silhouette loses its stair-steps, and thin branch strands read as
+// organic lines instead of block chunks. Canopy clusters get layered
+// foliage puffs; night gets a moonlight floor instead of pitch black.
+// Deterministic: every decorative choice is a stateless h3() hash.
+function paintTerrain(pctx, mw, view, G, W, H) {
+  const { grid, cols, rows, seed, surf } = mw;
+  const { px, py, scale, cellPx, cx0, cx1, cy0, cy1 } = G;
+  const tick = mw.tick || 0;
+  const e = sunElev(mw);
+  const season = typeof seasonSin === 'function' ? seasonSin(mw) : 0;
+  const pal = skyPalette(e, season);
+  const dayK = clamp01((e + 0.12) / 0.5);   // 0 deep night … 1 full day
+  const lumK = 0.34 + 0.66 * dayK;          // moonlight ambient floor
+  const moonK = (1 - dayK) * 0.15;          // cool lift
+
+  // --- sky: gradient mapped to the SKY REGION (as before) ----------------------
+  const midCx = Math.max(cx0, Math.min(cx1, Math.round((cx0 + cx1) / 2)));
+  const horizonY = clamp01(py(((surf[midCx] | 0) + 1) * CELL_PX) / H) * H;
+  const skyGrad = pctx.createLinearGradient(0, 0, 0, Math.max(1, horizonY));
+  const stops = [[0, pal[0]], [0.55, pal[1]], [1, pal[2]]];
+  for (const [o, c] of stops) skyGrad.addColorStop(o, hslRgb(c[0], c[1], c[2]));
+  pctx.fillStyle = skyGrad;
+  pctx.fillRect(0, 0, W, H);
+
+  // --- parallax depth: far hills + near treeline --------------------------------
+  drawParallax(pctx, mw, view, G, W, H, horizonY, lumK);
+
+  // --- sun glow / moon ------------------------------------------------------------
+  if (e > -0.08) {
+    const t = timeOfDay(mw);
+    const sx = W * (0.12 + 0.76 * t), sy = H * (0.72 - e * 0.62);
+    const sr = Math.min(W, H) * 0.30;
+    const sg = pctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+    const warm = Math.max(0, 1 - Math.abs(e) * 2.2); // gold near horizon
+    const sa = (0.10 + 0.30 * warm) * clamp01((e + 0.08) * 3);
+    sg.addColorStop(0, `rgba(255, ${Math.round(244 - warm * 40)}, ${Math.round(220 - warm * 90)}, ${sa.toFixed(3)})`);
+    sg.addColorStop(1, 'rgba(255, 240, 210, 0)');
+    pctx.fillStyle = sg;
+    pctx.fillRect(sx - sr, sy - sr, sr * 2, sr * 2);
+  } else {
+    // the moon: cool disc + halo, the night's own light source
+    const t = timeOfDay(mw);
+    const mang = (t - 0.75) * Math.PI * 2;
+    const mx = W * 0.5 - Math.cos(mang) * W * 0.38;
+    const my = H * 0.60 - Math.sin(mang) * H * 0.48;
+    const mr = Math.min(W, H) * 0.032;
+    const mg = pctx.createRadialGradient(mx, my, 0, mx, my, mr * 5);
+    mg.addColorStop(0, 'rgba(208, 218, 244, 0.20)');
+    mg.addColorStop(1, 'rgba(208, 218, 244, 0)');
+    pctx.fillStyle = mg;
+    pctx.fillRect(mx - mr * 5, my - mr * 5, mr * 10, mr * 10);
+    pctx.fillStyle = 'rgba(233, 239, 251, 0.95)';
+    pctx.beginPath(); pctx.arc(mx, my, mr, 0, Math.PI * 2); pctx.fill();
+    pctx.fillStyle = 'rgba(160, 172, 205, 0.35)';
+    pctx.beginPath(); pctx.arc(mx - mr * 0.35, my - mr * 0.2, mr * 0.85, 0, Math.PI * 2); pctx.fill();
+  }
+
+  // --- clouds: billow puffs, never streaks ------------------------------------------
+  // Each sky column grows a cluster of soft radial-gradient puffs — white
+  // tops, storm-grey bellies — scattered through the upper sky by hash,
+  // never sitting in a band. Wind drifts them; a noise gate gathers them
+  // into weather systems instead of uniform cover.
+  if (mw.sky && mw.sky.cols) {
+    const worldW = cols * CELL_PX;
+    for (let i = 0; i < mw.sky.cols.length; i++) {
+      const c = mw.sky.cols[i];
+      if (c.cloud < 0.22) continue;
+      const drift = ((tick * c.windU * 0.06 + h3(seed, i, 31) * 600) % (worldW + 900) + worldW + 900) % (worldW + 900) - 450;
+      const wx = i * SKY_COL_W + drift * 0.3;
+      const sx = px(wx);
+      if (sx < -500 || sx > W + 500) continue;
+      const sysK = 0.25 + 0.75 * sstep(0.32, 0.72, vnoise1(seed, i * 0.33, 33));
+      const sy = H * (0.05 + h3(seed, i, 32) * 0.30);
+      const cr = cellPx * (2.0 + c.cloud * 4.0);
+      const dark = clamp01(1 - (e + 0.25) / 0.6); // night clouds go dark
+      const storm = clamp01((c.cloud - 0.5) / 0.4); // storm heads get grey bellies
+      const baseA = (0.10 + c.cloud * 0.22) * sysK;
+      const nPuff = 4 + Math.round(c.cloud * 5);
+      for (let k = 0; k < nPuff; k++) {
+        const kk = i * 17 + k;
+        const px2 = sx + (h3(seed, kk, 34) - 0.5) * 2.4 * cr;
+        const py2 = sy + (h3(seed, kk, 35) - 0.5) * 1.1 * cr;
+        const pr = cr * (0.45 + h3(seed, kk, 36) * 0.75);
+        const tr = Math.round(255 - dark * 70 - storm * 30);
+        const tg = Math.round(252 - dark * 70 - storm * 28);
+        const tb = Math.round(248 - dark * 60 - storm * 22);
+        const pa = (baseA * (0.75 + 0.25 * h3(seed, kk, 37))).toFixed(3);
+        const pg = pctx.createRadialGradient(px2, py2, 0, px2, py2, pr);
+        pg.addColorStop(0, `rgba(${tr},${tg},${tb},${pa})`);
+        pg.addColorStop(1, `rgba(${tr},${tg},${tb},0)`);
+        pctx.fillStyle = pg;
+        pctx.beginPath(); pctx.arc(px2, py2, pr, 0, Math.PI * 2); pctx.fill();
+      }
+    }
+  }
+
+  // --- albedo field ----------------------------------------------------------------------
+  // Per visible cell → 2×2 px in an ImageData buffer, then ONE smoothed
+  // blit. Open sky stays transparent (the gradient shows through); every
+  // material boundary melts instead of stepping.
+  const sky = floodSky(grid, cols, rows);
+  const AO_RANGE = 12, SKYLIGHT_MIN_AO = 0.5;
+  const gw = cx1 - cx0 + 1, gh = cy1 - cy0 + 1;
+  const prefix = new Int32Array(gw * (rows + 1));
+  const pw = rows + 1;
+  for (let cx = cx0; cx <= cx1; cx++) {
+    const base = (cx - cx0) * pw;
+    for (let cy = 0; cy < rows; cy++) {
+      const m = grid.mat[cy * cols + cx];
+      prefix[base + cy + 1] = prefix[base + cy] + (MAT_PROPS[m].solid ? 1 : 0);
+    }
+  }
+  const solidAbove = (cx, cy) => {
+    const base = (cx - cx0) * pw;
+    const lo = Math.max(0, cy - AO_RANGE);
+    return prefix[base + cy] - prefix[base + lo];
+  };
+
+  const BS = 2; // buffer px per cell
+  const bw = gw * BS, bh = gh * BS;
+  const img = new ImageData(bw, bh);
+  const data = img.data;
+  const leaves = [], fires = [], waterTop = [];
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const i = cy * cols + cx;
+      const m = grid.mat[i];
+      const waterCell = isWaterCell(m, grid, i);
+      const ao = solidAbove(cx, cy) / AO_RANGE;
+      const lit = 1 - 0.62 * ao;
+      let r, g2, b, alpha = 255;
+      if (m === MAT.AIR && !waterCell && sky[i] && ao < SKYLIGHT_MIN_AO) {
+        // open sky — transparent, but seeded with the sky color so the
+        // smoothed silhouette edge can't fringe dark.
+        const f = clamp01((py(cy * CELL_PX) + cellPx / 2) / H);
+        [r, g2, b] = hsl2rgb(...skyHSLAt(f, pal));
+        alpha = 0;
+      } else if (m === MAT.AIR && !waterCell) {
+        if (sky[i]) {
+          // shaft / burrow mouth: pale blue skylight dying with depth
+          const depthF = 1 - ao;
+          [r, g2, b] = hsl2rgb(206, 42 * depthF, shade(78, lit * depthF));
+        } else {
+          // sealed pocket: dark warm earth shadow, never sky
+          const v = h3(seed, cx, cy);
+          [r, g2, b] = hsl2rgb(20, 30, shade(11 + v * 4, lit));
+        }
+      } else {
+        [r, g2, b] = cellRGB(m, cx, cy, i, grid, mw, lit, waterCell);
+        // leaves paint dark here — interior shadow; the foliage spray
+        // above carries the lit volume
+        if (m === MAT.LEAF) { r *= 0.5; g2 *= 0.5; b *= 0.5; }
+      }
+      if (alpha !== 0) {
+        // diurnal light with a moonlight floor; sky keeps the gradient's own night
+        r = r * lumK + (148 - r) * moonK;
+        g2 = g2 * lumK + (168 - g2) * moonK;
+        b = b * lumK + (224 - b) * moonK;
+      }
+      const bx0 = (cx - cx0) * BS, by0 = (cy - cy0) * BS;
+      for (let qy = 0; qy < BS; qy++) {
+        for (let qx = 0; qx < BS; qx++) {
+          const o = ((by0 + qy) * bw + bx0 + qx) * 4;
+          data[o] = r; data[o + 1] = g2; data[o + 2] = b; data[o + 3] = alpha;
+        }
+      }
+      // dynamic lists (screen space, as before)
+      const rx = px(cx * CELL_PX), ry = py(cy * CELL_PX);
+      const s = cellPx + 0.6;
+      if (m === MAT.LEAF) leaves.push({ x: rx, y: ry, s, cx, cy });
+      if (grid.heat[i] > 0.5) fires.push({ x: rx + s / 2, y: ry + s / 2, s, heat: grid.heat[i], ph: h3(seed, cx, cy) });
+      if (waterCell) {
+        const above = cy > 0 ? grid.mat[i - cols] : MAT.AIR;
+        if (!isWaterCell(above, grid, cy > 0 ? i - cols : -1)) waterTop.push({ x: rx, y: ry, s, cx });
+      }
+    }
+  }
+  const buf = document.createElement('canvas');
+  buf.width = bw; buf.height = bh;
+  buf.getContext('2d').putImageData(img, 0, 0);
+  pctx.imageSmoothingEnabled = true;
+  pctx.imageSmoothingQuality = 'high';
+  pctx.drawImage(buf, 0, 0, bw, bh, px(cx0 * CELL_PX), py(cy0 * CELL_PX), gw * cellPx, gh * cellPx);
+
+  // --- canopy: foliage as a soft spray ---------------------------------------------------------
+  // Every leaf cell gets its own soft radial glow in a varied green; the
+  // overlapping glows merge into organic masses that follow the sim's
+  // actual leaf distribution — no placed stickers, no balloons. (The
+  // buffer underneath paints leaves dark, as interior shadow.)
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const i = cy * cols + cx;
+      if (grid.mat[i] !== MAT.LEAF) continue;
+      const sx = px(cx * CELL_PX + CELL_PX / 2), sy = py(cy * CELL_PX + CELL_PX / 2);
+      if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) continue;
+      const pr = cellPx * (1.0 + h3(seed, cx, cy) * 0.9);
+      const hue = 95 + h3(seed, cx * 3 + 1, cy) * 36;
+      const sat = 42 + h3(seed, cx, cy * 3 + 2) * 14;
+      // lit from above: cells higher in their cluster catch more light —
+      // approximate with the AO-free top bias from the hash
+      const L = (20 + h3(seed, cx * 7, cy * 7) * 14) * lumK + 6 * lumK;
+      const pg = pctx.createRadialGradient(sx, sy - pr * 0.25, 0, sx, sy, pr);
+      pg.addColorStop(0, hsla(hue, sat, L + 6, 0.62));
+      pg.addColorStop(0.6, hsla(hue, sat, L, 0.42));
+      pg.addColorStop(1, hsla(hue, sat, Math.max(0, L - 8), 0));
+      pctx.fillStyle = pg;
+      pctx.beginPath(); pctx.arc(sx, sy, pr, 0, Math.PI * 2); pctx.fill();
+    }
+  }
+
+  // --- vignette: the frame, not flat ------------------------------------------------------------
+  const vg = pctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.72);
+  vg.addColorStop(0, 'rgba(8, 10, 18, 0)');
+  vg.addColorStop(1, 'rgba(8, 10, 18, 0.20)');
+  pctx.fillStyle = vg;
+  pctx.fillRect(0, 0, W, H);
+
+  return { leaves, fires, waterTop, sky, pal, sunE: e };
+}
+
+// Two depth layers behind the world: far hills, near treeline. Deterministic
+// 1D-noise silhouettes in layer space; each layer drifts at a fraction of
+// the camera (parallax), colors hazed toward the sky (atmospheric
+// perspective), dimmed by the diurnal light.
+function drawParallax(pctx, mw, view, G, W, H, horizonY, lumK) {
+  const seed = mw.seed;
+  const clipH = Math.max(0, horizonY + 2);
+  if (clipH <= 0) return;
+  pctx.save();
+  pctx.beginPath();
+  pctx.rect(0, 0, W, clipH);
+  pctx.clip();
+  const layers = [
+    { f: 0.20, salt: 71, ns: 0.0028, n2: 0.009, hBase: 0.015, hAmp: 0.17, top: [148, 164, 186], bot: [198, 203, 210] },
+    { f: 0.45, salt: 72, ns: 0.010, n2: 0.031, hBase: 0.004, hAmp: 0.085, top: [88, 108, 94], bot: [132, 142, 130] },
+  ];
+  for (const L of layers) {
+    const dim = (c) => `rgb(${(c[0] * lumK) | 0},${(c[1] * lumK) | 0},${(c[2] * lumK) | 0})`;
+    const grad = pctx.createLinearGradient(0, horizonY - H * (L.hBase + L.hAmp), 0, horizonY + 2);
+    grad.addColorStop(0, dim(L.top));
+    grad.addColorStop(1, dim(L.bot));
+    pctx.fillStyle = grad;
+    pctx.beginPath();
+    const step = 5;
+    let first = true;
+    for (let sx = -10; sx <= W + 10; sx += step) {
+      const lx = view.x * L.f + (sx - G.ox) / G.scale;
+      const n = vnoise1(seed, lx * L.ns, L.salt) * 0.7 + vnoise1(seed, lx * L.n2, L.salt + 1) * 0.3;
+      const ry = horizonY - (L.hBase + Math.pow(n, 1.3) * L.hAmp) * H;
+      if (first) { pctx.moveTo(sx, ry); first = false; }
+      else pctx.lineTo(sx, ry);
+    }
+    pctx.lineTo(W + 10, horizonY + 2);
+    pctx.lineTo(-10, horizonY + 2);
+    pctx.closePath();
+    pctx.fill();
+  }
+  pctx.restore();
+}
+
+// LEGACY path (stills shim / tests): per-cell rects, day-only lighting.
+// The browser paints with paintTerrain() below; this stays byte-stable for
+// test/material-render.mjs, which asserts on the emitted rects.
 // Paint sky + terrain into pctx (an offscreen canvas ctx in the browser,
 // the real ctx in the shim). Returns dynamic lists for per-frame overlays:
 // { leaves, fires, waterTop, sky } — screen-space.
-function paintTerrain(pctx, mw, view, G, W, H) {
+function paintTerrainLegacy(pctx, mw, view, G, W, H) {
   const { grid, cols, rows, seed, surf, seaRow } = mw;
   const { px, py, scale, cellPx, cx0, cx1, cy0, cy1 } = G;
   const tick = mw.tick || 0;
@@ -392,8 +669,13 @@ function drawLeaves(pctx, dyn, mw, tick) {
       lastWind = typeof windAt === 'function' ? windAt(mw, wq) : 10;
     }
     const sway = Math.sin(tick * 0.07 + L.cx * 0.35 + L.cy * 0.5) * lastWind * 0.12;
-    // leaf color: lift the albedo toward the light
-    pctx.ellipse(L.x + L.s / 2 + sway, L.y + L.s / 2, L.s * 0.85, L.s * 0.70, 0.2, 0, Math.PI * 2);
+    // leaf color: lift the albedo toward the light.
+    // NOTE: ellipse() continues the current subpath — without the moveTo,
+    // the batched fill connects every leaf with straight lines (the old
+    // "grey horizontal smear" artifact). Break the subpath per leaf.
+    const ex = L.x + L.s / 2 + sway, ey = L.y + L.s / 2;
+    pctx.moveTo(ex + L.s * 0.85, ey);
+    pctx.ellipse(ex, ey, L.s * 0.85, L.s * 0.70, 0.2, 0, Math.PI * 2);
   }
   pctx.fill();
 }
@@ -459,8 +741,10 @@ function drawTint(pctx, e, W, H) {
     const k = 1 - e / 0.28;
     pctx.fillStyle = `rgba(255, 148, 64, ${(0.10 * k).toFixed(3)})`;
   } else {
+    // night: a cool grade, not a blackout — the albedo already carries
+    // the moonlight floor, so this just unifies the color temperature.
     const k = Math.min(1, -e * 1.4);
-    pctx.fillStyle = `rgba(10, 18, 52, ${(0.52 * k).toFixed(3)})`;
+    pctx.fillStyle = `rgba(16, 24, 64, ${(0.26 * k).toFixed(3)})`;
   }
   pctx.fillRect(0, 0, W, H);
 }
@@ -479,7 +763,7 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   const py = (wy) => oy + (wy - view.y) * scale;
   const cellPx = CELL_PX * scale;
   const G = {
-    px, py, scale, cellPx,
+    px, py, scale, cellPx, ox, oy,
     vx: view.x, vw: view.w,
     cx0: Math.max(0, Math.floor(view.x / CELL_PX) - 1),
     cx1: Math.min(cols - 1, Math.ceil((view.x + view.w) / CELL_PX) + 1),
@@ -503,7 +787,7 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
     dyn = terrainCache.dyn;
     ctx.drawImage(terrainCache.canvas, 0, 0);
   } else {
-    dyn = paintTerrain(ctx, mw, view, G, W, H);
+    dyn = paintTerrainLegacy(ctx, mw, view, G, W, H);
   }
 
   // --- per-frame life ----------------------------------------------------------------------
@@ -512,7 +796,6 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   drawLeaves(ctx, dyn, mw, tick);
   drawRain(ctx, mw, G, W, H, tick, seed);
   drawLightning(ctx, mw, G, W, H, tick, seed);
-  drawTint(ctx, dyn.sunE, W, H);
 
   // --- creatures: the fauna ------------------------------------------------------------------
   // opts.creatures draws the whole living roster (eye only). Non-tanglekin
@@ -526,6 +809,9 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
     else if (oc.drawing) drawGrownBody(ctx, oc, px, py, scale);
     else drawCreature(ctx, oc, px, py, scale);
   }
+
+  // diurnal tint last, over creatures too — moonlight grades the whole scene
+  drawTint(ctx, dyn.sunE, W, H);
 
   return { scale, ox, oy };
 }

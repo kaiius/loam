@@ -298,10 +298,17 @@ function tickFire(mw, fireOn) {
   const g = mw.grid;
   const { cols, rows, mat, heat } = g;
   const burn = aux(mw, 'burn', Float32Array);
+  // Spread accumulates here and applies after the sweep: fire advances
+  // ~1 cell per tick. (Applying spread in-sweep let one tick chain
+  // across the whole fuel bed — a lightning strike flash-burned half
+  // the world's canopy. It also let heat run to Infinity.)
+  const spread = aux(mw, 'spread', Float32Array);
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       const i = y * cols + x;
       heat[i] *= HEAT_DECAY;
+      // Heat is a 0..1-ish intensity (strike sets 0.9) — clamp it.
+      if (heat[i] > 1.5) heat[i] = 1.5;
       if (!fireOn) continue;
       const m = mat[i];
       const fl = MAT_PROPS[m].flammability;
@@ -315,7 +322,7 @@ function tickFire(mw, fireOn) {
             if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
             const n = ny * cols + nx;
             const fn = MAT_PROPS[mat[n]].flammability;
-            if (fn > 0) heat[n] += heat[i] * fn * SPREAD_K;
+            if (fn > 0) spread[n] = Math.min(1.5, spread[n] + heat[i] * fn * SPREAD_K);
           }
         }
       }
@@ -338,6 +345,16 @@ function tickFire(mw, fireOn) {
         burn[i] = 0;
       }
     }
+  }
+  if (fireOn) {
+    for (let i = 0; i < heat.length; i++) {
+      if (spread[i] !== 0) {
+        heat[i] = Math.min(1.5, heat[i] + spread[i]);
+        spread[i] = 0;
+      }
+    }
+  } else {
+    spread.fill(0);
   }
 }
 

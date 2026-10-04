@@ -95,9 +95,14 @@ export function seasonSin(mw) { return Math.sin(seasonPhase(mw) * Math.PI * 2); 
 
 // --- the tick -------------------------------------------------------------
 
-const EVAP_BASE = 0.00006;
-const EVAP_WARM = 0.00022;
-const RAIN_RATE = 0.02;
+const EVAP_BASE = 0.0006;
+const EVAP_WARM = 0.0022;
+// Rain as a fraction of cloud stock per sky tick, superlinear in cloud:
+// drizzle under fair skies, deluge under storm heads. The old linear
+// RAIN_RATE=0.02 drained 40% of the cloud stock per sky tick while
+// evaporation supplied ~0.004 — cloud pinned at ~0.01 forever, so
+// lightning (gate: cloud > 0.75) never fired in any long run.
+const RAIN_K = 0.019;
 const RAIN_SOIL = 0.85;
 const ADVECT_K = 0.0001;
 const LIGHTNING_P = 0.004;
@@ -136,20 +141,27 @@ export function tickSky(mw, dt = SKY_EVERY) {
 
   // 2. Evaporation: open water + transpiring biomass, donor-limited from
   //    the column's soil stock. (The grid's own water cells are the sea.)
+  //    Open water is counted exactly in one grid pass — the old sparse
+  //    sampling missed the world's thin sea band entirely.
+  {
+    const colOf = new Array(g.cols);
+    for (let cx = 0; cx < g.cols; cx++) colOf[cx] = Math.max(0, Math.min(n - 1, Math.floor((cx * CELL_PX) / SKY_COL_W)));
+    for (let cy = 0; cy < g.rows; cy++) {
+      for (let cx = 0; cx < g.cols; cx++) {
+        const i = cy * g.cols + cx;
+        if (g.mat[i] === MAT.WATER || g.water[i] > 0.3) waterFrac[colOf[cx]] = 1;
+      }
+    }
+  }
   for (let i = 0; i < n; i++) {
     const c = sky.cols[i];
-    // Count open water in this column (sampled, cheap).
-    let wf = 0;
-    const x0 = i * SKY_COL_W / CELL_PX, x1 = Math.min(g.cols, (i + 1) * SKY_COL_W / CELL_PX);
-    for (let cx = Math.floor(x0); cx < x1; cx += 4) {
-      for (let cy = 0; cy < g.rows; cy += 8) {
-        if (g.water[cy * g.cols + cx] > 0.3) { wf = 1; break; }
-      }
-      if (wf) break;
-    }
-    const rate = (EVAP_BASE + EVAP_WARM * c.T) * (wf * 2.0 + biomass[i] * 0.9);
-    const draw = Math.min(c.soil, rate * dt);
-    c.soil -= draw;
+    // Open water evaporates freely (the sea doesn't run out); soil
+    // moisture only limits the transpiration share.
+    const rateWater = (EVAP_BASE + EVAP_WARM * c.T) * waterFrac[i] * 2.0;
+    const rateSoil = (EVAP_BASE + EVAP_WARM * c.T) * biomass[i] * 0.9;
+    const drawSoil = Math.min(c.soil, rateSoil * dt);
+    c.soil -= drawSoil;
+    const draw = rateWater * dt + drawSoil;
     c.vapor += draw * 0.5;
     c.cloud += draw * 0.5;
   }
@@ -166,8 +178,11 @@ export function tickSky(mw, dt = SKY_EVERY) {
       c.cloud += cond;
     }
     // Lightning: convective storms discharge while the cloud is deep.
-    if (c.cloud > 0.75 && c.T > 0.6) {
-      const p = LIGHTNING_P * dt * (c.cloud - 0.75) * 4 * c.T;
+    // (Gate lowered 2026-10-03: the old cloud > 0.75 was unreachable —
+    // the broken water budget pinned cloud at ~0.01. Deep cloud is now
+    // cloud > 0.55, which wet columns reach and exceed in spells.)
+    if (c.cloud > 0.55 && c.T > 0.55) {
+      const p = LIGHTNING_P * dt * (c.cloud - 0.55) * 4 * c.T;
       if (rng.next() < p) {
         const x = (i + 0.5) * SKY_COL_W + rng.range(-40, 40);
         sky.lightning.push({ x, t: mw.tick });
@@ -176,9 +191,9 @@ export function tickSky(mw, dt = SKY_EVERY) {
       }
     }
     // Wet summers, dry winters — same clock as the T forcing.
-    const rain = Math.min(c.cloud, c.cloud * RAIN_RATE * (1 + 0.5 * sSin) * dt);
+    const rain = Math.min(c.cloud, RAIN_K * Math.pow(c.cloud, 2.5) * (1 + 0.5 * sSin) * dt);
     c.cloud -= rain;
-    c.rain += rain;
+    c.rain = rain; // current rainfall rate (eye + grid signal), not an accumulator
     if (rain > 0.001) rainOntoGrid(mw, i, rain);
     // 85% soaks into the column's soil stock; the grid's moist field is
     // written in the coupling pass below.
@@ -274,6 +289,20 @@ function coupleToGrid(mw) {
         }
       }
     }
+    // Rain quenches fire: lightning strikes during storms, so most
+    // strikes land in falling rain and fizzle — dry lightning is the
+    // dangerous kind. Only nascent heat (below ignition) is quenched;
+    // a fresh strike lands above ignition and gets its chance to take
+    // hold. (Per sky tick; heavy rain ≈ 7%/material-tick on embers.)
+    if (c.rain > 0.01) {
+      const damp = Math.max(0, 1 - c.rain * 3);
+      for (let cx = x0; cx < x1; cx++) {
+        for (let cy = 0; cy < g.rows; cy++) {
+          const idx = cy * g.cols + cx;
+          if (g.heat[idx] > 0.01 && g.heat[idx] < IGNITION_HEAT) g.heat[idx] *= damp;
+        }
+      }
+    }
     // Temperature gates fire: freezing columns quench nascent heat
     // below ignition (no winter wildfires); scorching columns prime
     // flammable cells toward it. The fire process is untouched — this
@@ -305,7 +334,7 @@ function coupleToGrid(mw) {
             const nx = cx + dx;
             if (nx >= 0 && nx < g.cols) {
               const ni = cy * g.cols + nx;
-              g.heat[ni] += g.heat[idx] * 0.08;
+              g.heat[ni] = Math.min(1.5, g.heat[ni] + g.heat[idx] * 0.08);
             }
           }
         }
