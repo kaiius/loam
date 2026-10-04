@@ -98,7 +98,11 @@ export function poseFor(c, tick) {
   switch (act) {
     case 'sleep': p.curled = 1; p.eyeOpen = 0; p.breathAmp = 1.6; p.crouch = 0.85; break;
     case 'dig': p.spineLean = 0.55; p.armReach = 0.9; p.crouch = 0.35; p.digOsc = 1; p.headPitch = 0.4; break;
-    case 'climb': p.spineLean = -0.12; p.armReach = 1; p.crouch = -0.15; p.gaitAmp = H * 0.10; p.gaitFreq = 0.5; break;
+    case 'climb':
+      p.spineLean = -0.12; p.armReach = 1; p.crouch = -0.15; p.gaitAmp = H * 0.10; p.gaitFreq = 0.5;
+      p.tailCurl = Math.max(p.tailCurl, 0.75); // the tail grips while climbing
+      p.tailRaise = Math.max(p.tailRaise, 0.3);
+      break;
     case 'eat': p.headPitch = 0.55; p.mouthOpen = 0.8; p.armReach = 0.7; p.crouch = 0.15; break;
     case 'drink': p.headPitch = 0.7; p.crouch = 0.3; break;
     case 'groom': case 'cuddle': p.spineLean = 0.3; p.armReach = 0.85; p.headPitch = 0.25; break;
@@ -113,7 +117,12 @@ export function poseFor(c, tick) {
     case 'bite': p.spineLean = 0.45; p.mouthOpen = 1; p.browDrop = 0.7; p.crouch = 0.2; break;
     case 'geophagy': p.headPitch = 0.6; p.mouthOpen = 0.5; p.crouch = 0.4; break;
     default:
-      if (GAIT_ACTIONS.has(act)) { p.gaitAmp = H * 0.13; }
+      if (GAIT_ACTIONS.has(act)) {
+        p.gaitAmp = H * 0.15;
+        // the tail works while walking: raised for balance, swaying against
+        // the stride — a monkey's tail is never idle in motion.
+        p.tailRaise = Math.max(p.tailRaise, 0.35);
+      }
       break;
   }
   if (c.climbing) { p.spineLean = -0.12; p.armReach = 1; p.crouch = -0.1; p.gaitAmp = Math.max(p.gaitAmp, H * 0.08); }

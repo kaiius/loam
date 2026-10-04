@@ -458,48 +458,61 @@ function drawFlutter(ctx, d, pose, id) {
   const wingAng = 0.35 + (flap * 0.5 + 0.5) * 0.80;
 
   const rootX = 0, rootY = bodyY - H * 0.03;
+  // body FIRST: a readable thorax + segmented abdomen + head, so the wings
+  // have something to attach to — the old draw order and oversized wings
+  // left a pink blob with floating spots.
+  ctx.fillStyle = vgrad(ctx, bodyY - H * 0.05, bodyY + H * 0.05, P.dark, P.mid);
+  ctx.beginPath(); ctx.ellipse(H * 0.02, bodyY, H * 0.11, H * 0.048, 0.15, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = P.dark; ctx.globalAlpha = 0.55; ctx.lineWidth = Math.max(1, H * 0.008); ctx.lineCap = 'round';
+  for (let sgm = 0; sgm < 3; sgm++) { // abdomen segments
+    const ax = H * (0.02 - 0.055 - sgm * 0.05);
+    ctx.beginPath(); ctx.moveTo(ax, bodyY - H * 0.038); ctx.lineTo(ax, bodyY + H * 0.038); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  // head + feathery antennae
+  ctx.fillStyle = P.dark;
+  ctx.beginPath(); ctx.arc(H * 0.125, bodyY - H * 0.012, H * 0.030, 0, Math.PI * 2); ctx.fill();
+  drawEye(ctx, H * 0.135, bodyY - H * 0.020, H * 0.016, pose.eyeOpenNow);
+  ctx.strokeStyle = P.dark; ctx.lineWidth = Math.max(1, H * 0.007); ctx.lineCap = 'round';
+  for (const s of [-1, 1]) {
+    ctx.beginPath(); ctx.moveTo(H * 0.14, bodyY - H * 0.02);
+    ctx.quadraticCurveTo(H * 0.18, bodyY - H * 0.08, H * 0.21, bodyY - H * 0.11 + s * H * 0.014);
+    ctx.stroke();
+    ctx.fillStyle = P.dark; // antennal club
+    ctx.beginPath(); ctx.arc(H * 0.21, bodyY - H * 0.11 + s * H * 0.014, H * 0.010, 0, Math.PI * 2); ctx.fill();
+  }
+  // wings: dainty, rooted AT the thorax (inner edge overlaps the body),
+  // spots well inside the wing — never floating beyond it. A thin dark
+  // rim separates wing from sky.
   for (const s of [0.5, 1]) { // far pair, near pair
     ctx.globalAlpha = s;
     const pairs = [
-      { wr: H * 0.32, off: 0.00 },  // forewing
-      { wr: H * 0.20, off: 0.50 },  // hindwing
+      { wr: H * 0.20, off: 0.00 },  // forewing
+      { wr: H * 0.13, off: 0.55 },  // hindwing
     ];
     for (const { wr, off } of pairs) {
       const wa = wingAng + off;
       const dx = Math.cos(wa), dy = -Math.sin(wa);
-      const cx = rootX + dx * wr * 0.78, cy = rootY + dy * wr * 0.78;
-      const wg = ctx.createLinearGradient(rootX, rootY, cx + dx * wr * 0.5, cy + dy * wr * 0.5);
-      wg.addColorStop(0, P.mid); wg.addColorStop(0.55, P.pale); wg.addColorStop(1, P.pale);
+      const cx = rootX + dx * wr * 0.55, cy = rootY + dy * wr * 0.55;
+      const wg = ctx.createLinearGradient(rootX, rootY, cx + dx * wr * 0.4, cy + dy * wr * 0.4);
+      wg.addColorStop(0, P.mid); wg.addColorStop(0.6, P.pale); wg.addColorStop(1, P.pale);
       ctx.fillStyle = wg;
       ctx.beginPath();
-      ctx.ellipse(cx, cy, wr, wr * 0.60, -wa, 0, Math.PI * 2);
+      ctx.ellipse(cx, cy, wr, wr * 0.62, -wa, 0, Math.PI * 2);
       ctx.fill();
-      // wing spots from the genome
-      ctx.fillStyle = P.mark; ctx.globalAlpha = s * 0.65;
+      ctx.strokeStyle = P.dark; ctx.globalAlpha = s * 0.45; ctx.lineWidth = Math.max(1, H * 0.008);
+      ctx.beginPath(); ctx.ellipse(cx, cy, wr, wr * 0.62, -wa, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = s;
+      ctx.fillStyle = P.mark; ctx.globalAlpha = s * 0.8; // wing spot, inside the wing
       ctx.beginPath();
-      ctx.arc(rootX + dx * wr * 1.15, rootY + dy * wr * 1.15, wr * 0.20, 0, Math.PI * 2);
+      ctx.arc(rootX + dx * wr * 0.95, rootY + dy * wr * 0.95, wr * 0.16, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = s;
     }
   }
   ctx.globalAlpha = 1;
-  // body: thin capsule
-  ctx.fillStyle = vgrad(ctx, bodyY - H * 0.05, bodyY + H * 0.05, P.dark, P.mid);
-  ctx.beginPath(); ctx.ellipse(H * 0.02, bodyY, H * 0.10, H * 0.028, 0.15, 0, Math.PI * 2); ctx.fill();
-  // head + feathery antennae
-  ctx.fillStyle = P.dark;
-  ctx.beginPath(); ctx.arc(H * 0.115, bodyY - H * 0.012, H * 0.026, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = P.dark; ctx.lineWidth = 1; ctx.lineCap = 'round';
-  for (const s of [-1, 1]) {
-    ctx.beginPath(); ctx.moveTo(H * 0.13, bodyY - H * 0.02);
-    ctx.quadraticCurveTo(H * 0.17, bodyY - H * 0.07, H * 0.19, bodyY - H * 0.10 + s * H * 0.012);
-    ctx.stroke();
-  }
-  drawEye(ctx, H * 0.12, bodyY - H * 0.02, H * 0.020, pose.eyeOpenNow);
 }
 
-// --- GRUB (larva) --------------------------------------------------------------------
-// The prey base. Segmented, peristaltic, honest about being food.
 function drawGrub(ctx, d, pose, id) {
   const H = d.heightPx, W = d.widthPx;
   const P = palette(d);

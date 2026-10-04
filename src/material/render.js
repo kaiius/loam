@@ -80,6 +80,18 @@ function vnoise1(seed, x, salt) {
   const u = xf * xf * (3 - 2 * xf);
   return a + (b - a) * u;
 }
+// Deterministic 2D value noise in [0,1) — organic material grain. The old
+// per-cell hash grain alternated light/dark on adjacent cells (the
+// checkerboard dither); this interpolates over ~3 cells so shading reads
+// as earth, not pixels.
+function vnoise2(seed, x, y, salt) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const hh = (ix, iy) => h3(seed, ix + iy * 4096, salt);
+  const a = hh(xi, yi), b = hh(xi + 1, yi), c = hh(xi, yi + 1), d = hh(xi + 1, yi + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
 const sstep = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 
 // numeric twin of hslRgb: [r, g, b] 0-255, for the albedo field.
@@ -294,6 +306,65 @@ function paintTerrain(pctx, mw, view, G, W, H) {
     return prefix[base + cy] - prefix[base + lo];
   };
 
+  // --- smooth terrain body: the contour --------------------------------------
+  // The blocky silhouette dies here. Topmost-solid height per column
+  // (water counts, so lakes keep their surface) → Gaussian-smoothed →
+  // ONE filled body with a genuinely smooth skyline. The albedo buffer
+  // (material texture) is drawn clipped inside it, so no block edge can
+  // ever poke above the silhouette. Burrow mouths survive as smooth
+  // notches; sealed pockets read through the buffer.
+  const surfH = new Float32Array(gw);
+  for (let gx = 0; gx < gw; gx++) {
+    const cx = cx0 + gx;
+    let y = cy1 + 1;
+    for (let cy = cy0; cy <= cy1; cy++) {
+      const i = cy * cols + cx, m = grid.mat[i];
+      if (MAT_PROPS[m].solid || isWaterCell(m, grid, i)) { y = cy; break; }
+    }
+    surfH[gx] = y;
+  }
+  for (let it = 0; it < 2; it++) { // small Gaussian: stairs become slopes
+    const s = surfH.slice();
+    for (let gx = 1; gx < gw - 1; gx++) surfH[gx] = s[gx - 1] * 0.25 + s[gx] * 0.5 + s[gx + 1] * 0.25;
+  }
+  const surfYat = (gx) => {
+    const g0 = Math.max(0, Math.min(gw - 1, Math.floor(gx)));
+    const g1 = Math.min(gw - 1, g0 + 1), f = Math.max(0, Math.min(1, gx - g0));
+    return surfH[g0] * (1 - f) + surfH[g1] * f;
+  };
+  const traceGround = () => { // issues the smooth body path on pctx
+    pctx.beginPath();
+    const step = 0.25;
+    let first = true;
+    for (let gx = 0; gx <= gw - 1; gx += step) {
+      const sx = px((cx0 + gx + 0.5) * CELL_PX), sy = py(surfYat(gx) * CELL_PX);
+      if (first) { pctx.moveTo(sx, sy); first = false; }
+      else pctx.lineTo(sx, sy);
+    }
+    pctx.lineTo(px((cx1 + 1) * CELL_PX), H + 4);
+    pctx.lineTo(px(cx0 * CELL_PX), H + 4);
+    pctx.closePath();
+  };
+  // earth body fill: top-lit soil breathing into depth shadow. The buffer
+  // covers the interior opaquely; this shows only as the soft silhouette
+  // edge, so it is plain by design — no texture, no squares.
+  {
+    const dl = (c) => {
+      const r = c[0] * lumK + (148 - c[0]) * moonK;
+      const g = c[1] * lumK + (168 - c[1]) * moonK;
+      const b = c[2] * lumK + (224 - c[2]) * moonK;
+      return `rgb(${Math.max(0, Math.min(255, r)) | 0},${Math.max(0, Math.min(255, g)) | 0},${Math.max(0, Math.min(255, b)) | 0})`;
+    };
+    const gy0 = Math.max(0, Math.min(H, py(surfYat(gw / 2) * CELL_PX)));
+    const bg = pctx.createLinearGradient(0, gy0, 0, H);
+    bg.addColorStop(0, dl(hsl2rgb(23, 36, 33)));
+    bg.addColorStop(0.35, dl(hsl2rgb(22, 32, 20)));
+    bg.addColorStop(1, dl(hsl2rgb(20, 28, 9)));
+    traceGround();
+    pctx.fillStyle = bg;
+    pctx.fill();
+  }
+
   const BS = 2; // buffer px per cell
   const bw = gw * BS, bh = gh * BS;
   const img = new ImageData(bw, bh);
@@ -323,6 +394,12 @@ function paintTerrain(pctx, mw, view, G, W, H) {
           const v = h3(seed, cx, cy);
           [r, g2, b] = hsl2rgb(20, 30, shade(11 + v * 4, lit));
         }
+      } else if (m === MAT.WOOD || m === MAT.DEADWOOD) {
+        // trunks are drawn as tapered strands below — the buffer leaves a
+        // bark-seeded hole so the smoothed blit can't fringe dark around it.
+        const gid = grid.grownId[i] || 1;
+        [r, g2, b] = barkRGB(seed, gid, m === MAT.DEADWOOD, lit);
+        alpha = 0;
       } else {
         [r, g2, b] = cellRGB(m, cx, cy, i, grid, mw, lit, waterCell);
         // leaves paint dark here — interior shadow; the foliage spray
@@ -356,9 +433,21 @@ function paintTerrain(pctx, mw, view, G, W, H) {
   const buf = document.createElement('canvas');
   buf.width = bw; buf.height = bh;
   buf.getContext('2d').putImageData(img, 0, 0);
+  // the material texture lives INSIDE the smooth body — clip so no block
+  // edge can ever poke above the skyline.
+  pctx.save();
+  traceGround();
+  pctx.clip();
   pctx.imageSmoothingEnabled = true;
   pctx.imageSmoothingQuality = 'high';
   pctx.drawImage(buf, 0, 0, bw, bh, px(cx0 * CELL_PX), py(cy0 * CELL_PX), gw * cellPx, gh * cellPx);
+  pctx.restore();
+
+  // --- wood as tapered strands -----------------------------------------------------
+  // Trunks are not stacks of squares: per plant, the wood cells are walked
+  // into centerlines and filled as tapered polygons. Diagonal runs become
+  // continuous thin branches instead of dotted lines.
+  drawWoodStrands(pctx, mw, G, seed, lumK, moonK);
 
   // --- canopy: foliage as a soft spray ---------------------------------------------------------
   // Every leaf cell gets its own soft radial glow in a varied green; the
@@ -394,6 +483,140 @@ function paintTerrain(pctx, mw, view, G, W, H) {
   pctx.fillRect(0, 0, W, H);
 
   return { leaves, fires, waterTop, sky, pal, sunE: e };
+}
+
+// Bark color for one tree: same timber per plant (grownId), so one tree
+// reads as one tree. Returns [r, g, b] 0-255. Shared by the buffer's
+// bark-seeding and the strand fill.
+function barkRGB(seed, gid, dead, lit) {
+  const tone = h3(seed, gid || 1, 555);
+  const h = dead ? 30 + (tone - 0.5) * 8 : 24 + (tone - 0.5) * 12;
+  const s = dead ? 13 : 36;
+  const l = dead ? 29 + (tone - 0.5) * 6 : 33 + (tone - 0.5) * 10;
+  const [r, g, b] = hsl2rgb(h, s, Math.max(0, Math.min(100, l * lit)));
+  return [r, g, b];
+}
+
+// Wood as tapered strands. Per plant (grownId): walk the wood cells from
+// the base upward into a centerline, fill a tapered polygon. Branches
+// (leftover clusters) become thin continuous strands. Deterministic:
+// greedy 8-neighborhood walk with fixed preference order.
+function drawWoodStrands(pctx, mw, G, seed, lumK, moonK) {
+  const { grid, cols } = mw;
+  const { px, py, cellPx, cx0, cx1, cy0, cy1 } = G;
+  const byGid = new Map();
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const i = cy * cols + cx, m = grid.mat[i];
+      if (m !== MAT.WOOD && m !== MAT.DEADWOOD) continue;
+      const gid = grid.grownId[i] || 0;
+      if (!byGid.has(gid)) byGid.set(gid, []);
+      byGid.get(gid).push({ cx, cy, dead: m === MAT.DEADWOOD });
+    }
+  }
+  const dl = (c) => {
+    const r = c[0] * lumK + (148 - c[0]) * moonK;
+    const g = c[1] * lumK + (168 - c[1]) * moonK;
+    const b = c[2] * lumK + (224 - c[2]) * moonK;
+    return `rgb(${Math.max(0, Math.min(255, r)) | 0},${Math.max(0, Math.min(255, g)) | 0},${Math.max(0, Math.min(255, b)) | 0})`;
+  };
+  for (const [gid, cells] of byGid) {
+    const key = (cx, cy) => cy * 100000 + cx;
+    const set = new Set(cells.map((c) => key(c.cx, c.cy)));
+    const cellByKey = new Map(cells.map((c) => [key(c.cx, c.cy), c]));
+    const used = new Set();
+    const PREFS = [[0, -1], [-1, -1], [1, -1], [-1, 0], [1, 0], [0, 1], [-1, 1], [1, 1]];
+    const walk = (sx, sy) => {
+      const pts = [];
+      let cx = sx, cy = sy;
+      for (let step = 0; step < 600; step++) {
+        const k = key(cx, cy);
+        if (!set.has(k) || used.has(k)) break;
+        used.add(k);
+        pts.push(cellByKey.get(k));
+        let found = false;
+        for (const [dx, dy] of PREFS) {
+          const nk = key(cx + dx, cy + dy);
+          if (set.has(nk) && !used.has(nk)) { cx += dx; cy += dy; found = true; break; }
+        }
+        if (!found) break;
+      }
+      return pts;
+    };
+    const strands = [];
+    const sorted = cells.slice().sort((a, b) => b.cy - a.cy || a.cx - b.cx);
+    if (sorted.length) strands.push({ pts: walk(sorted[0].cx, sorted[0].cy), trunk: true });
+    for (const c of sorted) {
+      if (used.has(key(c.cx, c.cy))) continue;
+      strands.push({ pts: walk(c.cx, c.cy), trunk: false });
+    }
+    for (const s of strands) {
+      const pts = s.pts;
+      if (pts.length === 0) continue;
+      const n = pts.length;
+      const dead = pts[0].dead;
+      const cBase = barkRGB(seed, gid || 1, dead, 0.82);
+      const cTip = barkRGB(seed, gid || 1, dead, 1.06);
+      if (n === 1) {
+        // a lone wood cell: a bark dot, not a polygon (zero-area paths
+        // and zero-length gradients render nothing).
+        const sx = px((pts[0].cx + 0.5) * CELL_PX), sy = py((pts[0].cy + 0.5) * CELL_PX);
+        pctx.fillStyle = dl(cBase);
+        pctx.beginPath(); pctx.arc(sx, sy, cellPx * 0.42, 0, Math.PI * 2); pctx.fill();
+        continue;
+      }
+      const SX = [], SY = [], SW = [];
+      for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        SX.push(px((p.cx + 0.5) * CELL_PX));
+        SY.push(py((p.cy + 0.5) * CELL_PX));
+        let rowW = 0;
+        for (let ox = -2; ox <= 2; ox++) {
+          if (set.has(key(p.cx + ox, p.cy))) rowW++;
+        }
+        const t = n === 1 ? 1 : i / (n - 1);
+        const taper = s.trunk ? (0.95 - 0.73 * t) : (0.42 - 0.29 * t);
+        SW.push(Math.max(taper, rowW * 0.9) * cellPx);
+      }
+      // tapered polygon via offset curve
+      const L = [], R = [];
+      for (let i = 0; i < n; i++) {
+        const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
+        let dx = SX[b] - SX[a], dy = SY[b] - SY[a];
+        const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
+        const hw = SW[i] / 2;
+        L.push([SX[i] - dy * hw, SY[i] + dx * hw]);
+        R.push([SX[i] + dy * hw, SY[i] - dx * hw]);
+      }
+      const grad = pctx.createLinearGradient(SX[0], SY[0], SX[n - 1], SY[n - 1]);
+      grad.addColorStop(0, dl(cBase));
+      grad.addColorStop(1, dl(cTip));
+      pctx.fillStyle = grad;
+      pctx.beginPath();
+      pctx.moveTo(L[0][0], L[0][1]);
+      for (let i = 1; i < n; i++) pctx.lineTo(L[i][0], L[i][1]);
+      for (let i = n - 1; i >= 0; i--) pctx.lineTo(R[i][0], R[i][1]);
+      pctx.closePath();
+      pctx.fill();
+      // bark grain: two whisper-thin darker lines along the strand
+      if (n > 2 && cellPx > 7) {
+        pctx.strokeStyle = 'rgba(20, 12, 8, 0.28)';
+        pctx.lineWidth = Math.max(1, cellPx * 0.06);
+        pctx.lineCap = 'round';
+        for (const off of [-0.22, 0.22]) {
+          pctx.beginPath();
+          for (let i = 0; i < n; i++) {
+            const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
+            let dx = SX[b] - SX[a], dy = SY[b] - SY[a];
+            const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
+            const gx = SX[i] - dy * SW[i] * off, gy = SY[i] + dx * SW[i] * off;
+            if (i === 0) pctx.moveTo(gx, gy); else pctx.lineTo(gx, gy);
+          }
+          pctx.stroke();
+        }
+      }
+    }
+  }
 }
 
 // Two depth layers behind the world: far hills, near treeline. Deterministic
@@ -861,24 +1084,27 @@ function cellHSL(m, cx, cy, i, grid, mw, lit) {
     }
     case MAT.SOIL: {
       // Layered umbers: darker with depth below the surface, darker when moist.
+      // Grain is smooth 2D noise (~3 cells) — the old per-cell hash read as
+      // a checkerboard; a whisper of per-cell tooth remains for texture.
       const depth = Math.max(0, cy - (surf[cx] | 0));
-      const grain = h3(seed, cx, cy);
+      const grain = vnoise2(seed, cx * 0.33, cy * 0.33, 11);
+      const tooth = h3(seed, cx, cy);
       const strata = h3(seed, cx >> 2, cy >> 1);
-      let l = 34 - Math.min(depth, 26) * 0.62 - moist * 7 + (grain - 0.5) * 5 + (strata - 0.5) * 3;
+      let l = 34 - Math.min(depth, 26) * 0.62 - moist * 7 + (grain - 0.5) * 5 + (tooth - 0.5) * 1.2 + (strata - 0.5) * 3;
       return [23 + (grain - 0.5) * 6, 36, shade(l, lit)];
     }
     case MAT.SAND: {
-      const v = h3(seed, cx, cy);
+      const v = vnoise2(seed, cx * 0.33, cy * 0.33, 12);
       return [45 + (v - 0.5) * 8, 55, shade(63 + (v - 0.5) * 6 - moist * 4, lit)];
     }
     case MAT.CLAY: {
-      const v = h3(seed, cx, cy);
+      const v = vnoise2(seed, cx * 0.33, cy * 0.33, 13);
       return [14 + (v - 0.5) * 8, 44, shade(37 + (v - 0.5) * 6 - moist * 3, lit)];
     }
     case MAT.ROCK: {
       // Cool greys, faint horizontal strata — bands run along cy.
       const band = h3(seed, cy >> 2, 7);
-      const v = h3(seed, cx, cy);
+      const v = vnoise2(seed, cx * 0.33, cy * 0.33, 14);
       return [212 + (v - 0.5) * 10, 9, shade(37 + (band - 0.5) * 11 + (v - 0.5) * 5, lit)];
     }
     case MAT.WOOD: {
@@ -1000,9 +1226,13 @@ function drawGrownBody(ctx, c, px, py, scale) {
   const lean = pose.spineLean + pose.sway * 0.12;
   const shX = Math.sin(lean) * torsoLen, shY = hipY - Math.cos(lean) * torsoLen;
   const torsoW = W * 0.42 * (1 + pose.breath * 0.03);
-  const legLen = H * (0.26 + 0.14 * d.legLength01);
-  const armLen = H * 0.30;
-  const headR = W * 0.30;
+  // Primate proportions (Joshua, 2026-10-04): the tanglekin reads monkey,
+  // not frog-baby — smaller head relative to the torso, long forelimbs,
+  // legs that reach the ground. The genome still drives H/W/coat/ears;
+  // these fractions are the art's species read.
+  const legLen = H * (0.32 + 0.14 * d.legLength01);
+  const armLen = H * 0.40;
+  const headR = W * 0.22;
 
   // two-bone IK: joint position for (root → target), bending to bendSign.
   const ik = (rx, ry, tx, ty, l1, l2, bendSign) => {
@@ -1113,10 +1343,27 @@ function drawGrownBody(ctx, c, px, py, scale) {
   // --- near-side limbs ----------------------------------------------------------
   const nk = limb2(W * 0.10, hipY, nearFoot.x + W * 0.04, nearFoot.y, legLen * 0.52, legLen * 0.52, -1, legW, furLimb, legScar);
   limb2(shX + W * 0.16, shY, nearHand.x, nearHand.y, armLen * 0.5, armLen * 0.5, 1, armW, furLimb, armScar);
-  // feet + hands: grasping pads
+  // feet + hands: grasping extremities — a foot with toes, a hand with
+  // fingers that curl. Primate, not nub.
   ctx.fillStyle = handCol;
   ctx.beginPath(); ctx.ellipse(nk.tx + 2, nk.ty - 1.5, legW * 0.75, legW * 0.5, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(nearHand.x + 1.5, nearHand.y, armW * 0.62, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = handCol; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1.2, legW * 0.28);
+  for (let t = 0; t < 3; t++) { // toes fan forward from the foot
+    const tx = nk.tx + 2 + legW * 0.55, ty = nk.ty - 1.5 + (t - 1) * legW * 0.32;
+    ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx + legW * 0.55, ty + legW * 0.12); ctx.stroke();
+  }
+  // the hand: palm + three curling fingers
+  const hx2 = nearHand.x + 1.5, hy2 = nearHand.y;
+  ctx.fillStyle = handCol;
+  ctx.beginPath(); ctx.arc(hx2, hy2, armW * 0.55, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = handCol; ctx.lineWidth = Math.max(1.2, armW * 0.30);
+  for (let f = 0; f < 3; f++) {
+    const fa = 0.5 + f * 0.5; // fan
+    const fx = hx2 + Math.cos(fa) * armW * 0.5, fy = hy2 + Math.sin(fa) * armW * 0.5;
+    ctx.beginPath(); ctx.moveTo(fx, fy);
+    ctx.quadraticCurveTo(fx + armW * 0.35, fy + armW * 0.30, fx + armW * 0.28, fy + armW * 0.72);
+    ctx.stroke();
+  }
 
   // --- head + face: the affect readout ------------------------------------------
   drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, furDark, scarCol, coatH);
@@ -1126,6 +1373,7 @@ function drawGrownBody(ctx, c, px, py, scale) {
 
 // The prehensile tail: chained segments, base angle steered by tailRaise,
 // progressive curl (+ prehensile tip scaled by tailGrip), idle sway.
+// Thick and muscular at the base — a fifth limb, not a rat-tail.
 function drawTail(ctx, d, pose, id, bx, by, color) {
   const nTails = Math.max(1, Math.min(3, d.tails || 1));
   for (let t = 0; t < nTails; t++) {
@@ -1137,7 +1385,7 @@ function drawTail(ctx, d, pose, id, bx, by, color) {
       const tipK = s >= segs - 2 ? 1 + d.tailGrip * 1.6 : 1; // prehensile tip
       ang += pose.tailCurl * 0.30 * tipK + pose.tailSway * 0.10 * Math.sin(s * 0.9);
       const nx = x + Math.cos(ang) * segLen, ny = y + Math.sin(ang) * segLen;
-      ctx.lineWidth = Math.max(1.6, (1 - s / segs) * 5);
+      ctx.lineWidth = Math.max(2.4, (1 - s / segs) * 7.5);
       ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
       x = nx; y = ny;
     }
@@ -1283,13 +1531,14 @@ function drawHead(ctx, d, pose, id, shX, shY, lean, headR, furHead, furPale, fur
 }
 
 // Sleep: the curled ball. Head tucked, limbs folded, tail wrapped —
-// recognizable at a glance, drawn from the same coat.
+// recognizable at a glance, drawn from the same coat (same values as the
+// awake body, so it reads as the same animal asleep, not a different one).
 function drawCurled(ctx, d, pose, id, H, W, furTorso, furPale, furHead, scarCol, coatH) {
   const R = H * 0.26;
   const breathe = 1 + pose.breath * 0.04;
   const ballGrad = ctx.createLinearGradient(0, -R * 2, 0, 0);
   ballGrad.addColorStop(0, artHelpers.hslRgb(coatH, 30, 16));
-  ballGrad.addColorStop(1, furPale);
+  ballGrad.addColorStop(1, furTorso);
   ctx.fillStyle = ballGrad;
   ctx.beginPath(); ctx.ellipse(0, -R * 0.9, R * 1.05 * breathe, R * 0.95, 0.2, 0, Math.PI * 2); ctx.fill();
   // tail wrapped around the ball
