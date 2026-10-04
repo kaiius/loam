@@ -118,10 +118,14 @@ function hsl2rgb(h, s, l) {
  *
  * No text, no UI, no RNG. Same (world, view, opts) → same pixels.
  */
-// sun elevation: +1 at noon, -1 at midnight. Tick 600 = noon (day = 2400).
-function sunElev(mw) {
+// sun elevation: +1 at noon, -1 at midnight. Tick 1200 = noon (day = 2400) —
+// the canonical clock: tick 0 = midnight, matching senses.daySun, the
+// weather diurnal curve, the sim's daylightCurve, and the moon math below
+// (which already assumed midnight at tick 0). Fixed 2026-10-04: the
+// renderer ran a quarter-day early, so creatures sensed noon under a dusk sky.
+export function sunElev(mw) {
   const t = timeOfDay(mw);
-  return Math.cos((t - 0.25) * Math.PI * 2);
+  return Math.cos((t - 0.5) * Math.PI * 2);
 }
 
 // sky palette stops, lerped by daylight. Returns [zenithHSL, midHSL, horHSL].
