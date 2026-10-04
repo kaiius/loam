@@ -325,6 +325,20 @@ function paintTrees(tctx, mw, G, seed, lumK, moonK) {
       if (pts.length === 0) continue;
       if (!s.trunk && (pts.length < 6 ||
           !(nearTrunk(pts[0]) || nearTrunk(pts[pts.length - 1])))) continue;
+      if (!s.trunk && trunk0) {
+        // anchor the branch's trunk-side end INSIDE the trunk so the tapered
+        // polygon visibly leaves the trunk instead of floating beside it.
+        let best = null, bestD = 1e9, atStart = true;
+        for (const tp of trunk0.pts) {
+          const d0 = (tp.cx - pts[0].cx) ** 2 + (tp.cy - pts[0].cy) ** 2;
+          const d1 = (tp.cx - pts[pts.length - 1].cx) ** 2 + (tp.cy - pts[pts.length - 1].cy) ** 2;
+          if (d0 < bestD) { bestD = d0; best = tp; atStart = true; }
+          if (d1 < bestD) { bestD = d1; best = tp; atStart = false; }
+        }
+        if (best && bestD <= 36) {
+          if (atStart) pts.unshift(best); else pts.push(best);
+        } else continue; // no trunk in reach: would float — skip
+      }
       const n = pts.length;
       if (n === 1) {
         // a lone wood cell: a bark dot, not a polygon (zero-area paths
