@@ -24,6 +24,9 @@ import { digTargetCell } from './creature.js';
 import { nudgeBond } from '../sim/social.js';
 import { nearestCorpse } from './corpses.js';
 import { seedFromFeeding } from './plants.js';
+import { ACTIONS } from './brain.js'; // R7: the declared action table — the
+// executor registry below is asserted against it at import time
+// (assert-on-unhandled). No cycle: brain.js never imports actions.js.
 
 export const WALK_SPEED = 2.2; // px/tick — the M1 pace, kept
 export const GRAVITY = 0.6;
@@ -98,50 +101,69 @@ function mateCandidate(mw, c, ctx) {
   return best ? { o: best, d: bestD } : null;
 }
 
-// executeAction(mw, c, action, s, ctx) → chemCtx additions.
-// action: action index (material ACTIONS). s: senses. ctx: { others, ... }.
-// Returns { chemCtx, moved } — chemCtx feeds tickChem, moved tells the
-// caller whether locomotion happened (for the activity billing).
-export function executeAction(mw, c, action, s, ctx = {}) {
-  const chemCtx = { active: 0.6 };
-  const bh = c.body ? c.body.heightPx : 60;
-  switch (action) {
-    case 0: { // seekFood — move toward the sensed food
+// --- the executor registry ------------------------------------------------
+// R7 (arion): assert-on-unhandled — the action table can never declare what
+// the executor can't do. ACTIONS (brain.js) is the declared table;
+// EXECUTORS is the executor's, keyed by the same action indices. Every
+// declared action has exactly one entry here, and executeAction dispatches
+// through the registry: there is no `default:` fallthrough left. A new
+// declared action without a case fails LOUDLY at import time (assertion
+// below), not silently at runtime — caught by the test suite, the bundler,
+// and the page's own load (createSim re-runs module bodies, so the
+// adversarial review's loads_clean check covers it too).
+//   The case-6 mate fallthrough — declared, dispatched without error,
+//   sterile (the fourth cell of the declared/invocable/exercised grid) —
+//   is impossible by construction now, not by inspection.
+//   Declared-but-unported actions (vocal, brachiate, dive, bask, grasp,
+//   carry, drop, display, inspect, cuddle, tend, seekBond, mourn) get
+//   EXPLICIT honest-hold entries with their reason — registered, never
+//   fallthrough; the inspector still reads c._unportedAction.
+// Handler signature: (mw, c, s, ctx, chemCtx) => void. chemCtx is created
+// by executeAction and returned to the caller for the chemistry tick.
+
+// An honest hold: the action is declared and dispatched, but the material
+// track has no machinery for it yet. Explicit, documented, and visible to
+// the coverage report — the opposite of a silent fallthrough.
+function honestHold(index, reason) {
+  const fn = (mw, c, s, ctx, chemCtx) => {
+    c._unportedAction = index;
+    chemCtx.active = 0.4;
+  };
+  fn.unported = reason;
+  return fn;
+}
+
+const EXECUTORS = {
+  0: (mw, c, s, ctx, chemCtx) => { // seekFood — move toward the sensed food
       const f = c._foodTarget;
       if (f) { faceToward(c, c.x + f.dx); walkPhysics(mw, c); chemCtx.active = 0.75; }
       else walkPhysics(mw, c); // no food sensed — wander
-      break;
-    }
-    case 1: { // eat — fruit from the canopy, buried stores, or carried food
+  },
+  1: (mw, c, s, ctx, chemCtx) => { // eat — fruit from the canopy, buried stores, or carried food
       const eaten = tryEat(mw, c, s);
       if (eaten > 0) chemCtx.ate = eaten;
       chemCtx.active = 0.3;
-      break;
-    }
-    case 2: { // sleep — lie down; the chemistry clears fatigue
+  },
+  2: (mw, c, s, ctx, chemCtx) => { // sleep — lie down; the chemistry clears fatigue
       c.sleeping = true; chemCtx.sleeping = true; chemCtx.active = 0.2;
-      break;
-    }
-    case 3: // play — not in M2 (no toys). Falls through to wander, honestly.
-    case 7: { // wander
+  },
+  3: null, // play — shares wander's entry (set after the literal)
+  7: (mw, c, s, ctx, chemCtx) => { // wander
       walkPhysics(mw, c); chemCtx.active = 0.65;
-      break;
-    }
-    case 4: { // approach — toward the nearest creature
+  },
+  4: (mw, c, s, ctx, chemCtx) => { // approach — toward the nearest creature
       const o = c._nearestOther;
       if (o) { faceToward(c, o.x); walkPhysics(mw, c, WALK_SPEED * 1.1); }
       chemCtx.active = 0.75;
-      break;
-    }
-    case 5: { // flee — away from the nearest creature (the threat)
+  },
+  5: (mw, c, s, ctx, chemCtx) => { // flee — away from the nearest creature (the threat)
       const o = c._nearestOther;
       if (o) { faceToward(c, c.x + (c.x - o.x)); walkPhysics(mw, c, WALK_SPEED * 1.4); }
       else walkPhysics(mw, c, WALK_SPEED * 1.2);
       chemCtx.active = 1.0;
       chemCtx.threat = 0.5;
-      break;
-    }
-    case 6: { // mate — approach & court the nearest adult tanglekin
+  },
+  6: (mw, c, s, ctx, chemCtx) => { // mate — approach & court the nearest adult tanglekin
       // R6: sexless courtship — two hermaphroditic adults fuse gametes
       // through the real meiosis machinery (genome.js inherit, called via
       // ctx.reproduce). The brain's instinct genes already wire this action;
@@ -165,13 +187,11 @@ export function executeAction(mw, c, action, s, ctx = {}) {
       } else if (c._nearestOther) {
         faceToward(c, c._nearestOther.x); walkPhysics(mw, c, WALK_SPEED * 1.1);
       }
-      break;
-    }
-    case 8: { // seekHome — walk toward the imprinted range
+  },
+  8: (mw, c, s, ctx, chemCtx) => { // seekHome — walk toward the imprinted range
       faceToward(c, c.homeX ?? c.x); walkPhysics(mw, c); chemCtx.active = 0.7;
-      break;
-    }
-    case 9: { // climb — surface-following (design §3.3). Trees are climbed
+  },
+  9: (mw, c, s, ctx, chemCtx) => { // climb — surface-following (design §3.3). Trees are climbed
       // because they are WOOD, not because a link says so.
       const up = s.climbUp > 0.5, down = s.climbDown > 0.5;
       if (up || down) {
@@ -180,9 +200,8 @@ export function executeAction(mw, c, action, s, ctx = {}) {
         c.vy = 0; c.grounded = true; // held by the surface
         chemCtx.active = 0.85;
       } else { c.climbing = false; walkPhysics(mw, c); }
-      break;
-    }
-    case 10: { // groom — the troop's bonding ritual
+  },
+  10: (mw, c, s, ctx, chemCtx) => { // groom — the troop's bonding ritual
       const o = c._nearestOther;
       const groomR = (c.body ? c.body.reachPx : 40) + 20;
       if (o && Math.hypot(o.x - c.x, o.y - c.y) < groomR) {
@@ -194,53 +213,57 @@ export function executeAction(mw, c, action, s, ctx = {}) {
         try { nudgeBond({ bonds: mw.bonds, time: mw.tick }, c, o, 0.02); } catch { /* bonds optional */ }
       } else if (o) { faceToward(c, o.x); walkPhysics(mw, c); }
       chemCtx.active = 0.4;
-      break;
-    }
-    case 11: { // jump — unchanged physics, support-agnostic landing
+  },
+  11: (mw, c, s, ctx, chemCtx) => { // jump — unchanged physics, support-agnostic landing
       if (c.grounded) { c.vy = JUMP_VY; c.grounded = false; }
       chemCtx.active = 0.9;
-      break;
-    }
-    case 17: { // drink — adjacent water restores hydration
+  },
+  17: (mw, c, s, ctx, chemCtx) => { // drink — adjacent water restores hydration
       if (s.waterNear > 0.3) chemCtx.drank = 0.5;
       chemCtx.active = 0.3;
-      break;
-    }
-    case 16: { // swim — paddle; membranes help (M3), flailing works (M2)
+  },
+  16: (mw, c, s, ctx, chemCtx) => { // swim — paddle; membranes help (M3), flailing works (M2)
       if (s.submerged > 0.5) {
         c.x += c.facing * 1.2; c.y -= 0.4;
         chemCtx.active = 1.0;
       }
-      break;
-    }
-    case 19: { // dig — M1's redefined dig (design §3.4), now brain-driven
+  },
+  19: (mw, c, s, ctx, chemCtx) => { // dig — M1's redefined dig (design §3.4), now brain-driven
       if ((c.body ? c.body.digPower : 1) > 0) {
         digWork(mw, c);
         chemCtx.active = DIG_DRAIN;
       }
-      break;
-    }
-    case 30: { // pile — place carried soil into the facing air cell
+  },
+  30: (mw, c, s, ctx, chemCtx) => { // pile — place carried soil into the facing air cell
       if ((c.body ? c.body.graspPairs : 1) >= 1 && c.carried) {
         pileWork(mw, c);
         chemCtx.active = PILE_DRAIN;
       }
-      break;
-    }
-    case 31: { // instPile — dump carried soil at the feet, fast and loose
+  },
+  31: (mw, c, s, ctx, chemCtx) => { // instPile — dump carried soil at the feet, fast and loose
       if (c.carried) {
         dumpAtFeet(mw, c);
         chemCtx.active = 0.4;
       }
-      break;
+  },
+  32: (mw, c, s, ctx, chemCtx) => { // geophagy — eat soil for minerals (ruling #4)
+    const mineral = tryGeophagy(mw, c);
+    if (mineral > 0) { c.minerals = clamp01((c.minerals ?? 0.5) + mineral); }
+    else if (mw.stats && (c.minerals ?? 0.5) <= 0.6) {
+      // R7: the starvation failure mode (arion) — the drive fired (the
+      // brain selected geophagy and the gate re-check says the need is
+      // real) but the consummatory act found nothing to eat. Count it,
+      // and check whether ANY soil/clay lies within locomotion range:
+      // drive firing while every reachable cell is barren is the
+      // collapse signature, not a targeting quirk.
+      mw.stats.geoDriveFailed = (mw.stats.geoDriveFailed || 0) + 1;
+      if (!soilWithinRange(mw, c, GEO_LOCOMOTION_PX)) {
+        mw.stats.geoDriveStarved = (mw.stats.geoDriveStarved || 0) + 1;
+      }
     }
-    case 32: { // geophagy — eat soil for minerals (ruling #4)
-      const mineral = tryGeophagy(mw, c);
-      if (mineral > 0) { c.minerals = clamp01((c.minerals ?? 0.5) + mineral); }
-      chemCtx.active = 0.4;
-      break;
-    }
-    case 13: { // glide — needs real wings (dorsal membranes expressed).
+    chemCtx.active = 0.4;
+  },
+  13: (mw, c, s, ctx, chemCtx) => { // glide — needs real wings (dorsal membranes expressed).
       // Anatomy gate: wingArea > 0.3 or the bird falls like a stone.
       const wing = (c.pheno && c.pheno.wingArea) || 0;
       if (wing > 0.3 && !c.grounded) {
@@ -256,9 +279,8 @@ export function executeAction(mw, c, action, s, ctx = {}) {
         walkPhysics(mw, c); // no wings, no glide — honest fallback
         chemCtx.active = 0.65;
       }
-      break;
-    }
-    case 23: { // bite — strike the nearest creature in range. The attack
+  },
+  23: (mw, c, s, ctx, chemCtx) => { // bite — strike the nearest creature in range. The attack
       // verb, ordinary machinery (platform v0.22): damage = mouthSize ×
       // mass vs spike armor; fatigue-billed; the wound is real (injury).
       const o = c._nearestOther;
@@ -281,14 +303,63 @@ export function executeAction(mw, c, action, s, ctx = {}) {
         }
         chemCtx.active = 1.0;
       }
-      break;
-    }
-    default: { // unported actions (M3): hold position, stay honest
-      c._unportedAction = action;
-      chemCtx.active = 0.4;
-      break;
-    }
+  },
+  12: honestHold(12, 'vocal — the call system lives on the platform track (unported in M3)'),
+  14: honestHold(14, 'brachiate — wants a third grasp pair (v0.17 anatomy, unported in M3)'),
+  15: honestHold(15, 'dive — needs real gills (v0.17 anatomy, unported in M3)'),
+  18: honestHold(18, 'bask — stationary sunning (v0.18 Realms, unported in M3)'),
+  20: honestHold(20, 'grasp — pick up the nearest manipulable object (v0.20 Hands, unported in M3)'),
+  21: honestHold(21, 'carry — wield what is held (v0.20 Hands, unported in M3)'),
+  22: honestHold(22, 'drop — release the held object (v0.20 Hands, unported in M3)'),
+  24: honestHold(24, 'display — v0.37 Affect courtship display (declared, unported in the material executor)'),
+  25: honestHold(25, 'inspect — v0.37 novelty approach (declared, unported in the material executor)'),
+  26: honestHold(26, 'cuddle — v0.37 close body contact (declared, unported in the material executor)'),
+  27: honestHold(27, 'tend — v0.37 offspring tending (declared, unported in the material executor)'),
+  28: honestHold(28, 'seekBond — v0.37 go to the absent partner (declared, unported in the material executor)'),
+  29: honestHold(29, 'mourn — v0.37 go to the death site (declared, unported in the material executor)'),
+};
+// play (3) was not in M2 (no toys) and falls through to wander, honestly —
+// the registry has no fallthrough, so it shares wander's entry explicitly.
+EXECUTORS[3] = EXECUTORS[7];
+
+// --- assert-on-unhandled --------------------------------------------------
+// The table can never declare what the executor can't do: every ACTIONS
+// index must resolve to a registry entry. Runs at import time — a missing
+// case is a loud import failure, not a silent runtime hold.
+const _UNHANDLED = ACTIONS.map((_, i) => i).filter((i) => typeof EXECUTORS[i] !== 'function');
+if (_UNHANDLED.length > 0) {
+  throw new Error(
+    'actions.js: declared actions without executor cases: ' +
+    _UNHANDLED.map((i) => `${i}:${ACTIONS[i]}`).join(', ')
+  );
+}
+
+// The coverage report: the same fact the assertion enforces, exposed for
+// the adversarial review's in-page probe (adversarial-review.py's
+// action_table check) and the test suite. `unported` lists the honest
+// holds with their reasons — declared, dispatched, and documented as
+// not-yet-machinery, so the exercised-ness grid stays explicit.
+export function actionCoverage() {
+  const missing = ACTIONS.map((_, i) => i).filter((i) => typeof EXECUTORS[i] !== 'function');
+  const unported = [];
+  for (let i = 0; i < ACTIONS.length; i++) {
+    if (EXECUTORS[i] && EXECUTORS[i].unported) unported.push(`${i}:${ACTIONS[i]} — ${EXECUTORS[i].unported}`);
   }
+  return { declared: ACTIONS.length, handled: ACTIONS.length - missing.length, missing, unported };
+}
+
+// executeAction(mw, c, action, s, ctx) → chemCtx additions.
+// action: action index (material ACTIONS). s: senses. ctx: { others, ... }.
+// Returns chemCtx — the chemistry tick's additions for this action.
+export function executeAction(mw, c, action, s, ctx = {}) {
+  const chemCtx = { active: 0.6 };
+  const fn = EXECUTORS[action];
+  // No silent default: an unregistered action is a bug, and bugs that
+  // dispatch-as-hold are exactly what the registry exists to prevent.
+  if (typeof fn !== 'function') {
+    throw new Error(`executeAction: no executor for action ${action} — the action table declares what the executor can't do`);
+  }
+  fn(mw, c, s, ctx, chemCtx);
   if (action !== 2) c.sleeping = false;
   if (action !== 9) c.climbing = false;
   return chemCtx;
@@ -434,8 +505,27 @@ function dumpAtFeet(mw, c) {
 // silently. Grazing the earth you stand on is the honest consummatory act;
 // from a branch (no soil below) it fails honestly. A mouthful, not a cubic
 // meter: the cell stays, no digging side-effects.
+// R7: soil within locomotion range (grid scan) — the starvation failure
+// mode's denominator: drive firing while no reachable cell can pay.
+export const GEO_LOCOMOTION_PX = 240;
+export function soilWithinRange(mw, c, rangePx = GEO_LOCOMOTION_PX) {
+  const g = mw.grid;
+  const ccx = Math.floor(c.x / CELL_PX), ccy = Math.floor(c.y / CELL_PX);
+  const r = Math.ceil(rangePx / CELL_PX);
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const nx = ccx + dx, ny = ccy + dy;
+      if (nx < 0 || ny < 0 || nx >= g.cols || ny >= g.rows) continue;
+      const m = g.mat[ny * g.cols + nx];
+      if (m === MAT.SOIL || m === MAT.CLAY) return true;
+    }
+  }
+  return false;
+}
+
 function tryGeophagy(mw, c) {
-  if ((c.minerals ?? 0.5) > 0.6) return 0; // not deficient — no need
+  const pre = c.minerals ?? 0.5;
+  if (pre > 0.6) return 0; // not deficient — no need
   const g = mw.grid;
   const fx = Math.floor(c.x / CELL_PX), fy = Math.floor((c.y + 1) / CELL_PX);
   if (fx < 0 || fx >= g.cols || fy < 0 || fy >= g.rows) return 0;
@@ -443,12 +533,28 @@ function tryGeophagy(mw, c) {
   const m = g.mat[idx];
   if (m === MAT.SOIL || m === MAT.CLAY) {
     const nut = g.nutrient ? g.nutrient[idx] : 0;
-    const yield_ = GEOPHAGY_BASE + GEOPHAGY_NUTRIENT_BONUS * clamp01(nut);
+    // R7: the quantum counterfactual lever (arion) — mw.geoQuantumScale
+    // multiplies ONLY the fixed base, never the nutrient bonus, so the
+    // probe asks exactly "what if each bite cleared twice the quantum".
+    // The nutrient fraction then drowns by construction: if the billed
+    // yield moves with the scale and not with cell state, the cap is the
+    // quantum (settlement), not the cell. No cell-side bottleneck can
+    // exist — the stock is never decremented per bite, by design — and
+    // the probe confirms the billed number follows the quantum, not the
+    // cell (specie's absorption-coefficient question, answered by data).
+    const yield_ = GEOPHAGY_BASE * (mw.geoQuantumScale ?? 1) + GEOPHAGY_NUTRIENT_BONUS * clamp01(nut);
     // R3: instrument geophagy for the reactive-gate A/B probe — billed
     // mineral yield per event, accumulated on the world.
+    // R7: deficit depth at firing time (arion's discriminating metric),
+    // the effective (post-clamp) uptake, and the cell — for the spatial
+    // autocorrelation probe. Arrays stay small: events are rare
+    // (~dozens per 10k ticks).
     if (mw.stats) {
       mw.stats.geophagyEvents = (mw.stats.geophagyEvents || 0) + 1;
       mw.stats.geophagyYield = (mw.stats.geophagyYield || 0) + yield_;
+      mw.stats.geophagyYieldEff = (mw.stats.geophagyYieldEff || 0) + Math.min(yield_, 1 - pre);
+      (mw.stats.geophagyDeficit = mw.stats.geophagyDeficit || []).push(+(1 - pre).toFixed(3));
+      (mw.stats.geophagyCells = mw.stats.geophagyCells || []).push({ t: mw.tick || 0, cx: fx, cy: fy, nut: +clamp01(nut).toFixed(3) });
     }
     return yield_;
   }

@@ -88,8 +88,9 @@ export function tickMaterialWorld(mw, creatures = []) {
 export function tickMaterialWorldM2(mw, ctx = {}) {
   tickMaterials(mw);
   const creatures = mw.m2creatures;
-  // R6: the mate action's spawn seam — executeAction (case 6) calls
-  // ctx.reproduce(mom, dad); the real gate lives in reproduceTanglekins.
+  // R6: the mate action's spawn seam — executeAction (registry entry 6)
+  // calls ctx.reproduce(mom, dad); the real gate lives in
+  // reproduceTanglekins.
   // (actions.js can't import the spawner directly — the bundler's
   // topo-sort forbids the cycle via mcreature.js.)
   const cctx = { others: creatures, bonds: mw.bonds, ...ctx, reproduce: (mom, dad) => reproduceTanglekins(mw, mom, dad) };
