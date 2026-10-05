@@ -182,7 +182,7 @@ function drawQuadruped(ctx, d, pose, id, q, screenH = 999) {
   // coat pattern whisper + fur + rim — texture gated by on-screen size
   const furNq = screenH > 130 ? 26 + Math.round(d.fur * 30) : screenH > 85 ? 12 : 0;
   if (furNq > 0) furStrokes(ctx, id, 0, bodyY, bodyL * 0.45, bodyH * 0.5, Math.PI + pose.spineLean * 0.4, furNq, 4.5, P.pale, P.dark, 900);
-  rimArc(ctx, 0, bodyY, bodyL * 0.48, bodyH * 0.60, pose.spineLean * 0.4, P.pale, screenH > 130 ? 0.32 : 0.15, 1.6);
+  rimArc(ctx, 0, bodyY, bodyL * 0.48, bodyH * 0.60, pose.spineLean * 0.4, P.pale, screenH > 130 ? 0.32 : 0.24, 1.6);
 
   // --- near-side legs ------------------------------------------------------------
   const f2 = { x: hipFX + Math.sin(ph + Math.PI) * amp * limpK, y: -Math.max(0, Math.cos(ph + Math.PI)) * amp * 0.4 * limpK };
@@ -241,7 +241,7 @@ function drawQuadruped(ctx, d, pose, id, q, screenH = 999) {
   } else {
     ctx.beginPath(); ctx.moveTo(mzx - mrx * 0.4, mzy + headR * 0.18); ctx.lineTo(mzx + mrx * 0.4, mzy + headR * 0.16); ctx.stroke();
   }
-  rimArc(ctx, hx, hy, headR * 0.96, headR * 0.96, 0, P.pale, screenH > 130 ? 0.30 : 0.14, 1.4);
+  rimArc(ctx, hx, hy, headR * 0.96, headR * 0.96, 0, P.pale, screenH > 130 ? 0.30 : 0.24, 1.4);
 }
 
 // --- BIRD ----------------------------------------------------------------------
@@ -356,7 +356,7 @@ function drawBird(ctx, d, pose, id, b, screenH = 999) {
     ctx.beginPath(); ctx.moveTo(-W * 0.02, bodyY + bodyH * 0.4); ctx.lineTo(-W * 0.02, 0); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(W * 0.08, bodyY + bodyH * 0.4); ctx.lineTo(W * 0.08, 0); ctx.stroke();
   }
-  rimArc(ctx, 0, bodyY, bodyL * 0.48, bodyH * 0.60, -0.12, P.pale, screenH > 130 ? 0.30 : 0.14, 1.4);
+  rimArc(ctx, 0, bodyY, bodyL * 0.48, bodyH * 0.60, -0.12, P.pale, screenH > 130 ? 0.30 : 0.24, 1.4);
 }
 
 // the beak: straight (skimmer) or hooked (vulture), gape with mouthOpen
@@ -587,7 +587,7 @@ function sleepBlob(ctx, d, P, H, W, kind, screenH = 999) {
     ctx.globalAlpha = 1;
   }
   if (screenH > 85) furStrokes(ctx, d.creatureId || 0, 0, -R * 1.2, R, R * 0.8, 0.3, 16, 3.5, P.pale, P.dark, 980);
-  rimArc(ctx, 0, -R * 1.2, R * 1.0, R * 0.82, 0.15, P.pale, screenH > 130 ? 0.28 : 0.14, 1.4);
+  rimArc(ctx, 0, -R * 1.2, R * 1.0, R * 0.82, 0.15, P.pale, screenH > 130 ? 0.28 : 0.24, 1.4);
 }
 
 // --- dispatcher ------------------------------------------------------------------------

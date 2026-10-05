@@ -176,11 +176,23 @@ function skyHSLAt(f, pal) {
 // ticks or when the view changes. The cache is eye-only: identical
 // (world, view) always paints identical pixels, whenever it repaints.
 let terrainCache = null;
-const CACHE_TICKS = 48;   // terrain repaint cadence: the diurnal light moves
-                        // slowly (48 ticks = 2% of the day) and fire/weather
-                        // read fine a half-second behind; fewer repaints =
-                        // fewer software-rasterizer hitches
+const CACHE_TICKS = 48;   // kept for the stills-shim path; the browser path
+                          // repaints on wall-clock below
+const WALL_REPAINT_MS = 6000; // browser: repaint the cached terrain at most
+                              // this often — decoupled from the tick counter
+                              // (the old 48-tick cadence scheduled a full
+                              // multi-canvas repaint every 4s at 12 t/s and
+                              // every 1s at 48 t/s, a rhythmic hitch)
 const hasDocument = typeof document !== 'undefined' && typeof document.createElement === 'function';
+
+// Presentation-side invalidation: the page calls this on world (re)birth.
+// (Regrowing the same seed lands the camera in the same place, so the
+// seed-bearing cacheKey would match and the old world's paint would keep
+// blitting for ~8s. The key comparison below is belt-and-suspenders; this
+// is the actual fix.)
+export function clearTerrainCache() {
+  terrainCache = null;
+}
 
 function cacheKey(mw, view, W, H) {
   // view.x/view.y arrive pre-quantized to whole world-px (renderWorldView's
@@ -1012,18 +1024,28 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
   let blitX = 0, blitY = 0; // paint-canvas px offset of the view origin
   if (hasDocument) {
     const M = Math.min(220, 420 / scale); // world-px margin each side
+    // DPR-capped paint: the paint canvases bake at up to 1.5 device px per
+    // world px — beyond that the software rasterizer pays megapixels for
+    // sub-pixel detail nobody sees. opts.dpr comes from the page (default 1).
+    const dpr = Math.max(1, opts.dpr || 1);
+    const paintScale = scale * Math.min(1, 1.5 / dpr);
     const tc = terrainCache;
+    const now = opts.now || 0;
     const inside = tc && view.x >= tc.pvx && view.y >= tc.pvy &&
       view.x + view.w <= tc.pvx + tc.pvw && view.y + view.h <= tc.pvy + tc.pvh;
-    if (!inside || (tick - tc.tick) > CACHE_TICKS) {
-      const pvx = Math.round(view.x - M), pvy = Math.round(view.y - M);
-      const pvw = view.w + 2 * M, pvh = view.h + 2 * M;
-      const W2 = Math.max(1, Math.round(pvw * scale));
-      const H2 = Math.max(1, Math.round(pvh * scale));
+    const pvx = Math.round(view.x - M), pvy = Math.round(view.y - M);
+    const pvw = view.w + 2 * M, pvh = view.h + 2 * M;
+    const W2 = Math.max(1, Math.round(pvw * paintScale));
+    const H2 = Math.max(1, Math.round(pvh * paintScale));
+    // the key is computed AND compared (it used to be dead code) — same
+    // (world, paint-view, paint-size) always paints identical pixels, but a
+    // different world must never reuse the old paint.
+    const key = cacheKey(mw, { x: pvx, y: pvy, w: pvw, h: pvh }, W2, H2);
+    if (!inside || !tc || tc.key !== key || (now - (tc.wall || 0)) > WALL_REPAINT_MS) {
       const G2 = {
-        px: (wx) => (wx - pvx) * scale,
-        py: (wy) => (wy - pvy) * scale,
-        scale, cellPx, ox: 0, oy: 0, vx: pvx, vw: pvw,
+        px: (wx) => (wx - pvx) * paintScale,
+        py: (wy) => (wy - pvy) * paintScale,
+        scale: paintScale, cellPx: CELL_PX * paintScale, ox: 0, oy: 0, vx: pvx, vw: pvw,
         cx0: Math.max(0, Math.floor(pvx / CELL_PX) - 1),
         cx1: Math.min(cols - 1, Math.ceil((pvx + pvw) / CELL_PX) + 1),
         cy0: Math.max(0, Math.floor(pvy / CELL_PX) - 1),
@@ -1033,14 +1055,15 @@ export function renderWorldView(ctx, mw, view, opts = {}) {
       const pv = { x: pvx, y: pvy, w: pvw, h: pvh };
       const d = paintTerrain(null, mw, pv, G2, W2, H2);
       terrainCache = {
-        key: cacheKey(mw, pv, W2, H2),
-        tick, dyn: d, pvx, pvy, pvw, pvh, W2, H2,
+        key,
+        tick, wall: now, dyn: d, pvx, pvy, pvw, pvh, W2, H2,
       };
     }
     dyn = terrainCache.dyn;
-    blitX = Math.round((view.x - terrainCache.pvx) * scale);
-    blitY = Math.round((view.y - terrainCache.pvy) * scale);
-    ctx.drawImage(dyn.canvas, blitX, blitY, W, H, 0, 0, W, H);
+    blitX = Math.round((view.x - terrainCache.pvx) * paintScale);
+    blitY = Math.round((view.y - terrainCache.pvy) * paintScale);
+    const sw = Math.round(view.w * paintScale), sh = Math.round(view.h * paintScale);
+    ctx.drawImage(dyn.canvas, blitX, blitY, sw, sh, 0, 0, W, H);
     // paint-space life, shifted onto the blit
     ctx.save();
     ctx.translate(-blitX, -blitY);
@@ -2035,18 +2058,21 @@ function paintSkyCache(pctx, mw, view, G, W, H, horizonY, pal, e, dayK) {
       if (sx < -600 || sx > W + 600) continue;
       const sysK = 0.25 + 0.75 * sstep(0.32, 0.72, vnoise1(seed, i * 0.33, 33));
       const sy = H * (0.05 + h3(seed, i, 32) * 0.30);
-      const cr = G.cellPx * (3.4 + c.cloud * 7.5);
+      const cr = G.cellPx * (3.0 + c.cloud * 5.5);
       const dark = clamp01(1 - (e + 0.25) / 0.6);
       const storm = clamp01((c.cloud - 0.5) / 0.4);
       // night clouds stay whisper-thin — dark smears kill the sky
       const nightDim = 0.25 + 0.75 * dayK;
-      const baseA = (0.09 + c.cloud * 0.16) * sysK * nightDim;
-      const nPuff = 2 + Math.round(c.cloud * 3);
+      // stratus, not pillars (legibility 2026-10-05): the old billows merged
+      // into bright vertical soap-bubble columns at high cloud values.
+      // Masses are now wide and flat, alpha-capped so the blue keeps its sky.
+      const baseA = (0.06 + c.cloud * 0.10) * sysK * nightDim;
+      const nPuff = 2 + Math.round(c.cloud * 2);
       for (let k = 0; k < nPuff; k++) {
         const kk = i * 17 + k;
-        const px2 = sx + (h3(seed, kk, 34) - 0.5) * 1.6 * cr;
-        const py2 = sy + (h3(seed, kk, 35) - 0.5) * 0.7 * cr;
-        const pr = cr * (0.95 + h3(seed, kk, 36) * 1.05);
+        const px2 = sx + (h3(seed, kk, 34) - 0.5) * 2.2 * cr;
+        const py2 = sy + (h3(seed, kk, 35) - 0.5) * 0.30 * cr;
+        const pr = cr * (0.70 + h3(seed, kk, 36) * 0.60);
         const tr = Math.round(255 - dark * 70 - storm * 30);
         const tg = Math.round(252 - dark * 70 - storm * 28);
         const tb = Math.round(248 - dark * 60 - storm * 22);
@@ -2868,6 +2894,21 @@ function springDraw(ctx, oc, drawFn, px, py, scale, tick, dyn) {
   ctx.beginPath();
   ctx.ellipse(tx, ty + 2 * scale, shW, Math.max(2, 5 * scale), 0, 0, Math.PI * 2);
   ctx.fill();
+
+  // backlight halo (legibility 2026-10-05): species art grades dark-on-dark
+  // (dorsal L 13–30 on dark soil), so small creatures read as smudges. A
+  // faint warm lift BEHIND the body separates the silhouette from the
+  // ground instead of multiply-grading it into the darkness. Day-scaled:
+  // a whisper at night, a soft lift by day. Eye-only.
+  const hgt0 = ((oc.drawing && oc.drawing.heightPx) || 60) * scale;
+  const dayK = Math.max(0, Math.min(1, (sunE + 0.12) / 0.5));
+  const haloA = 0.05 + 0.09 * dayK;
+  const haloR = Math.max(8, shW * 2.4);
+  const halo = ctx.createRadialGradient(tx, ty - hgt0 * 0.35, 0, tx, ty - hgt0 * 0.35, haloR);
+  halo.addColorStop(0, `rgba(255, 238, 205, ${haloA.toFixed(3)})`);
+  halo.addColorStop(1, 'rgba(255, 238, 205, 0)');
+  ctx.fillStyle = halo;
+  ctx.beginPath(); ctx.arc(tx, ty - hgt0 * 0.35, haloR, 0, Math.PI * 2); ctx.fill();
 
   // the body, drawn at the spring position with lean + squash
   let oc2 = oc;

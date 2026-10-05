@@ -113,6 +113,9 @@ export function tickMaterialWorldM2(mw, ctx = {}) {
 // Add a founder creature to the world (spawns on the surface).
 export function addFounder(mw, rng, opts = {}) {
   const c = spawnFounder(mw, rng, 0, 0, opts);
+  c.species = 'tanglekin'; // the founder IS a tanglekin — spawnSpecies sets
+                           // it for every other creature; the founder got
+                           // undefined and rendered by dispatch accident.
   // Drop onto the world's designated spawn: pickSpawn chose it for open
   // sky (6 cells of AIR headroom) near the fruiting grove. The old blind
   // world-center drop could land inside a grown canopy once the grove
