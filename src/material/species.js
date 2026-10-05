@@ -12,6 +12,8 @@
 
 import { founderGenome } from '../sim/species.js';
 import { spawnMaterialCreature } from './mcreature.js';
+import { inherit } from '../sim/genome.js';
+import { createRng } from '../sim/rng.js';
 
 // The land roster: grazers, hunters, scavengers, pollinators, prey base.
 export const LOAM_ROSTER = [
@@ -113,6 +115,19 @@ export function seedEcology(mw, rng, opts = {}) {
   // The cleaners — corpses come later; they arrive hungry and wait.
   put('vulture', 1, 0, third);
   put('beetle-detritivore', 4, gx0, gx1);
+  // R6: the founder's kind needs two to tango — mating is real now (mate is
+  // case 6), so the world seeds a second tanglekin near the first (within
+  // ~300px, on the surface). Cap respected; deterministic on the ecology
+  // sub-stream. (The founder came via addFounder, not the roster puts —
+  // hence the explicit find.)
+  const f0 = (mw.m2creatures || []).find((c) => c.alive && c.species === 'tanglekin');
+  if (f0 && countSpecies(mw, 'tanglekin') < (LOAM_CAPS.tanglekin || 12)) {
+    const px = Math.max(0, Math.min(W - 1, f0.x + (rng.next() * 400 - 200)));
+    const c2 = spawnSpecies(mw, rng, 'tanglekin', px, surfY(px), opts);
+    c2.homeX = px; c2.homeY = c2.y;
+    mw.m2creatures.push(c2);
+    spawned.push(c2);
+  }
   return spawned;
 }
 
@@ -199,4 +214,50 @@ export function speciesLabel(speciesKey) {
   const info = SPECIES_INFO[speciesKey];
   if (info) return { display: info.display, blurb: info.blurb };
   return { display: String(speciesKey || 'unknown'), blurb: '' };
+}
+
+// --- R6: tanglekin reproduction -------------------------------------------------
+// The mate action (case 6 in actions.js) was wired to nothing — now it's
+// real, and sexless the way the world is: two hermaphroditic adults fuse
+// gametes through the actual meiosis machinery (inherit: meiosis + mutation
+// + gene duplication). No pregnancy, no theater — the newborn arrives at
+// the parents' feet, a baby with a fresh genome, and the population cap
+// does the carrying-capacity work (no culling, per the LOAM_CAPS contract).
+//
+// RNG: a stateless per-event sub-stream hashed from (world seed, tick,
+// both creature ids) — the material track's convention for causal events
+// (cf. plants.js); deterministic per world history, never the affect
+// sub-stream (affectRng=null, matching existing material-track usage).
+export const MATE_COOLDOWN_TICKS = 2000;
+export const MATE_RANGE_PX = 40;
+
+// Attempt mating between two tanglekins. Returns the newborn creature, or
+// null when any gate fails (not both eligible, cooldown running, out of
+// range, species mismatch, or the cap is full).
+export function reproduceTanglekins(mw, mom, dad) {
+  if (!mom || !dad || mom === dad) return null;
+  if (!mom.alive || !dad.alive) return null;
+  if (mom.species !== 'tanglekin' || dad.species !== 'tanglekin') return null;
+  const adultish = (c) => c.stage === 'adult' || c.stage === 'senior';
+  if (!adultish(mom) || !adultish(dad)) return null;
+  const tick = mw.tick || 0;
+  if ((mom._mateCd || 0) > tick || (dad._mateCd || 0) > tick) return null;
+  if (Math.hypot(dad.x - mom.x, dad.y - mom.y) > MATE_RANGE_PX) return null;
+  if (countSpecies(mw, 'tanglekin') >= (LOAM_CAPS.tanglekin || 12)) return null;
+  const lo = Math.min(mom.id, dad.id), hi = Math.max(mom.id, dad.id);
+  let h = (Math.imul((mw.seed || 1) | 0, 374761393) ^
+           Math.imul(tick | 0, 668265263) ^
+           Math.imul((lo * 31 + hi) | 0, 1442695041)) >>> 0;
+  h = (Math.imul(h ^ (h >>> 13), 1274126177) ^ (h >>> 16)) >>> 0;
+  const rrng = createRng(h || 1);
+  const childGenome = inherit(mom.genome, dad.genome, rrng);
+  const child = spawnMaterialCreature(mw, childGenome, mom.x, mom.y, {});
+  child.species = 'tanglekin';
+  child.homeX = mom.x; child.homeY = mom.y;
+  mw.m2creatures.push(child);
+  mom._mateCd = tick + MATE_COOLDOWN_TICKS;
+  dad._mateCd = tick + MATE_COOLDOWN_TICKS;
+  mom._courting = dad.id; mom._courtingT = 60;
+  dad._courting = mom.id; dad._courtingT = 60;
+  return child;
 }

@@ -15,7 +15,8 @@ import { spawnCreature, tickCreature, sense43_45, digTargetCell } from './creatu
 import { renderWorldView, renderInspectView } from './render.js';
 
 // M2: the living creature
-import { spawnMaterialCreature, spawnFounder, tickMaterialCreature, lastActionName } from './mcreature.js';
+import { spawnMaterialCreature, spawnFounder, tickMaterialCreature, lastActionName, petMaterialCreature, nudgeMaterialCreature } from './mcreature.js';
+import { reproduceTanglekins } from './species.js';
 import { createBonds, tickBonds } from '../sim/social.js';
 // M3: the living world — sky, plants with genomes, corpses, the roster
 import { createSky, tickSky, SKY_EVERY } from './weather.js';
@@ -28,7 +29,7 @@ export { generateMaterialWorld, tickMaterials };
 export { spawnCreature, tickCreature, sense43_45, digTargetCell };
 export { renderWorldView, renderInspectView };
 // M2 creature API
-export { spawnMaterialCreature, spawnFounder, tickMaterialCreature, lastActionName };
+export { spawnMaterialCreature, spawnFounder, tickMaterialCreature, lastActionName, petMaterialCreature, nudgeMaterialCreature };
 
 // A material world: the generated substrate plus runtime toggles.
 // Joshua's rulings: fireOn (fire is a material process with a runtime
@@ -87,7 +88,11 @@ export function tickMaterialWorld(mw, creatures = []) {
 export function tickMaterialWorldM2(mw, ctx = {}) {
   tickMaterials(mw);
   const creatures = mw.m2creatures;
-  const cctx = { others: creatures, bonds: mw.bonds, ...ctx };
+  // R6: the mate action's spawn seam — executeAction (case 6) calls
+  // ctx.reproduce(mom, dad); the real gate lives in reproduceTanglekins.
+  // (actions.js can't import the spawner directly — the bundler's
+  // topo-sort forbids the cycle via mcreature.js.)
+  const cctx = { others: creatures, bonds: mw.bonds, ...ctx, reproduce: (mom, dad) => reproduceTanglekins(mw, mom, dad) };
   for (const c of creatures) {
     if (c.alive) tickMaterialCreature(mw, c, cctx);
   }

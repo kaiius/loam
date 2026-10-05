@@ -94,6 +94,8 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
     c.body = growBody(c.genome, { stage: newStage });
     c.body.creatureId = c.id;
   }
+  // R6: the courtship display fades — a brief state, not a permanent flag.
+  if (c._courtingT > 0) { c._courtingT--; if (c._courtingT <= 0) c._courting = null; }
 
   // --- sense ---
   const s = gatherMaterialSenses(mw, c, { others: ctx.others || [], homeX: c.homeX, homeY: c.homeY });
@@ -134,6 +136,10 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   // snapshot needs the pre-action level for Grand's rule.
   const mineralsBefore = c.minerals ?? 0.6;
   const chemCtx = executeAction(mw, c, action, s, ctx);
+  // R6: the player's pet lands here — the chemistry hears it this tick
+  // (tickBiochem soothes comfort on ctx.petted: a real small delta, then
+  // it decays back like everything else).
+  if (c._petted) { chemCtx.petted = true; c._petted = false; }
 
   // --- physics shared by every tick ---
   gravityPhysics(mw, c);
@@ -173,4 +179,23 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
 // The action name of the creature's last decision (for the inspect view).
 export function lastActionName(c) {
   return c.lastAction >= 0 ? ACTIONS[c.lastAction] : '—';
+}
+
+// R6: player touch — real small deltas through the chemistry and the
+// physics, never theater. petMaterialCreature flags the next chemistry
+// tick to carry ctx.petted (+0.5 comfort in tickBiochem, which then decays
+// back like every other comfort change); nudgeMaterialCreature applies a
+// tiny hop-shove the physics integrator resolves — the world does the
+// moving, never a teleport.
+export function petMaterialCreature(c) {
+  if (!c || !c.alive) return false;
+  c._petted = true;
+  return true;
+}
+export function nudgeMaterialCreature(c) {
+  if (!c || !c.alive) return false;
+  c.x += (c.facing || 1) * 10; // a gentle shove, about one paw-step
+  c.vy = Math.min(c.vy || 0, 0) - 2; // a small startle-hop
+  c.grounded = false;
+  return true;
 }

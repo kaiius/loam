@@ -80,6 +80,24 @@ export function gravityPhysics(mw, c) {
   } else c.grounded = false;
 }
 
+// R6: mating — approach range and the eligible-partner scan.
+export const MATE_APPROACH_PX = 40; // within this: court & reproduce
+// (the authoritative mating gate is reproduceTanglekins in species.js, which
+// re-checks range, stage, cooldown, and the population cap).
+
+// The nearest eligible mate: alive, a tanglekin, adult or senior, not self.
+function mateCandidate(mw, c, ctx) {
+  const others = (ctx && ctx.others) || mw.m2creatures || [];
+  let best = null, bestD = Infinity;
+  for (const o of others) {
+    if (o === c || !o.alive || o.species !== 'tanglekin') continue;
+    if (o.stage !== 'adult' && o.stage !== 'senior') continue;
+    const d = Math.hypot(o.x - c.x, o.y - c.y);
+    if (d < bestD) { bestD = d; best = o; }
+  }
+  return best ? { o: best, d: bestD } : null;
+}
+
 // executeAction(mw, c, action, s, ctx) → chemCtx additions.
 // action: action index (material ACTIONS). s: senses. ctx: { others, ... }.
 // Returns { chemCtx, moved } — chemCtx feeds tickChem, moved tells the
@@ -121,6 +139,32 @@ export function executeAction(mw, c, action, s, ctx = {}) {
       else walkPhysics(mw, c, WALK_SPEED * 1.2);
       chemCtx.active = 1.0;
       chemCtx.threat = 0.5;
+      break;
+    }
+    case 6: { // mate — approach & court the nearest adult tanglekin
+      // R6: sexless courtship — two hermaphroditic adults fuse gametes
+      // through the real meiosis machinery (genome.js inherit, called via
+      // ctx.reproduce). The brain's instinct genes already wire this action;
+      // the case was missing and fell through to hold-position. The spawn
+      // lives behind ctx.reproduce (wired by tickMaterialWorldM2) — the
+      // bundler's topo-sort forbids actions.js from importing the spawner
+      // directly (cycle via mcreature.js).
+      chemCtx.active = 0.75;
+      const cand = mateCandidate(mw, c, ctx);
+      const selfAdult = c.stage === 'adult' || c.stage === 'senior';
+      if (cand && selfAdult) {
+        const o = cand.o;
+        faceToward(c, o.x);
+        if (cand.d > MATE_APPROACH_PX) {
+          walkPhysics(mw, c, WALK_SPEED * 1.1); // approach
+        } else if (ctx.reproduce && ctx.reproduce(c, o)) {
+          chemCtx.active = 1.0; // reproduction is real work, billed honestly
+        }
+        // the courtship display — the page reads it as "courting <name>"
+        c._courting = o.id; c._courtingT = 60;
+      } else if (c._nearestOther) {
+        faceToward(c, c._nearestOther.x); walkPhysics(mw, c, WALK_SPEED * 1.1);
+      }
       break;
     }
     case 8: { // seekHome — walk toward the imprinted range
