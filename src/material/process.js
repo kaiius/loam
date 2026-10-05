@@ -36,6 +36,15 @@ export const WATER_EVAP = 0.002;    // surface water lost per tick
 export const INFILTRATE_K = 0.05;   // moist += water * permeability * INFILTRATE_K
 export const WATER_RENDER_AT = 0.5; // water depth at/above this renders as WATER
 
+// R3 (reactive biomes): scalar diffusion — deterministic, seeded (the
+// world's seed pins all initial fields), zero RNG. Pure arithmetic on a
+// fixed sweep order, so the same seed is bit-identical every run.
+// Moisture fronts move fast (weather, days); nutrient fronts creep (soil,
+// seasons) — that asymmetry is the point.
+export const D_MOIST = 0.004;  // per-tick relaxation of moist toward the 4-neighbour mean
+export const D_NUT = 0.0002;    // per-tick relaxation of nutrient toward the 4-neighbour mean
+export const NUTRIENT_SPROUT_MIN = 0.08; // ground-cell nutrient below this: no germination
+
 // Stateless hash for any future deterministic stochasticity
 // (hash2(seed, x, y, tick, purpose) -> [0, 1)). Unused by M1 processes.
 export function hash2(seed, x, y, tick, purpose) {
@@ -71,6 +80,7 @@ export function tickMaterials(mw, opts = {}) {
   const waterEvery = opts.waterEvery ?? 1;
   tickSlump(mw, permanentTunnels);
   if ((mw.tick | 0) % waterEvery === 0) tickWater(mw);
+  tickDiffuse(mw); // R3: scalar diffusion before fire — moisture gates ignition
   tickFire(mw, fireOn);
   tickRot(mw);
   mw.tick = (mw.tick | 0) + 1;
@@ -303,15 +313,50 @@ function tickWater(mw) {
   }
 }
 
+// ---- Scalar diffusion (R3: reactive biomes) ----
+//
+// moist and nutrient relax toward their 4-neighbour mean each tick.
+// Deterministic: no RNG, fixed west->east/top->bottom sweep, double
+// buffering so the update is order-independent. Air cells don't
+// participate — fields live on matter, and air would act as a sink.
+// mw.frozenBiome (the reactive-gate control) skips this entirely.
+export function tickDiffuse(mw) {
+  if (mw.frozenBiome) return;
+  const g = mw.grid;
+  const { cols, rows, mat, moist } = g;
+  const nut = g.nutrient;
+  const n = cols * rows;
+  const dM = aux(mw, 'diffM', Float32Array);
+  const dN = nut ? aux(mw, 'diffN', Float32Array) : null;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const i = y * cols + x;
+      if (mat[i] === MAT.AIR) continue;
+      let mSum = 0, mN = 0, nSum = 0, nN = 0;
+      if (x > 0 && mat[i - 1] !== MAT.AIR) { mSum += moist[i - 1]; mN++; if (dN) { nSum += nut[i - 1]; nN++; } }
+      if (x + 1 < cols && mat[i + 1] !== MAT.AIR) { mSum += moist[i + 1]; mN++; if (dN) { nSum += nut[i + 1]; nN++; } }
+      if (y > 0 && mat[i - cols] !== MAT.AIR) { mSum += moist[i - cols]; mN++; if (dN) { nSum += nut[i - cols]; nN++; } }
+      if (y + 1 < rows && mat[i + cols] !== MAT.AIR) { mSum += moist[i + cols]; mN++; if (dN) { nSum += nut[i + cols]; nN++; } }
+      dM[i] = mN > 0 ? moist[i] + D_MOIST * (mSum / mN - moist[i]) : moist[i];
+      if (dN) dN[i] = nN > 0 ? nut[i] + D_NUT * (nSum / nN - nut[i]) : nut[i];
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    if (mat[i] === MAT.AIR) continue;
+    moist[i] = dM[i];
+    if (dN) nut[i] = dN[i];
+  }
+}
+
 // ---- Fire ----
 //
-// Cells with flammability > 0 and heat > IGNITION_HEAT catch fire and spread
+// Cells with flammability > 0 and heat above the moisture-gated ignition
 // heat to flammable 8-neighbors: heat[n] += heat[c] * flammability[n] * 0.3.
 // Burning cells (heat > BURNING_HEAT) convert after sustained burn:
 // LEAF -> AIR (fast), DEADWOOD -> SOIL (rots to earth), WOOD -> DEADWOOD
 // (long burn). Heat decays *0.95 per tick. With fireOn=false there is no
 // ignition, no spread, and no conversion — heat just decays.
-function tickFire(mw, fireOn) {
+export function tickFire(mw, fireOn) {
   const g = mw.grid;
   const { cols, rows, mat, heat, moist } = g;
   const burn = aux(mw, 'burn', Float32Array);
@@ -330,7 +375,10 @@ function tickFire(mw, fireOn) {
       const m = mat[i];
       const fl = MAT_PROPS[m].flammability;
       if (fl <= 0) continue;
-      if (heat[i] > IGNITION_HEAT) {
+      // R3 (reactive biomes): ignition is moisture-gated — dry fuel catches
+      // at IGNITION_HEAT, soaked fuel needs twice the heat. A lightning
+      // strike (heat 0.9) ignites at moist < 0.80, fizzles above it.
+      if (heat[i] > IGNITION_HEAT * (1 + moist[i])) {
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
             if (dx === 0 && dy === 0) continue;
@@ -384,7 +432,7 @@ function tickFire(mw, fireOn) {
 // Drying pauses the counter, it does not reset it.
 // R2: the rotting wood enriches the soil — a nutrient deposit, so rotted
 // deadwood is worth eating (geophagy).
-function tickRot(mw) {
+export function tickRot(mw) {
   const g = mw.grid;
   const { mat, moist, nutrient } = g;
   const rot = aux(mw, 'rot', Float32Array);
@@ -395,7 +443,9 @@ function tickRot(mw) {
       if (rot[i] >= ROT_THRESHOLD) {
         mat[i] = MAT.SOIL;
         rot[i] = 0;
-        if (nutrient) nutrient[i] = Math.min(NUTRIENT_MAX, nutrient[i] + DEADWOOD_NUTRIENT);
+        // Frozen control: the rot still converts (it's R1 mechanics), but
+        // the nutrient deposit is scalar flux — skipped.
+        if (nutrient && !mw.frozenBiome) nutrient[i] = Math.min(NUTRIENT_MAX, nutrient[i] + DEADWOOD_NUTRIENT);
       }
     }
   }

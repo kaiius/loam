@@ -321,11 +321,35 @@ function coupleToGrid(mw) {
     const x0 = Math.max(0, Math.floor(i * SKY_COL_W / CELL_PX));
     const x1 = Math.min(g.cols, Math.ceil((i + 1) * SKY_COL_W / CELL_PX));
     // Moisture relaxes toward the column stock (soil cells drink).
-    for (let cx = x0; cx < x1; cx += 3) {
-      for (let cy = 0; cy < g.rows; cy += 3) {
-        const idx = cy * g.cols + cx;
-        if (g.mat[idx] === MAT.SOIL || g.mat[idx] === MAT.CLAY || g.mat[idx] === MAT.SAND) {
-          g.moist[idx] += (c.soil - g.moist[idx]) * 0.05;
+    // Frozen control: the scalars never move — the biome is painted on.
+    if (!mw.frozenBiome) {
+      for (let cx = x0; cx < x1; cx += 3) {
+        for (let cy = 0; cy < g.rows; cy += 3) {
+          const idx = cy * g.cols + cx;
+          if (g.mat[idx] === MAT.SOIL || g.mat[idx] === MAT.CLAY || g.mat[idx] === MAT.SAND) {
+            g.moist[idx] += (c.soil - g.moist[idx]) * 0.05;
+          }
+        }
+      }
+      // R3 (reactive biomes): wind shifts surface moisture downwind. A
+      // scalar bias, not fluid transport — surface soil cells relax 0.05
+      // toward their upwind neighbour each sky tick. Deterministic (the
+      // wind is seed-pinned); dry fronts visibly march with the wind.
+      const wu = sky.windU;
+      if (Math.abs(wu) > 2) {
+        const step = 3 * Math.sign(wu);
+        for (let cx = x0; cx < x1; cx += 3) {
+          const ux = cx - step;
+          if (ux < 0 || ux >= g.cols) continue;
+          for (let cy = 0; cy < g.rows; cy += 3) {
+            const idx = cy * g.cols + cx;
+            const m = g.mat[idx];
+            if (m !== MAT.SOIL && m !== MAT.CLAY && m !== MAT.SAND) continue;
+            const uidx = cy * g.cols + ux;
+            const um = g.mat[uidx];
+            if (um !== MAT.SOIL && um !== MAT.CLAY && um !== MAT.SAND) continue;
+            g.moist[idx] += (g.moist[uidx] - g.moist[idx]) * 0.05;
+          }
         }
       }
     }

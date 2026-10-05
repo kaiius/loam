@@ -41,6 +41,10 @@ export function createMaterialWorld(seed, size = 1, opts = {}) {
   // M2: the social substrate — bonds live on the world, creatures reference it.
   mw.bonds = createBonds();
   mw.m2creatures = [];
+  // R3: per-run stats (geophagy instrumentation for the reactive-gate A/B
+  // probe) and the frozen-biome control flag (default: biome live).
+  mw.stats = {};
+  mw.frozenBiome = false;
   // M3: the sky — initialized from the world's climate fields (T/M per
   // column), so the first sky matches the painted biomes. Own sub-stream.
   const widthPx = mw.grid.cols * 10;

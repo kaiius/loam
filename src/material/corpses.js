@@ -30,11 +30,14 @@ export function spawnCorpse(mw, c) {
 }
 
 // One slow tick: rot sets in. Returns corpses removed.
+// Frozen control (reactive gate): no deposit, no decay — the scalars
+// are painted on and never move.
 export function tickCorpses(mw) {
   const g = mw.grid;
+  const frozen = !!mw.frozenBiome;
   // Nutrient decay runs even with no corpses: enrichment fades slowly on
   // its own (plants draw it down faster when they fruit — plants.js).
-  if (g && g.nutrient) {
+  if (g && g.nutrient && !frozen) {
     const n = g.nutrient;
     for (let i = 0; i < n.length; i++) {
       if (n[i] > 0) n[i] *= NUTRIENT_DECAY;
@@ -49,7 +52,7 @@ export function tickCorpses(mw) {
     k.age++;
     // The rotted fraction settles into the ground below as nutrient —
     // mass-conserving: it comes from this corpse's meat, 1:1.
-    const rotAmt = Math.min(0.02, k.meat);
+    const rotAmt = frozen ? 0 : Math.min(0.02, k.meat);
     if (rotAmt > 0 && g && g.nutrient) {
       const cx = Math.floor(k.x / CELL_PX);
       const cy = Math.floor(k.y / CELL_PX);

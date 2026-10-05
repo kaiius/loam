@@ -33,6 +33,7 @@
 import { createRng } from '../sim/rng.js';
 import { createGrid, MAT, CELL_PX } from './grid.js';
 import { initialGlobalWind, WIND_LEAN_PER, WIND_LEAN_MAX } from './weather.js';
+import { NUTRIENT_SPROUT_MIN } from './process.js';
 
 export const MATERIAL_ROWS = 110;          // WORLD_H 1100 / CELL_PX
 export const MATERIAL_COLS_PER_SIZE = 480; // 4800px wide at size 1
@@ -745,7 +746,25 @@ function buildWorld(seed, size, attempt, gentle, log) {
   // M3: keep the climate fields — the sky initializes from them.
   world.Tclim = T;
   world.Mclim = M;
+  // R3 (reactive biomes): old soil holds organic matter — seed the nutrient
+  // baseline on soil/clay cells, fertility-scaled by column moisture M.
+  // nutrient[i] = NUTRIENT_SPROUT_MIN + 0.3·M[c] (≈ 0.10–0.31): germination
+  // is possible everywhere at worldgen, and depletion below 0.08 blocks it.
+  seedNutrientBaseline(grid, M);
   return world;
+}
+
+// R3: baseline soil nutrient from the climate moisture column.
+function seedNutrientBaseline(g, M) {
+  if (!g.nutrient) return;
+  const { cols, rows, mat, nutrient } = g;
+  for (let c = 0; c < cols; c++) {
+    const base = NUTRIENT_SPROUT_MIN + 0.3 * M[c];
+    for (let r = 0; r < rows; r++) {
+      const i = r * cols + c;
+      if (mat[i] === MAT.SOIL || mat[i] === MAT.CLAY) nutrient[i] = base;
+    }
+  }
 }
 
 function finalize(world, extra) {

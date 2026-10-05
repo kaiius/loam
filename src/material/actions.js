@@ -18,7 +18,7 @@
 // Work billing: digging/piling bill through ctx.active → the chemistry's
 // hungerRate (the existing developDrain pattern, design §3.1).
 
-import { MAT, MAT_PROPS, CELL_PX } from './grid.js';
+import { MAT, MAT_PROPS, CELL_PX, groundIndexBelow } from './grid.js';
 import { sampleMat, isSolid, isClimbable, supportBelow } from './locomotion.js';
 import { digTargetCell } from './creature.js';
 import { nudgeBond } from '../sim/social.js';
@@ -289,7 +289,16 @@ function tryEat(mw, c, s) {
     const size = (fruitPlant.pheno && fruitPlant.pheno.fruitSize) || 0.5;
     // A seed may ride along — endozoochory (plants.js).
     seedFromFeeding(mw, fruitPlant, c);
-    return 0.35 * (1 - 0.5 * bitter) * (0.7 + 0.6 * size);
+    // R3 (reactive biomes): fruit is built from the soil — its nutrition
+    // scales with the plant's ground-cell nutrient. Enriched ground pays
+    // up to ~1.2x; depleted ground ~0.85x. The nutrient front moves the
+    // billed foraging yield on every bite.
+    let nutF = 0.93; // ≈ worldgen mid-baseline (0.08+0.3·M, M≈0.42) → ~neutral
+    if (g.nutrient) {
+      const ni = groundIndexBelow(g, fruitPlant.seedX, fruitPlant.seedY);
+      if (ni >= 0) nutF = 0.85 + 0.35 * clamp01(g.nutrient[ni]);
+    }
+    return 0.35 * (1 - 0.5 * bitter) * (0.7 + 0.6 * size) * nutF;
   }
   // 2. Buried: a food cell within a body length.
   if (g.food) {
@@ -385,7 +394,14 @@ function tryGeophagy(mw, c) {
     g.mat[t.idx] = MAT.AIR;
     g.dug[t.idx] = 1;
     const nut = g.nutrient ? g.nutrient[t.idx] : 0;
-    return GEOPHAGY_BASE + GEOPHAGY_NUTRIENT_BONUS * clamp01(nut);
+    const yield_ = GEOPHAGY_BASE + GEOPHAGY_NUTRIENT_BONUS * clamp01(nut);
+    // R3: instrument geophagy for the reactive-gate A/B probe — billed
+    // mineral yield per event, accumulated on the world.
+    if (mw.stats) {
+      mw.stats.geophagyEvents = (mw.stats.geophagyEvents || 0) + 1;
+      mw.stats.geophagyYield = (mw.stats.geophagyYield || 0) + yield_;
+    }
+    return yield_;
   }
   return 0;
 }

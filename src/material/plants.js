@@ -17,7 +17,7 @@
 // stream.
 
 import { MAT, CELL_PX, groundIndexBelow } from './grid.js';
-import { hash2, NUTRIENT_PER_FRUIT } from './process.js';
+import { hash2, NUTRIENT_PER_FRUIT, NUTRIENT_SPROUT_MIN } from './process.js';
 import { treeArchParams } from './worldgen.js';
 import { createRng } from '../sim/rng.js';
 import { randomPlantGenome, inheritPlant, plantPhenotype } from '../sim/plantgenome.js';
@@ -136,6 +136,17 @@ export function tickSeeds(mw) {
   }
 }
 
+// R3: the nutrient half of the germination gate, exported for the
+// reactive-gate tests (G3). True iff the ground cell below (cx, cy) holds
+// enough nutrient to sprout.
+export function nutrientOkForSprout(mw, cx, cy) {
+  const g = mw.grid;
+  if (!g.nutrient) return true;
+  const gi = (cy + 1) * g.cols + cx;
+  if (gi < 0 || gi >= g.nutrient.length) return false;
+  return g.nutrient[gi] >= NUTRIENT_SPROUT_MIN;
+}
+
 function tryGerminate(mw, s, cx, cy) {
   const g = mw.grid;
   const i = cy * g.cols + cx;
@@ -149,6 +160,10 @@ function tryGerminate(mw, s, cx, cy) {
   const tempC = -10 + 45 * T;
   if (tempC < -6 + ph.coldTol * 16) return;       // too cold
   if (tempC > 22 + ph.heatTol * 13) return;       // too hot
+  // R3 (reactive biomes): nutrient fronts gate germination — a seed on
+  // depleted ground (nutrient < NUTRIENT_SPROUT_MIN) does not sprout.
+  // Groves that fruit hard eat their own soil and stop regenerating.
+  if (!nutrientOkForSprout(mw, cx, cy)) return;
   // Sprout: a new plant, generation + 1, growing from seed.
   const pid = 100000 + s.id; // runtime ids live above worldgen's
   const iters = Math.round(24 + ph.growthRate * 40);
@@ -340,8 +355,8 @@ export function tickPlants(mw) {
         // R2 (SIM-B): fruit is built from the soil — the plant draws down
         // the nutrient stock of the ground cell below its seed cell.
         // (Soil fertility still gates fruiting on its own; nutrient is the
-        // slow currency that rot replenishes.)
-        if (g.nutrient) {
+        // slow currency that rot replenishes.) Frozen control: no drawdown.
+        if (g.nutrient && !mw.frozenBiome) {
           const ni = groundIndexBelow(g, p.seedX, p.seedY);
           if (ni >= 0) g.nutrient[ni] = Math.max(0, g.nutrient[ni] - NUTRIENT_PER_FRUIT * add);
         }
