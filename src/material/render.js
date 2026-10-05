@@ -176,8 +176,6 @@ function skyHSLAt(f, pal) {
 // ticks or when the view changes. The cache is eye-only: identical
 // (world, view) always paints identical pixels, whenever it repaints.
 let terrainCache = null;
-const CACHE_TICKS = 48;   // kept for the stills-shim path; the browser path
-                          // repaints on wall-clock below
 const WALL_REPAINT_MS = 6000; // browser: repaint the cached terrain at most
                               // this often — decoupled from the tick counter
                               // (the old 48-tick cadence scheduled a full
