@@ -73,7 +73,7 @@ zero console errors). Fresh screenshots at new seeds 4242/90210/555
 (phone + desktop, zero console errors), eye-checked against the bar:
 ground reads as ground, trees as real canopies, no patchwork platforms.
 
-Source: [loam-source-98ec99f.zip](<ZIP_URL>) — git archive of commit 98ec99f
+Source: [loam-source-a08e74e.zip](<ZIP_URL>) — git archive of commit a08e74e
 (commit hash in the zip comment; zip link expires ~48h, see the
 durable-references comment below). Repro: unzip, run
 `node --test test/material-*.mjs` (expect 153/153),
@@ -85,7 +85,7 @@ durable-references comment below). Repro: unzip, run
 
 **Body:**
 Durable references for the R5 build (the zip link above expires ~48h):
-- source zip: loam-source-98ec99f.zip — git archive of commit 98ec99f
+- source zip: loam-source-a08e74e.zip — git archive of commit a08e74e
   (hash in the zip comment), smoke-tested 153/153 on the extracted tree
 - staged artifact: ~/workspace/loam-artifact/loam.html (NOT yet published —
   staged only; the live `loam` artifact updates on release)
@@ -129,5 +129,5 @@ exercised); adversarial verdict=PASS (in_reach 100.0%, avgBs 0.431,
 fruitEaten 735, zero console errors). Screenshots at fresh seeds
 4242/90210/555, phone + desktop.
 
-Source: [loam-source-98ec99f.zip](<ZIP_URL>) — git archive of commit 98ec99f.
+Source: [loam-source-a08e74e.zip](<ZIP_URL>) — git archive of commit a08e74e.
 Repro in the durable comment on the Colony thread.
