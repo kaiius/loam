@@ -7,6 +7,15 @@
 //
 // Corpses tick at the slow rate (every 50 material ticks): meat decays,
 // then the husk is gone. Deterministic — no RNG in the tick.
+//
+// R2 (SIM-B): rotting meat enriches the soil. Each slow tick deposits the
+// rotted fraction into the ground cell below as `nutrient` (1:1, from the
+// dead matter — nothing invented; meat eaten by scavengers becomes their
+// food instead, never double-counted). Nutrient decays slowly, and plants
+// draw it down when they fruit (plants.js).
+
+import { CELL_PX, groundIndexBelow } from './grid.js';
+import { NUTRIENT_MAX, NUTRIENT_DECAY, NUTRIENT_PER_MEAT } from './process.js';
 
 export function spawnCorpse(mw, c) {
   if (!mw.corpses) mw.corpses = [];
@@ -22,6 +31,15 @@ export function spawnCorpse(mw, c) {
 
 // One slow tick: rot sets in. Returns corpses removed.
 export function tickCorpses(mw) {
+  const g = mw.grid;
+  // Nutrient decay runs even with no corpses: enrichment fades slowly on
+  // its own (plants draw it down faster when they fruit — plants.js).
+  if (g && g.nutrient) {
+    const n = g.nutrient;
+    for (let i = 0; i < n.length; i++) {
+      if (n[i] > 0) n[i] *= NUTRIENT_DECAY;
+    }
+  }
   if (!mw.corpses || !mw.corpses.length) return 0;
   let removed = 0;
   // Meat rots over ~2 days (4800 slow-ticks at 50/tick → keep it simple:
@@ -29,6 +47,17 @@ export function tickCorpses(mw) {
   for (let i = mw.corpses.length - 1; i >= 0; i--) {
     const k = mw.corpses[i];
     k.age++;
+    // The rotted fraction settles into the ground below as nutrient —
+    // mass-conserving: it comes from this corpse's meat, 1:1.
+    const rotAmt = Math.min(0.02, k.meat);
+    if (rotAmt > 0 && g && g.nutrient) {
+      const cx = Math.floor(k.x / CELL_PX);
+      const cy = Math.floor(k.y / CELL_PX);
+      const gi = groundIndexBelow(g, cx, cy);
+      if (gi >= 0) {
+        g.nutrient[gi] = Math.min(NUTRIENT_MAX, g.nutrient[gi] + rotAmt * NUTRIENT_PER_MEAT);
+      }
+    }
     k.meat = Math.max(0, k.meat - 0.02);
     if (k.meat <= 0 && k.age > 60) {
       mw.corpses.splice(i, 1);

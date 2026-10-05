@@ -60,7 +60,10 @@ export const MAT_PROPS = [
 // dug (1 if this cell was dug out — tunnel plumbing), heat (fire),
 // water (0..1 fluid depth; the WATER id is rendering, this is dynamics),
 // food (M2: buried food stores per cell — 0 = none; digging a food cell
-// yields the food with the soil).
+// yields the food with the soil),
+// nutrient (R2: 0..NUTRIENT_MAX soil enrichment from rotted matter —
+// corpses and deadwood. Decays slowly; plants draw it down when fruiting;
+// geophagy pays more on enriched cells).
 export function createGrid(cols, rows) {
   const n = cols * rows;
   return {
@@ -74,11 +77,23 @@ export function createGrid(cols, rows) {
     heat: new Float32Array(n),
     water: new Float32Array(n),
     food: new Float32Array(n),
+    nutrient: new Float32Array(n),
   };
 }
 
 export function cellIndex(g, cx, cy) {
   return cy * g.cols + cx;
+}
+
+// First solid cell at or below (cx, cy) — where matter settles. Returns
+// the cell index, or -1 if the column is open all the way down. Used by
+// corpse-nutrient deposition and plant nutrient uptake (R2).
+export function groundIndexBelow(g, cx, cy) {
+  if (cx < 0 || cx >= g.cols) return -1;
+  for (let y = Math.max(0, cy | 0); y < g.rows; y++) {
+    if (MAT_PROPS[g.mat[y * g.cols + cx]].solid) return y * g.cols + cx;
+  }
+  return -1;
 }
 
 export function inBounds(g, cx, cy) {

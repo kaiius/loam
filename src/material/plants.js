@@ -16,8 +16,8 @@
 // Deterministic: stochastic choices use hash2(seed, id, tick), never a
 // stream.
 
-import { MAT, CELL_PX } from './grid.js';
-import { hash2 } from './process.js';
+import { MAT, CELL_PX, groundIndexBelow } from './grid.js';
+import { hash2, NUTRIENT_PER_FRUIT } from './process.js';
 import { treeArchParams } from './worldgen.js';
 import { createRng } from '../sim/rng.js';
 import { randomPlantGenome, inheritPlant, plantPhenotype } from '../sim/plantgenome.js';
@@ -156,7 +156,9 @@ function tryGerminate(mw, s, cx, cy) {
   // growPlant — via the shared treeArchParams helper, so the rule sets
   // cannot drift apart).
   const seedH = mw.seed || 1;
-  const { lean, branchK } = treeArchParams(seedH, pid);
+  // R2 (SIM-C): runtime seedlings lean with the same wind system as
+  // worldgen trees — the global wind at germination, via treeArchParams.
+  const { lean, branchK } = treeArchParams(seedH, pid, mw.sky ? mw.sky.windU : 0);
   const p = {
     id: pid, seedX: cx, seedY: cy, iters,
     fruiting: false, fruit: 0,
@@ -251,10 +253,17 @@ export function advancePlant(mw, p, steps) {
           t.forked = true;
         }
       }
-      const nx = Math.round(t.x + Math.cos(t.ang));
-      const ny = Math.round(t.y + Math.sin(t.ang));
+      // R2 (SIM-C): fractional tip accumulation — the same rule as
+      // worldgen's growPlant, so the wind lean shapes runtime seedlings
+      // identically. Sub-cell drift accumulates instead of being rounded
+      // away each step (a few degrees of lean never cross the 0.5 rounding
+      // threshold on their own).
+      const fx = t.x + Math.cos(t.ang);
+      const fy = t.y + Math.sin(t.ang);
+      const nx = Math.round(fx);
+      const ny = Math.round(fy);
       let grew = false;
-      if (t.life > 0 && putWoodCell(mw, p, nx, ny)) { t.x = nx; t.y = ny; t.life--; grew = true; putSleeve(mw, p, t, k); }
+      if (t.life > 0 && putWoodCell(mw, p, nx, ny)) { t.x = fx; t.y = fy; t.life--; grew = true; putSleeve(mw, p, t, k); }
       if (grew && t.life === 0) putLeafCluster(mw, p, nx, ny);
       else if (grew) next.push(t);
     }
@@ -326,7 +335,16 @@ export function tickPlants(mw) {
     if (p.fruiting && p.growth >= 1 && !stressing && !burning) {
       const maxFruit = 3 + Math.round(4 * (ph.yield || 0.5)) + 8;
       if ((p.fruit || 0) < maxFruit) {
-        p.fruit = Math.min(maxFruit, (p.fruit || 0) + ((ph.yield || 0.5) > 0.6 ? 5 : 4));
+        const add = ((ph.yield || 0.5) > 0.6 ? 5 : 4);
+        p.fruit = Math.min(maxFruit, (p.fruit || 0) + add);
+        // R2 (SIM-B): fruit is built from the soil — the plant draws down
+        // the nutrient stock of the ground cell below its seed cell.
+        // (Soil fertility still gates fruiting on its own; nutrient is the
+        // slow currency that rot replenishes.)
+        if (g.nutrient) {
+          const ni = groundIndexBelow(g, p.seedX, p.seedY);
+          if (ni >= 0) g.nutrient[ni] = Math.max(0, g.nutrient[ni] - NUTRIENT_PER_FRUIT * add);
+        }
       }
     }
 

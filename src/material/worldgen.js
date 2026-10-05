@@ -32,6 +32,7 @@
 
 import { createRng } from '../sim/rng.js';
 import { createGrid, MAT, CELL_PX } from './grid.js';
+import { initialGlobalWind, WIND_LEAN_PER, WIND_LEAN_MAX } from './weather.js';
 
 export const MATERIAL_ROWS = 110;          // WORLD_H 1100 / CELL_PX
 export const MATERIAL_COLS_PER_SIZE = 480; // 4800px wide at size 1
@@ -332,12 +333,17 @@ function fillWater(g, cols, rows, surf, seaRow) {
 // LEAF cell is 8-adjacent to its tip's WOOD.
 
 // M4 tree architecture: per-tree seeded parameters. Exported for tests.
-// lean: trunk lean from vertical, ±8°. branchK: branch-whorl interval,
-// 4–6 iterations. Stateless hash2 — deterministic for (seed, pid).
-export function treeArchParams(seed, pid) {
+// lean: trunk lean from vertical — the wind-shaped component (downwind,
+// magnitude scales with |wind|, capped) plus ±8° of per-tree hash jitter.
+// branchK: branch-whorl interval, 4–6 iterations. Stateless hash2 —
+// deterministic for (seed, pid, windU). windU defaults to 0 (calm), which
+// reproduces the old pure-hash lean exactly.
+export function treeArchParams(seed, pid, windU = 0) {
   const D2R = Math.PI / 180;
+  const windLean = Math.sign(windU) * Math.min(WIND_LEAN_MAX, Math.abs(windU) * WIND_LEAN_PER) * D2R;
+  const jitter = (hash2(seed, pid, 6101) - 0.5) * 16 * D2R;
   return {
-    lean: (hash2(seed, pid, 6101) - 0.5) * 16 * D2R,
+    lean: windLean + jitter,
     branchK: 4 + Math.floor(hash2(seed, pid, 6102) * 3),
   };
 }
@@ -355,7 +361,7 @@ export function treeArchParams(seed, pid) {
 // hash2(seed, plantId, iter + salt): stateless, no stream.
 // NOTE: advancePlant (plants.js) implements the same rules for runtime
 // seedlings — the two MUST stay in sync.
-function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
+function growPlant(seed, pid, sx, sy, iters, g, cols, rows, windU = 0) {
   let wood = 0, leaf = 0;
   const putWood = (x, y) => {
     if (x < 0 || y < 1 || x >= cols || y >= rows - 3) return false;
@@ -391,8 +397,9 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
     g.mat[i] = MAT.LEAF; g.root[i] = 1; g.grownId[i] = pid; leaf++;
   };
   const D2R = Math.PI / 180, UP = -Math.PI / 2;
-  // Per-tree architecture, seeded once: lean ±8°, branch interval 4–6.
-  const { lean, branchK } = treeArchParams(seed, pid);
+  // Per-tree architecture, seeded once: wind-shaped lean + per-tree
+  // jitter (R2 SIM-C), branch interval 4–6.
+  const { lean, branchK } = treeArchParams(seed, pid, windU);
   // Tips: the apical shoot, then branch buds. {x, y, ang, life, ord, ...}.
   let tips = [{ x: sx, y: sy, ang: UP + lean, life: iters, ord: 0, curve: 0, side: 0, blen0: 0, forked: true }];
   for (let it = 0; it < iters && tips.length; it++) {
@@ -425,10 +432,18 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
           t.forked = true;
         }
       }
-      const nx = Math.round(t.x + Math.cos(t.ang));
-      const ny = Math.round(t.y + Math.sin(t.ang));
+      // R2 (SIM-C): the tip accumulates FRACTIONAL position — the wind
+      // lean (a few degrees) only shapes the trunk if sub-cell drift
+      // accumulates instead of being rounded away every step. (Before R2
+      // the tip stored the rounded cell, so any lean under ~30° was
+      // silently discarded and every trunk grew perfectly vertical —
+      // the old ±8° hash lean never shaped a tree.)
+      const fx = t.x + Math.cos(t.ang);
+      const fy = t.y + Math.sin(t.ang);
+      const nx = Math.round(fx);
+      const ny = Math.round(fy);
       let grew = false;
-      if (t.life > 0 && putWood(nx, ny)) { t.x = nx; t.y = ny; t.life--; grew = true; putSleeve(t, it); }
+      if (t.life > 0 && putWood(nx, ny)) { t.x = fx; t.y = fy; t.life--; grew = true; putSleeve(t, it); }
       if (grew && t.life === 0) putLeafCluster(nx, ny); // tip terminates in a crown
       else if (grew) next.push(t);
       // A tip that cannot advance dies (crowded stop) — no leaf cluster.
@@ -438,7 +453,7 @@ function growPlant(seed, pid, sx, sy, iters, g, cols, rows) {
   return { wood, leaf };
 }
 
-function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
+function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log, windU = 0) {
   const plants = [];
   // Seed selection: SOIL surface cells with fertility x moisture above
   // threshold (soil fertility = 1.0), spaced >= 10 cells apart
@@ -464,7 +479,7 @@ function growFlora(seed, g, cols, rows, surf, T, M, seaRow, size, log) {
     pid++;
     const score = T[c] * M[c];
     const iters = score > 0.55 ? 56 : score > 0.35 ? 32 : 16; // jungle..scrub (M2: lusher)
-    const { wood, leaf } = growPlant(seed, pid, c, s, iters, g, cols, rows);
+    const { wood, leaf } = growPlant(seed, pid, c, s, iters, g, cols, rows, windU);
     plants.push({ id: pid, seedX: c, seedY: s, iters, fruiting: false, wood, leaf });
     lastX = c;
   }
@@ -587,9 +602,13 @@ function pickSpawn(w) {
   // it; pickSpawn must not crash before the gate runs.
   const anchor = fruiting.length ? fruiting[fruiting.length >> 1]
     : plants.length ? plants[0] : { seedX: Math.floor(cols / 2) };
-  // A spawn needs open sky: 6 cells of AIR headroom above the surface
-  // (a soil column under a grown trunk/canopy is not a spawn).
-  const HEADROOM = 6;
+  // A spawn needs open sky: 12 cells of AIR headroom above the surface —
+  // the light sense counts solid cells in the 12 above the head, so the
+  // headroom must cover the whole kernel (6 was not enough once R2 let
+  // trunks lean: a leaning canopy overhung the spawn and shaded it below
+  // the surface-light > 0.3 invariant). A soil column under a grown
+  // trunk/canopy is not a spawn.
+  const HEADROOM = 12;
   const headroomOk = (c, s) => {
     for (let r = s - HEADROOM; r < s; r++) {
       if (r < 0 || grid.mat[r * cols + c] !== MAT.AIR) return false;
@@ -711,7 +730,11 @@ function buildWorld(seed, size, attempt, gentle, log) {
   // 4. water table
   const lakes = fillWater(grid, cols, rows, surf, seaRow);
   // 5. flora (stateless hash only)
-  const plants = growFlora(seed, grid, cols, rows, surf, T, M, seaRow, size, log);
+  // R2 (SIM-C): trees grow into the sky's global wind — the wind at growth
+  // is the sky's initial global wind, a pure function of the seed (same
+  // seed → same lean, bit-identical; the worldgen stream is untouched).
+  const growWindU = initialGlobalWind(seed).U;
+  const plants = growFlora(seed, grid, cols, rows, surf, T, M, seaRow, size, log, growWindU);
   const orphansDeleted = assertNoOrphans(grid, cols, rows, plants, log);
   // 6. labels (recompute slope on the post-erosion surface)
   const slope2 = computeSlope(surf, cols);

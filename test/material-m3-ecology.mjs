@@ -5,14 +5,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MAT, CELL_PX } from '../src/material/grid.js';
+import { MAT, CELL_PX, createGrid } from '../src/material/grid.js';
 import { createRng } from '../src/sim/rng.js';
 import { createMaterialWorld, tickMaterialWorldM2 } from '../src/material/index.js';
 import { spawnSpecies } from '../src/material/species.js';
 import { spawnCorpse, nearestCorpse, tickCorpses } from '../src/material/corpses.js';
 import { tickSeeds, makeSeed, seedFromFeeding, tickPlants, attachPlantGenomes } from '../src/material/plants.js';
 import { plantPhenotype, randomPlantGenome } from '../src/sim/plantgenome.js';
-import { createSky, tickSky } from '../src/material/weather.js';
+import { createSky, tickSky, windAt, initialGlobalWind } from '../src/material/weather.js';
 import { gatherMaterialSenses } from '../src/material/senses.js';
 import { executeAction } from '../src/material/actions.js';
 import { tickMaterialCreature } from '../src/material/mcreature.js';
@@ -239,4 +239,111 @@ test('probe: SKY DECOUPLING — weather ticks every 20, not every tick', () => {
   const t0 = mw.sky.tick;
   for (let t = 0; t < 39; t++) tickMaterialWorldM2(mw);
   assert.equal(mw.sky.tick - t0, 1, 'one sky tick per 20 material ticks (39 ticks → 1)');
+});
+
+// ================= R2: decomposition → nutrient cycling =================
+
+test('r2: corpse rot deposits nutrient into the ground below (1:1)', () => {
+  const cols = 10, rows = 10;
+  const grid = createGrid(cols, rows);
+  for (let x = 0; x < cols; x++) grid.mat[8 * cols + x] = MAT.SOIL; // floor
+  const mw = { seed: 7, tick: 0, grid, corpses: [] };
+  const k = spawnCorpse(mw, { x: 55, y: 75, bodyMass: 1 }); // cell (5,7), ground (5,8)
+  const meat0 = k.meat;
+  assert.ok(meat0 > 0.4 && meat0 <= 1, `sane meat stock (${meat0})`);
+  tickCorpses(mw);
+  const gi = 8 * cols + 5;
+  assert.ok(Math.abs(grid.nutrient[gi] - 0.02) < 1e-9, `one slow tick deposits 0.02 nutrient (${grid.nutrient[gi]})`);
+  assert.ok(Math.abs(k.meat - (meat0 - 0.02)) < 1e-9, 'meat fell by exactly the deposited amount');
+});
+
+test('r2: corpse nutrient is conserved — never more than the meat that rotted', () => {
+  const cols = 10, rows = 10;
+  const grid = createGrid(cols, rows);
+  for (let x = 0; x < cols; x++) grid.mat[8 * cols + x] = MAT.SOIL;
+  const mw = { seed: 7, tick: 0, grid, corpses: [] };
+  const k = spawnCorpse(mw, { x: 55, y: 75, bodyMass: 1 });
+  const meat0 = k.meat;
+  for (let t = 0; t < 70; t++) tickCorpses(mw); // full rot: meat → 0, husk removed
+  assert.equal(mw.corpses.length, 0, 'corpse fully rotted away');
+  let total = 0;
+  for (let i = 0; i < grid.nutrient.length; i++) total += grid.nutrient[i];
+  assert.ok(total > 0, `nutrient remains in the soil (${total.toFixed(4)})`);
+  assert.ok(total <= meat0 + 1e-9, `nothing invented: total ${total.toFixed(4)} ≤ meat ${meat0.toFixed(4)}`);
+});
+
+test('r2: nutrient decays slowly on its own', () => {
+  const grid = createGrid(6, 6);
+  const mw = { seed: 7, tick: 0, grid, corpses: [] };
+  grid.nutrient[10] = 1;
+  for (let t = 0; t < 10; t++) tickCorpses(mw);
+  const expected = Math.pow(0.999, 10);
+  // Float32 accumulation vs float64 pow — 1e-6 tolerance, not 1e-9.
+  assert.ok(Math.abs(grid.nutrient[10] - expected) < 1e-6, `10 slow ticks → ${grid.nutrient[10].toFixed(6)} (expected ${expected.toFixed(6)})`);
+});
+
+test('r2: fruiting plants draw down soil nutrient (plants use it)', () => {
+  const cols = 12, rows = 12;
+  const grid = createGrid(cols, rows);
+  for (let x = 0; x < cols; x++) grid.mat[7 * cols + x] = MAT.SOIL;
+  const mw = { seed: 7, tick: 0, grid, plants: [] };
+  mw.sky = createSky(7, cols * CELL_PX);
+  grid.nutrient[7 * cols + 5] = 1;
+  mw.plants.push({
+    id: 1, seedX: 5, seedY: 6, growth: 1, tips: null,
+    fruiting: true, fruit: 0, age: 0, stress: 0, generation: 0,
+    pheno: { yield: 0.8, growthRate: 0.5, coldTol: 0.5, heatTol: 0.5, fruitSize: 0.5, bitterness: 0 },
+  });
+  tickPlants(mw);
+  const p = mw.plants[0];
+  assert.ok(p.fruit > 0, `plant refilled fruit (${p.fruit})`);
+  const drawn = 1 - grid.nutrient[7 * cols + 5];
+  assert.ok(drawn > 0, `nutrient drawn down by fruiting (${drawn.toFixed(4)})`);
+  assert.ok(Math.abs(drawn - 0.05) < 1e-6, `5 fruit × 0.01 = 0.05 (got ${drawn.toFixed(4)})`);
+});
+
+// ================= R2: unified wind =================
+
+test('r2: windAt is deterministic — pure function of (seed, x, tick-block)', () => {
+  const mw = createMaterialWorld(7, 1);
+  const a = windAt(mw, 100), b = windAt(mw, 100);
+  assert.equal(a, b, 'same call twice → identical');
+  // It never touches the sky's RNG stream: a sky that answered 1000
+  // windAt calls evolves identically to one that answered none.
+  const mk = () => ({ sky: createSky(7, 4800), tick: 0, grid: createGrid(48, 10) });
+  const w1 = mk(), w2 = mk();
+  for (let i = 0; i < 1000; i++) windAt(w1, i * 37);
+  for (let t = 0; t < 50; t++) { tickSky(w1, 20); tickSky(w2, 20); }
+  assert.equal(w1.sky.windU, w2.sky.windU, 'global wind identical with/without windAt reads');
+  assert.equal(w1.sky.windV, w2.sky.windV, 'global windV identical with/without windAt reads');
+  assert.deepEqual(
+    w1.sky.cols.map((c) => c.windU),
+    w2.sky.cols.map((c) => c.windU),
+    'column winds identical with/without windAt reads',
+  );
+});
+
+test('r2: windAt centers on the global wind (one system, not two)', () => {
+  const mw = createMaterialWorld(7, 1);
+  mw.sky.windU = 30;
+  let sum = 0;
+  const n = 200;
+  for (let i = 0; i < n; i++) sum += windAt(mw, i * 24);
+  const mean = sum / n;
+  assert.ok(Math.abs(mean - 30) < 3, `per-cell wind centers on global 30 (mean ${mean.toFixed(2)})`);
+  for (let i = 0; i < 40; i++) {
+    const w = windAt(mw, i * 24);
+    assert.ok(Math.abs(w - 30) <= 6 + 1e-9, `noise bounded ±6 (got ${w.toFixed(2)})`);
+  }
+});
+
+test('r2: column winds relax toward the global wind', () => {
+  const mw = createMaterialWorld(7, 1);
+  mw.sky.windU = 30;
+  mw.sky.cols.forEach((c) => { c.windU = -50; });
+  for (let t = 0; t < 120; t++) tickSky(mw, 20);
+  // Columns track the (slowly walking) global, not their -50 start.
+  const mean = mw.sky.cols.reduce((s, c) => s + c.windU, 0) / mw.sky.cols.length;
+  assert.ok(Math.abs(mean - mw.sky.windU) < 8, `columns track the global (mean ${mean.toFixed(1)}, global ${mw.sky.windU.toFixed(1)})`);
+  assert.ok(mean > 0, `columns left -50 behind (mean ${mean.toFixed(1)})`);
 });

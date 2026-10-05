@@ -33,6 +33,10 @@ export const CLIMB_SPEED = 1.6; // px/tick along the surface
 export const DIG_DRAIN = 0.9; // ctx.active while digging — billed via hungerRate
 export const PILE_DRAIN = 0.7;
 export const PILE_WORK_TICKS = 4; // work to place a proper soil cell
+// Geophagy payoff (R2): enriched soil pays more — eating near rotted
+// corpses or rotted deadwood is worth up to 2x the base.
+export const GEOPHAGY_BASE = 0.4;
+export const GEOPHAGY_NUTRIENT_BONUS = 0.4;
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -369,6 +373,8 @@ function dumpAtFeet(mw, c) {
 // --- geophagy ---------------------------------------------------------------
 // Eat soil for minerals. Gates on the mineral deficit — the instinct is a
 // whisper, the chemistry decides.
+// R2: the payoff scales with the target cell's nutrient content — soil
+// enriched by rotted corpses or rotted deadwood pays up to 2x.
 function tryGeophagy(mw, c) {
   if ((c.minerals ?? 0.5) > 0.6) return 0; // not deficient — no need
   const g = mw.grid;
@@ -378,7 +384,8 @@ function tryGeophagy(mw, c) {
   if (m === MAT.SOIL || m === MAT.CLAY) {
     g.mat[t.idx] = MAT.AIR;
     g.dug[t.idx] = 1;
-    return 0.4; // mineral gain
+    const nut = g.nutrient ? g.nutrient[t.idx] : 0;
+    return GEOPHAGY_BASE + GEOPHAGY_NUTRIENT_BONUS * clamp01(nut);
   }
   return 0;
 }

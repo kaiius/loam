@@ -24,6 +24,13 @@ export const BURN_TICKS_WOOD = 60;  // burning wood -> DEADWOOD after this many
 // Rot tuning.
 export const ROT_THRESHOLD = 1000;  // damp deadwood -> soil after this many wet ticks
 
+// Nutrient tuning (R2: decomposition → soil enrichment).
+export const NUTRIENT_MAX = 2.0;        // per-cell nutrient cap
+export const NUTRIENT_DECAY = 0.999;    // per corpse slow-tick multiplicative decay
+export const NUTRIENT_PER_MEAT = 1.0;   // corpse meat -> nutrient conversion (1:1, mass-conserving)
+export const DEADWOOD_NUTRIENT = 0.2;   // nutrient deposited when deadwood rots to soil
+export const NUTRIENT_PER_FRUIT = 0.01; // nutrient drawn from the soil per fruit regrown
+
 // Water tuning.
 export const WATER_EVAP = 0.002;    // surface water lost per tick
 export const INFILTRATE_K = 0.05;   // moist += water * permeability * INFILTRATE_K
@@ -99,7 +106,9 @@ function fallTargetBlocked(g, bi, permanentTunnels) {
 }
 
 function swapCells(g, mw, a, b) {
-  for (const f of ['mat', 'moist', 'root', 'grownId', 'dug', 'heat', 'water']) {
+  // Every per-cell field travels with the cell when it falls — nutrient
+  // included (R2), so enrichment moves with slumping soil, not against it.
+  for (const f of ['mat', 'moist', 'root', 'grownId', 'dug', 'heat', 'water', 'nutrient']) {
     const t = g[f][a];
     g[f][a] = g[f][b];
     g[f][b] = t;
@@ -116,7 +125,7 @@ function swapCells(g, mw, a, b) {
 
 function tickSlump(mw, permanentTunnels) {
   const g = mw.grid;
-  const { cols, rows, mat, dug } = g;
+  const { cols, rows, mat, dug, moist } = g;
   const fall = aux(mw, '_fall', Uint8Array);
 
   // 1. Span check: mark the middle cells of overlong unsupported runs.
@@ -146,9 +155,17 @@ function tickSlump(mw, permanentTunnels) {
       const L = x1 - x + 1;
       for (let xx = x; xx <= x1; xx++) {
         const ci = y * cols + xx;
-        const I = MAT_PROPS[mat[ci]].integrity;
-        if (L > I) {
-          const excess = L - I;
+        const m = mat[ci];
+        const base = MAT_PROPS[m].integrity;
+        // R2 (SIM-A): moisture weakens soil spans — saturated soil loses
+        // effective integrity, so wet spans collapse that dry ones hold.
+        // Deterministic: moist is grid state, no RNG; ties still break by
+        // sweep order. Only SOIL/SAND/CLAY soften (rock/wood don't).
+        const eff = (m === MAT.SOIL || m === MAT.SAND || m === MAT.CLAY)
+          ? base * (1 - 0.5 * moist[ci])
+          : base;
+        if (L > eff) {
+          const excess = L - eff;
           const start = Math.floor((L - excess) / 2); // center the slump
           const p = xx - x;
           if (p >= start && p < start + excess) fall[ci] = 1;
@@ -296,7 +313,7 @@ function tickWater(mw) {
 // ignition, no spread, and no conversion — heat just decays.
 function tickFire(mw, fireOn) {
   const g = mw.grid;
-  const { cols, rows, mat, heat } = g;
+  const { cols, rows, mat, heat, moist } = g;
   const burn = aux(mw, 'burn', Float32Array);
   // Spread accumulates here and applies after the sweep: fire advances
   // ~1 cell per tick. (Applying spread in-sweep let one tick chain
@@ -322,7 +339,9 @@ function tickFire(mw, fireOn) {
             if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
             const n = ny * cols + nx;
             const fn = MAT_PROPS[mat[n]].flammability;
-            if (fn > 0) spread[n] = Math.min(1.5, spread[n] + heat[i] * fn * SPREAD_K);
+            // R2 (SIM-A): target moisture damps spread — wet cells don't
+            // carry fire. (1 - moist[n]) is 1 for dry fuel, 0 when soaked.
+            if (fn > 0) spread[n] = Math.min(1.5, spread[n] + heat[i] * fn * SPREAD_K * (1 - moist[n]));
           }
         }
       }
@@ -363,9 +382,11 @@ function tickFire(mw, fireOn) {
 // DEADWOOD with moist > 0.3 accumulates rot; at ROT_THRESHOLD ticks it
 // becomes SOIL, mass-conserving (moisture and fertility stay in the cell).
 // Drying pauses the counter, it does not reset it.
+// R2: the rotting wood enriches the soil — a nutrient deposit, so rotted
+// deadwood is worth eating (geophagy).
 function tickRot(mw) {
   const g = mw.grid;
-  const { mat, moist } = g;
+  const { mat, moist, nutrient } = g;
   const rot = aux(mw, 'rot', Float32Array);
   const n = g.cols * g.rows;
   for (let i = 0; i < n; i++) {
@@ -374,6 +395,7 @@ function tickRot(mw) {
       if (rot[i] >= ROT_THRESHOLD) {
         mat[i] = MAT.SOIL;
         rot[i] = 0;
+        if (nutrient) nutrient[i] = Math.min(NUTRIENT_MAX, nutrient[i] + DEADWOOD_NUTRIENT);
       }
     }
   }

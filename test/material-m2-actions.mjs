@@ -129,6 +129,27 @@ test('probe: GEOPHAGY does nothing when minerals are fine', () => {
   assert.equal(g.mat[ty * g.cols + tx], MAT.SOIL, 'no needless earth-eating');
 });
 
+test('r2: GEOPHAGY pays more on nutrient-rich soil (rotted matter enriches)', () => {
+  const eat = (nutrient) => {
+    const mw = microWorld();
+    const c = spawnAt2(mw, 300, 200);
+    c.grounded = true;
+    c.minerals = 0.2; // deficient
+    const g = mw.grid;
+    const tx = Math.floor((c.x + 20) / CELL_PX), ty = Math.floor((c.y - 30) / CELL_PX);
+    g.mat[ty * g.cols + tx] = MAT.SOIL;
+    g.nutrient[ty * g.cols + tx] = nutrient;
+    const m0 = c.minerals;
+    executeAction(mw, c, IDX('geophagy'), gatherMaterialSenses(mw, c, { others: [] }), {});
+    return c.minerals - m0;
+  };
+  const plain = eat(0);
+  const enriched = eat(1.2);
+  assert.ok(Math.abs(plain - 0.4) < 1e-9, `plain soil pays the base 0.4 (got ${plain})`);
+  assert.ok(Math.abs(enriched - 0.8) < 1e-9, `enriched soil pays 0.8 (got ${enriched})`);
+  assert.ok(enriched > plain, 'rotted-matter soil pays more');
+});
+
 test('probe: EAT takes fruit from a fruiting plant', () => {
   const mw = microWorld();
   // seedX/seedY are CELL coords (cell-vs-pixel fix); creature at px (300,200).

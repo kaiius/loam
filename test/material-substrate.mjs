@@ -34,7 +34,8 @@ test('grid: createGrid dims and zeroed arrays', () => {
   assert.ok(g.dug instanceof Uint8Array);
   assert.ok(g.heat instanceof Float32Array);
   assert.ok(g.water instanceof Float32Array);
-  for (const f of ['mat', 'moist', 'root', 'grownId', 'dug', 'heat', 'water']) {
+  assert.ok(g.nutrient instanceof Float32Array);
+  for (const f of ['mat', 'moist', 'root', 'grownId', 'dug', 'heat', 'water', 'nutrient']) {
     assert.equal(g[f].length, 80, f);
     assert.ok(g[f].every((v) => v === 0), `${f} zeroed`);
   }
@@ -338,11 +339,89 @@ test('determinism: identical runs give identical arrays', () => {
   buildScenario(b);
   tickN(a, 60);
   tickN(b, 60);
-  for (const f of ['mat', 'moist', 'root', 'grownId', 'dug', 'heat', 'water']) {
+  for (const f of ['mat', 'moist', 'root', 'grownId', 'dug', 'heat', 'water', 'nutrient']) {
     assert.deepEqual(a.grid[f], b.grid[f], `${f} identical across runs`);
   }
   for (const f of ['rot', 'burn', '_fall']) {
     assert.deepEqual(a[f], b[f], `aux ${f} identical across runs`);
   }
   assert.equal(a.tick, b.tick);
+});
+
+// ================= R2: moisture-driven collapse + fire =================
+
+test('r2: moisture weakens soil spans — wet collapses where dry holds', () => {
+  const mw = makeMw(14, 8);
+  const g = mw.grid;
+  // Three identical 3-wide floating soil beams (L=3 = dry integrity 3).
+  for (let x = 1; x <= 3; x++) g.mat[I(g, x, 2)] = MAT.SOIL;                       // A: dry
+  for (let x = 5; x <= 7; x++) { g.mat[I(g, x, 2)] = MAT.SOIL; g.moist[I(g, x, 2)] = 1; } // B: saturated
+  for (let x = 9; x <= 11; x++) { g.mat[I(g, x, 2)] = MAT.SOIL; g.moist[I(g, x, 2)] = 0.5; } // C: half-wet
+  tickMaterials(mw);
+  // A: L=3, eff=3 → holds.
+  for (let x = 1; x <= 3; x++) assert.equal(g.mat[I(g, x, 2)], MAT.SOIL, `dry beam cell x=${x} held`);
+  // B: eff=1.5 → the middle sheds (x=5,6 fall one cell).
+  assert.equal(g.mat[I(g, 5, 3)], MAT.SOIL, 'saturated beam x=5 fell');
+  assert.equal(g.mat[I(g, 6, 3)], MAT.SOIL, 'saturated beam x=6 fell');
+  assert.equal(g.mat[I(g, 5, 2)], MAT.AIR, 'vacated cell is air');
+  assert.equal(g.mat[I(g, 7, 2)], MAT.SOIL, 'saturated beam edge x=7 held');
+  // C: eff=2.25 → only the true middle (x=10) falls.
+  assert.equal(g.mat[I(g, 10, 3)], MAT.SOIL, 'half-wet beam middle x=10 fell');
+  assert.equal(g.mat[I(g, 9, 2)], MAT.SOIL, 'half-wet beam edge x=9 held');
+  assert.equal(g.mat[I(g, 11, 2)], MAT.SOIL, 'half-wet beam edge x=11 held');
+});
+
+test('r2: rock spans ignore moisture (only soil/sand/clay soften)', () => {
+  const mw = makeMw(10, 6);
+  const g = mw.grid;
+  // 5-wide floating rock beam, saturated: integrity 8, L=5 → holds regardless.
+  for (let x = 2; x <= 6; x++) { g.mat[I(g, x, 2)] = MAT.ROCK; g.moist[I(g, x, 2)] = 1; }
+  tickN(mw, 3);
+  for (let x = 2; x <= 6; x++) assert.equal(g.mat[I(g, x, 2)], MAT.ROCK, `rock beam cell x=${x} held despite saturation`);
+});
+
+test('r2: soaked fuel does not carry fire — dry control burns', () => {
+  const mk = (moist) => {
+    const mw = makeMw(10, 10, { fireOn: true });
+    const g = mw.grid;
+    for (let y = 4; y <= 6; y++) for (let x = 4; x <= 6; x++) {
+      g.mat[I(g, x, y)] = MAT.LEAF;
+      g.moist[I(g, x, y)] = moist;
+    }
+    g.heat[I(g, 5, 5)] = 1; // ignition
+    return mw;
+  };
+  const dry = mk(0), wet = mk(1);
+  tickN(dry, 20);
+  tickN(wet, 20);
+  let dryBurned = 0, wetIntact = 0;
+  for (let y = 4; y <= 6; y++) for (let x = 4; x <= 6; x++) {
+    if (dry.grid.mat[I(dry.grid, x, y)] === MAT.AIR) dryBurned++;
+    if (wet.grid.mat[I(wet.grid, x, y)] === MAT.LEAF) wetIntact++;
+  }
+  assert.ok(dryBurned >= 2, `dry bed burned (${dryBurned}/9 became AIR)`);
+  assert.equal(wetIntact, 8, `soaked bed: fire never spread (8/9 leaves intact, ${wetIntact})`);
+  assert.equal(wet.grid.mat[I(wet.grid, 5, 5)], MAT.AIR, 'the ignited soaked cell burned itself out alone');
+});
+
+test('r2: nutrient travels with falling cells (swapCells field list)', () => {
+  const mw = makeMw(6, 8);
+  const g = mw.grid;
+  for (let x = 0; x < 6; x++) g.mat[I(g, x, 7)] = MAT.BEDROCK;
+  g.mat[I(g, 3, 1)] = MAT.SAND;
+  g.nutrient[I(g, 3, 1)] = 1.5;
+  tickN(mw, 3);
+  assert.equal(g.mat[I(g, 3, 4)], MAT.SAND, 'sand fell 3 cells');
+  assert.ok(Math.abs(g.nutrient[I(g, 3, 4)] - 1.5) < 1e-9, `nutrient rode the cell down (${g.nutrient[I(g, 3, 4)]})`);
+  assert.equal(g.nutrient[I(g, 3, 1)], 0, 'old cell left no nutrient behind');
+});
+
+test('r2: deadwood rot deposits nutrient into the soil it becomes', () => {
+  const mw = makeMw(6, 6, { fireOn: false });
+  const g = mw.grid;
+  g.mat[I(g, 2, 2)] = MAT.DEADWOOD;
+  g.moist[I(g, 2, 2)] = 0.6;
+  tickN(mw, ROT_THRESHOLD + 100);
+  assert.equal(g.mat[I(g, 2, 2)], MAT.SOIL, 'damp deadwood rotted to soil');
+  assert.ok(Math.abs(g.nutrient[I(g, 2, 2)] - 0.2) < 1e-6, `rot enriched the soil (${g.nutrient[I(g, 2, 2)].toFixed(4)})`);
 });

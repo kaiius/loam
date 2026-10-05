@@ -26,17 +26,33 @@
 
 import { MAT, CELL_PX, MAT_PROPS } from './grid.js';
 import { createRng } from '../sim/rng.js';
-import { IGNITION_HEAT } from './process.js';
+import { IGNITION_HEAT, hash2 } from './process.js';
 import { TICKS_PER_DAY, timeOfDay, daySun } from './senses.js';
 
 export const SKY_EVERY = 20;          // sky ticks per material tick batch
 export const SKY_COL_W = 100;         // px per climate column
 export const YEAR_TICKS = 9600;       // 4 days — individuals span seasons
 export const SEASON_AMP_MAX = 0.25;   // T-units of seasonal swing
+// R2 (SIM-C): per-cell wind noise — deterministic, no per-tick RNG.
+export const WIND_NOISE_AMP = 6;      // px/s of hash noise around the global wind
+export const WIND_NOISE_BLOCK = 200;  // material ticks per noise-pattern block
+export const WIND_LEAN_PER = 0.25;    // degrees of tree lean per px/s of wind
+export const WIND_LEAN_MAX = 14;      // degrees: wind-shaped, not wind-bent
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 // --- construction -------------------------------------------------------
+
+// R2 (SIM-C): the sky's initial global wind, a pure function of the seed —
+// pinned like the sky's own sub-stream, so the same seed always grows the
+// same wind-shaped trees. Westerly baseline (12 px/s) with per-seed spread.
+export function initialGlobalWind(seed) {
+  const ws = ((seed * 1009 + 5) >>> 0) || 1;
+  return {
+    U: 12 + (hash2(ws, 0, 0, 0, 101) - 0.5) * 24,
+    V: (hash2(ws, 0, 0, 0, 102) - 0.5) * 8,
+  };
+}
 
 export function createSky(seed, widthPx, opts = {}) {
   const ncols = Math.max(8, Math.round(widthPx / SKY_COL_W));
@@ -50,9 +66,16 @@ export function createSky(seed, widthPx, opts = {}) {
       rain: 0,
     });
   }
+  const windSeed = ((seed * 1009 + 5) >>> 0) || 1;
+  const iw = initialGlobalWind(seed);
   return {
     cols, ncols,
-    rng: createRng(((seed * 1009 + 5) >>> 0) || 1),
+    rng: createRng(windSeed),
+    windSeed,
+    // R2 (SIM-C): the GLOBAL wind vector — one system. Evolved slowly on
+    // the sky's own pinned sub-stream (never the main stream).
+    windU: iw.U,
+    windV: iw.V,
     baseT: cols.map((c) => c.T),
     seasonAmp: new Array(ncols).fill(opts.seasonAmp ?? 0.4),
     lightning: [],
@@ -74,7 +97,15 @@ export function tempAt(mw, x) {
 }
 export function windAt(mw, x) {
   if (!mw.sky) return 0;
-  return colAt(mw.sky, x).windU;
+  const sky = mw.sky;
+  // R2 (SIM-C): the unified wind — the global vector plus deterministic
+  // per-cell noise (spatial hash + slow temporal modulation). NO per-tick
+  // RNG: the same (seed, x, tick-block) always reads the same wind, so
+  // seed dispersal, leaf sway, and tree lean all drink from one system.
+  const cx = Math.floor(x / CELL_PX);
+  const tb = Math.floor((mw.tick || 0) / WIND_NOISE_BLOCK);
+  const h = hash2(sky.windSeed, cx, tb, 0, 77);
+  return sky.windU + (h - 0.5) * 2 * WIND_NOISE_AMP;
 }
 export function moistureAt(mw, x) {
   if (!mw.sky) return 0.4;
@@ -215,10 +246,19 @@ export function tickSky(mw, dt = SKY_EVERY) {
     sky.cols[j].vapor += flux[i];
   }
 
-  // 5. Wind: slow walk around a westerly baseline, √dt kicks.
+  // 5. Wind: the GLOBAL vector walks slowly on the sky's own pinned
+  //    sub-stream (never the main stream — founder genomes/brain rolls
+  //    must not shift); each column's wind relaxes toward the global.
+  //    Same seed → same sky, bit-identical.
+  sky.windU += (12 - sky.windU) * Math.min(1, dt * 0.001);
+  sky.windU += rng.range(-1, 1) * 0.35 * sdt;
+  sky.windU = Math.max(-60, Math.min(80, sky.windU));
+  sky.windV += (0 - sky.windV) * Math.min(1, dt * 0.001);
+  sky.windV += rng.range(-1, 1) * 0.35 * sdt;
+  sky.windV = Math.max(-40, Math.min(40, sky.windV));
   for (let i = 0; i < n; i++) {
     const c = sky.cols[i];
-    c.windU += (12 - c.windU) * Math.min(1, dt * 0.005);
+    c.windU += (sky.windU - c.windU) * Math.min(1, dt * 0.005);
     c.windU += rng.range(-1, 1) * 2.0 * sdt;
     c.windU = Math.max(-60, Math.min(80, c.windU));
   }

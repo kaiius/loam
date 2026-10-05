@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { generateMaterialWorld, checkViability, treeArchParams } from '../src/material/worldgen.js';
+import { initialGlobalWind } from '../src/material/weather.js';
 import { MAT, CELL_PX } from '../src/material/grid.js';
 
 const LAND_KEYS = new Set(['arctic', 'mountains', 'jungle', 'plains', 'desert', 'archipelago']);
@@ -180,9 +181,12 @@ test('m4: per-tree variation — adjacent plants do not share architecture', () 
 });
 
 test('m4: trees keep a dominant leader (apical dominance)', () => {
-  // For each large plant, the tallest single-column vertical wood run
-  // should be a large fraction of the plant's height — the leader climbs,
-  // branches stay subordinate.
+  // For each large plant, the leader — the longest downward 8-connected
+  // wood path, following the trunk's actual trajectory at whatever lean —
+  // should be a large fraction of the plant's height. Branches stay
+  // subordinate. (R2: trunks now lean with the wind, so the run is measured
+  // along the lean, not assumed vertical — the old single-column run
+  // measured an assumption, not the tree.)
   const w = generateMaterialWorld(7, 1);
   const { grid, cols, rows } = w;
   let checked = 0;
@@ -190,7 +194,6 @@ test('m4: trees keep a dominant leader (apical dominance)', () => {
     if (p.wood < 60) continue; // jungle trees only
     const gid = p.id % 65536;
     let top = rows, bottom = 0;
-    const colRuns = new Map(); // x -> longest vertical run of this plant's wood
     for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
       const i = y * cols + x;
       if (grid.mat[i] === MAT.WOOD && grid.grownId[i] === gid) {
@@ -200,17 +203,34 @@ test('m4: trees keep a dominant leader (apical dominance)', () => {
     }
     const height = bottom - top;
     if (height < 20) continue;
-    // longest vertical run in any single column
-    let best = 0;
-    for (let x = 0; x < cols; x++) {
-      let run = 0;
-      for (let y = 0; y < rows; y++) {
+    // Longest downward 8-connected wood path (top row → down). Each step
+    // may move to the row below or the already-scanned left neighbor, so
+    // the path follows the leader through any lean.
+    const dp = new Map();
+    let leader = 0;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
         const i = y * cols + x;
-        if (grid.mat[i] === MAT.WOOD && grid.grownId[i] === gid) { run++; best = Math.max(best, run); }
-        else run = 0;
+        if (grid.mat[i] !== MAT.WOOD || grid.grownId[i] !== gid) continue;
+        let bestPrev = 0;
+        for (let dy = -1; dy <= 0; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx, ny = y + dy;
+            if (nx < 0 || nx >= cols || ny < 0) continue;
+            const j = ny * cols + nx;
+            if (grid.mat[j] === MAT.WOOD && grid.grownId[j] === gid) {
+              const v = dp.get(j) || 0;
+              if (v > bestPrev) bestPrev = v;
+            }
+          }
+        }
+        const v = bestPrev + 1;
+        dp.set(i, v);
+        if (v > leader) leader = v;
       }
     }
-    assert.ok(best >= height * 0.45, `plant ${p.id}: leader run ${best} ≥ 45% of height ${height}`);
+    assert.ok(leader >= height * 0.45, `plant ${p.id}: leader path ${leader} ≥ 45% of height ${height}`);
     checked++;
   }
   assert.ok(checked >= 3, `checked ${checked} large trees`);
@@ -223,5 +243,66 @@ test('m4: branch wood stays connected and climbable (no orphans introduced)', ()
   for (const p of w.plants) {
     assert.ok(p.wood > 0, `plant ${p.id} has wood`);
     assert.ok(p.leaf > 0, `plant ${p.id} has leaves`);
+  }
+});
+
+// ================= R2: wind-shaped trees (one wind system) =================
+
+test('r2: treeArchParams lean follows the wind — downwind, scaling with |wind|', () => {
+  const D2R = Math.PI / 180;
+  // Direction: eastward wind → eastward (positive) lean component.
+  for (let pid = 1; pid <= 12; pid++) {
+    const east = treeArchParams(7, pid, 40).lean;
+    const west = treeArchParams(7, pid, -40).lean;
+    assert.ok(east > west, `pid ${pid}: east-wind lean > west-wind lean`);
+  }
+  // Magnitude scales with |wind|: the jitter cancels in the difference.
+  const d1 = treeArchParams(7, 3, 40).lean - treeArchParams(7, 3, 0).lean;
+  const d2 = treeArchParams(7, 3, 80).lean - treeArchParams(7, 3, 0).lean;
+  assert.ok(Math.abs(d1 - 10 * D2R) < 1e-12, `40px/s → +10° wind lean (got ${(d1 / D2R).toFixed(2)}°)`);
+  assert.ok(Math.abs(d2 - 14 * D2R) < 1e-12, `80px/s → capped at +14° (got ${(d2 / D2R).toFixed(2)}°)`);
+  assert.ok(d2 > d1, 'stronger wind → stronger lean');
+  // Calm default reproduces the old pure-hash lean exactly.
+  assert.equal(treeArchParams(7, 3).lean, treeArchParams(7, 3, 0).lean, 'windU defaults to 0');
+  // Deterministic with wind.
+  assert.deepEqual(treeArchParams(7, 3, 23.5), treeArchParams(7, 3, 23.5), 'same (seed, pid, wind) → same params');
+});
+
+test('r2: grown trunks lean downwind of the seed\u2019s global wind', () => {
+  // For strong-wind seeds, the trunk (longest downward wood path) tips
+  // downwind: top-of-trunk x minus base x has the wind's sign on average.
+  for (const seed of [7, 31]) {
+    const w = generateMaterialWorld(seed, 1);
+    const { grid, cols, rows } = w;
+    const wu = initialGlobalWind(seed).U;
+    assert.ok(wu > 10, `seed ${seed} has a strong eastward wind (${wu.toFixed(1)})`);
+    let sum = 0, n = 0;
+    for (const p of w.plants) {
+      if (p.wood < 30) continue;
+      const gid = p.id % 65536;
+      const dp = new Map(), px = new Map();
+      let best = 0, bestI = -1;
+      for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+        const i = y * cols + x;
+        if (grid.mat[i] !== MAT.WOOD || grid.grownId[i] !== gid) continue;
+        let bp = 0, bi = -1;
+        for (let dy = -1; dy <= 0; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= cols || ny < 0) continue;
+          const j = ny * cols + nx;
+          if (grid.mat[j] === MAT.WOOD && grid.grownId[j] === gid && (dp.get(j) || 0) > bp) { bp = dp.get(j); bi = j; }
+        }
+        dp.set(i, bp + 1); px.set(i, bi);
+        if (bp + 1 > best) { best = bp + 1; bestI = i; }
+      }
+      if (bestI < 0 || best < 15) continue;
+      let top = bestI;
+      while (px.get(top) !== -1 && px.get(top) !== undefined) top = px.get(top);
+      sum += (top % cols) - (bestI % cols); // + = tip east of base = downwind
+      n++;
+    }
+    assert.ok(n >= 5, `enough measurable trunks (n=${n})`);
+    assert.ok(sum / n > 0, `seed ${seed}: trunks lean downwind (mean tip shift ${(sum / n).toFixed(2)} cells east)`);
   }
 });
