@@ -540,38 +540,79 @@ function paintTrees(tctx, mw, G, seed, lumK, moonK) {
       ccy = ccy * 0.7 + (top.cy - 2) * 0.3;
       const R = Math.max(3.5, Math.max(bx1 - bx0 + 4, by1 - by0 + 4) * 0.5) * cellPx;
       const pxC = px((ccx + 0.5) * CELL_PX), pyC = py((ccy + 0.5) * CELL_PX);
-      // The crown: a DENSE irregular mass, not smoke. A near-solid dark core
-      // (interior shadow) first, then gradient volume, then a sun-struck top.
-      // Core ellipses are seeded per tree so adjacent crowns never match.
-      const coreK = [[0, 0.02, 0.62, 0.42], [-0.30, 0.12, 0.44, 0.34], [0.32, 0.10, 0.46, 0.32]];
-      for (const [ox, oy, rx, ry] of coreK) {
-        const jx = (h3(seed, gid, 6330 + (ox * 100 | 0)) - 0.5) * R * 0.24;
-        const jy = (h3(seed, gid, 6340 + (oy * 100 | 0)) - 0.5) * R * 0.24;
-        const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, 0.16), lumK, moonK);
-        tctx.fillStyle = `rgba(${lr},${lg},${lb},0.95)`;
+      const topX = px((top.cx + 0.5) * CELL_PX), topY = py((top.cy + 0.5) * CELL_PX);
+      // R2 canopy rework — "trees as real canopies". The old crown was
+      // translucent radial-gradient puffs + pale bokeh dots: soap-bubble
+      // foam. The new crown builds like a real canopy: branch limbs fan from
+      // the trunk top INTO the mass first, then an irregular dark interior
+      // (depth), then three depth layers of leaf stipple — small ROTATED
+      // leaf ellipses, never dots — dark-deep → mid → sunlit.
+      // --- branch limbs feeding the crown (foliage paints over them) ---
+      const barkC = gradeTreeRGB(barkRGBr3(seed, gid, t.dead, 0.30), lumK, moonK);
+      const nLimb = 5 + Math.floor(h3(seed, gid, 6350) * 3);
+      tctx.lineCap = 'round';
+      for (let li = 0; li < nLimb; li++) {
+        const hA = h3(seed, gid, 6351 + li);
+        const ang = -Math.PI / 2 + (hA - 0.5) * 2.3;      // fan upward/outward
+        const len = R * (0.45 + h3(seed, gid, 6360 + li) * 0.40);
+        const x0 = topX + (h3(seed, gid, 6370 + li) - 0.5) * R * 0.24;
+        const y0 = topY + R * 0.18;
+        const x1 = x0 + Math.cos(ang) * len, y1 = y0 + Math.sin(ang) * len;
+        const mx = x0 + Math.cos(ang) * len * 0.5 + (h3(seed, gid, 6380 + li) - 0.5) * R * 0.22;
+        const my = y0 + Math.sin(ang) * len * 0.5 + R * 0.10;
+        tctx.strokeStyle = `rgb(${barkC[0]},${barkC[1]},${barkC[2]})`;
+        tctx.lineWidth = Math.max(1.5, cellPx * 0.30);
+        tctx.beginPath(); tctx.moveTo(x0, y0); tctx.quadraticCurveTo(mx, my, x1, y1); tctx.stroke();
+      }
+      // --- interior shadow: irregular dark core, never a disc ---
+      for (let ci = 0; ci < 6; ci++) {
+        const h1 = h3(seed, gid, 6390 + ci), h2 = h3(seed, gid, 6400 + ci);
+        const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, 0.08 + h1 * 0.12), lumK, moonK);
+        tctx.fillStyle = `rgba(${lr},${lg},${lb},0.94)`;
         tctx.beginPath();
-        tctx.ellipse(pxC + ox * R + jx, pyC + oy * R + jy, R * rx, R * ry, ox * 0.6, 0, Math.PI * 2);
+        tctx.ellipse(pxC + (h1 - 0.5) * R * 1.1, pyC + (h2 - 0.5) * R * 0.9 + R * 0.14,
+          R * (0.34 + h1 * 0.30), R * (0.26 + h2 * 0.26), (h1 - 0.5) * 1.4, 0, Math.PI * 2);
         tctx.fill();
       }
-      const puffs = [
-        { dx: 0, dy: -0.10, r: 0.95, k: 0.34, a: 0.88 },
-        { dx: -0.20, dy: -0.32, r: 0.66, k: 0.52, a: 0.85 },
-        { dx: 0.22, dy: -0.28, r: 0.58, k: 0.48, a: 0.82 },
-        { dx: 0.38, dy: 0.08, r: 0.48, k: 0.30, a: 0.80, salt: 1 },
-        { dx: -0.40, dy: 0.06, r: 0.44, k: 0.32, a: 0.80, salt: 2 },
+      // --- foliage: three depth layers of leaf stipple ---
+      const leafLayers = [
+        { k: 0.16, n: 70, yOff: 0.10, spread: 0.98 },  // deep interior
+        { k: 0.32, n: 80, yOff: 0.02, spread: 0.90 },  // mid mass
+        { k: 0.50, n: 70, yOff: -0.12, spread: 0.74 }, // sunlit top
       ];
-      for (const pf of puffs) {
-        const jx = pf.salt != null ? (h3(seed, gid, 6310 + pf.salt) - 0.5) * R * 0.3 : 0;
-        const jy = pf.salt != null ? (h3(seed, gid, 6320 + pf.salt) - 0.5) * R * 0.3 : 0;
-        const pr = R * pf.r;
-        const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, pf.k), lumK, moonK);
-        const gx = pxC + pf.dx * R + jx, gy = pyC + pf.dy * R + jy;
-        const g = tctx.createRadialGradient(gx, gy, 0, gx, gy, pr);
-        g.addColorStop(0, `rgba(${lr},${lg},${lb},${pf.a.toFixed(3)})`);
-        g.addColorStop(0.7, `rgba(${lr},${lg},${lb},${(pf.a * 0.55).toFixed(3)})`);
-        g.addColorStop(1, `rgba(${lr},${lg},${lb},0)`);
-        tctx.fillStyle = g;
-        tctx.beginPath(); tctx.arc(gx, gy, pr, 0, Math.PI * 2); tctx.fill();
+      let leafSalt = 0;
+      for (const LL of leafLayers) {
+        for (let li = 0; li < LL.n; li++) {
+          leafSalt++;
+          const ex = h3(seed, gid, 6500 + leafSalt) * 2 - 1;
+          const ey = h3(seed, gid, 6600 + leafSalt) * 2 - 1;
+          const dd = ex * ex + ey * ey;
+          if (dd > 1) continue;
+          const edge = Math.sqrt(dd);
+          if (h3(seed, gid, 6700 + leafSalt) < edge * edge * 0.55) continue; // sparse rim
+          const lx = pxC + ex * R * LL.spread;
+          const ly = pyC + ey * R * 0.80 + LL.yOff * R;
+          const kk = LL.k + (h3(seed, gid, 6800 + leafSalt) - 0.5) * 0.22 - edge * 0.05;
+          const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, kk), lumK, moonK);
+          const llen = cellPx * (0.55 + h3(seed, gid, 6900 + leafSalt) * 0.80);
+          tctx.fillStyle = `rgba(${lr},${lg},${lb},0.95)`;
+          tctx.beginPath();
+          tctx.ellipse(lx, ly, llen, llen * 0.44, h3(seed, gid, 7000 + leafSalt) * Math.PI, 0, Math.PI * 2);
+          tctx.fill();
+        }
+      }
+      // --- sun-struck crown top: pale leaves where the top-left sun hits ---
+      for (let si = 0; si < 26; si++) {
+        const ex = h3(seed, gid, 7100 + si) * 2 - 1, ey = h3(seed, gid, 7200 + si) * 2 - 1;
+        if (ex * ex + ey * ey > 1) continue;
+        const lx = pxC + ex * R * 0.62 - R * 0.10;
+        const ly = pyC + ey * R * 0.50 - R * 0.30;
+        const [lr, lg, lb] = gradeTreeHSL(...r3SampleRamp(R3PAL.leaf, 0.55 + h3(seed, gid, 7300 + si) * 0.18), lumK, moonK);
+        const llen = cellPx * (0.5 + h3(seed, gid, 7400 + si) * 0.6);
+        tctx.fillStyle = `rgba(${lr},${lg},${lb},0.9)`;
+        tctx.beginPath();
+        tctx.ellipse(lx, ly, llen, llen * 0.44, h3(seed, gid, 7500 + si) * Math.PI, 0, Math.PI * 2);
+        tctx.fill();
       }
       for (const lf of t.leaves) claimed.add(key(lf.cx, lf.cy));
     }
@@ -2391,40 +2432,19 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
       if (h3(seed, cx * 7 + 1, cy) > 0.55) continue; // subset → masses merge (grade: 0.45→0.55, fewer puffs, clearer silhouettes)
       const sx = px(cx * CELL_PX + CELL_PX / 2), syy = py(cy * CELL_PX + CELL_PX / 2);
       if (sx < -60 || sx > W + 60 || syy < -60 || syy > H + 60) continue;
-      const pr = cellPx * (1.6 + h3(seed, cx, cy) * 1.4);
-      const lc = r3SampleRamp(R3PAL.leaf, 0.30 + h3(seed, cx * 3 + 1, cy) * 0.45);
-      const pg = pctx.createRadialGradient(sx, syy - pr * 0.25, 0, sx, syy, pr);
-      pg.addColorStop(0, hsla(lc[0], lc[1], lc[2] + 7, 0.62));
-      pg.addColorStop(0.6, hsla(lc[0], lc[1], lc[2], 0.42));
-      pg.addColorStop(1, hsla(lc[0], lc[1], Math.max(0, lc[2] - 9), 0));
-      pctx.fillStyle = pg;
-      pctx.beginPath(); pctx.arc(sx, syy, pr, 0, Math.PI * 2); pctx.fill();
-      // satellite puffs: internal texture so the mass isn't a flat blob
-      for (let st = 0; st < 2; st++) {
-        const ox = (h3(seed, cx * 13 + st, cy * 7) - 0.5) * pr * 1.1;
-        const oy = (h3(seed, cx * 7, cy * 13 + st) - 0.5) * pr * 0.9 - pr * 0.15;
-        const sr2 = pr * (0.42 + h3(seed, cx * 3 + st, cy * 11) * 0.25);
-        const dl2 = r3SampleRamp(R3PAL.leaf, 0.22 + h3(seed, cx * 5 + st, cy * 3) * 0.25);
-        const sg2 = pctx.createRadialGradient(sx + ox, syy + oy, 0, sx + ox, syy + oy, sr2);
-        sg2.addColorStop(0, hsla(dl2[0], dl2[1], dl2[2] + 4, 0.5));
-        sg2.addColorStop(1, hsla(dl2[0], dl2[1], dl2[2], 0));
-        pctx.fillStyle = sg2;
-        pctx.beginPath(); pctx.arc(sx + ox, syy + oy, sr2, 0, Math.PI * 2); pctx.fill();
-      }
-      // leaf clusters (grade 2026-10-04): small high-contrast dots inside the
-      // mass — darker cores read as interior shadow, lighter dots as lit leaf
-      // tips. First step toward real canopy structure, not the final word.
-      for (let lf = 0; lf < 4; lf++) {
-        const lx = sx + (h3(seed, cx * 17 + lf, cy * 5 + 1) - 0.5) * pr * 1.5;
-        const ly = syy + (h3(seed, cx * 5 + 1, cy * 17 + lf) - 0.5) * pr * 1.2;
-        const lr = pr * (0.16 + h3(seed, cx * 11 + lf, cy * 3) * 0.12);
-        const dl3 = r3SampleRamp(R3PAL.leaf, 0.30 + h3(seed, cx * 3 + lf, cy + 2) * 0.45);
-        const dl3l = Math.max(4, Math.min(90, dl3[2] + (lf % 2 === 0 ? -12 : 10)));
-        const lg3 = pctx.createRadialGradient(lx, ly, 0, lx, ly, lr);
-        lg3.addColorStop(0, hsla(dl3[0], dl3[1], dl3l, 0.55));
-        lg3.addColorStop(1, hsla(dl3[0], dl3[1], dl3l, 0));
-        pctx.fillStyle = lg3;
-        pctx.beginPath(); pctx.arc(lx, ly, lr, 0, Math.PI * 2); pctx.fill();
+      // R2 canopy rework: unclaimed leaves (sleeve foliage, stragglers) paint
+      // as a small cluster of leaf ellipses — never radial-gradient puffs or
+      // bokeh dots. Same stipple language as the crowns in paintTrees.
+      const nUL = 5 + Math.floor(h3(seed, cx * 7 + 3, cy) * 4);
+      for (let ul = 0; ul < nUL; ul++) {
+        const ux = sx + (h3(seed, cx * 17 + ul, cy * 5 + 1) - 0.5) * cellPx * 2.6;
+        const uy = syy + (h3(seed, cx * 5 + 1, cy * 17 + ul) - 0.5) * cellPx * 2.2;
+        const ulen = cellPx * (0.45 + h3(seed, cx * 11 + ul, cy * 3) * 0.65);
+        const ulc = r3SampleRamp(R3PAL.leaf, 0.22 + h3(seed, cx * 3 + ul, cy + 2) * 0.42);
+        pctx.fillStyle = hsla(ulc[0], ulc[1], ulc[2] + (ul % 2 === 0 ? -6 : 7), 0.9);
+        pctx.beginPath();
+        pctx.ellipse(ux, uy, ulen, ulen * 0.44, h3(seed, cx * 13 + ul, cy * 7) * Math.PI, 0, Math.PI * 2);
+        pctx.fill();
       }
     }
   }
@@ -2510,18 +2530,52 @@ function paintWorldCache(pctx, mw, view, G, W, H, pal, e, dayK) {
       const cx = Math.floor(wx / CELL_PX), cy = Math.floor(wy / CELL_PX);
       if (cx < 0 || cy < 0 || cx >= cols || cy >= rows) { shadow[o] = 1; skyK[o] = 1; continue; }
       const gi = cy * cols + cx, m = grid.mat[gi];
-      let occ = 0;
-      for (let k = 1; k <= 12; k++) {
-        const yy = cy - k;
-        if (yy < 0) break;
-        occ += occWeight(grid.mat[yy * cols + cx]);
+      // column occlusion, CONTINUOUS across columns (R2 skylight fix): the
+      // old code summed the single world column under the light cell, so the
+      // occlusion stepped discretely at every world-column boundary and read
+      // as venetian-blind stripes. Average the column sums of the world
+      // columns spanned by this light cell instead.
+      const span = Math.max(1, Math.round(LCELL / scale / CELL_PX));
+      const half = Math.min(2, Math.floor(span / 2));
+      let occ = 0, nocc = 0;
+      for (let co = -half; co <= half; co++) {
+        const ccx = cx + co;
+        if (ccx < 0 || ccx >= cols) continue;
+        let s = 0;
+        for (let k = 1; k <= 12; k++) {
+          const yy = cy - k;
+          if (yy < 0) break;
+          s += occWeight(grid.mat[yy * cols + ccx]);
+        }
+        occ += s; nocc++;
       }
+      occ /= Math.max(1, nocc);
       if (m === MAT.AIR && sky[gi]) {
         if (occ < 1) { shadow[o] = 1; skyK[o] = 1; }        // open sky: neutral
         else { shadow[o] = Math.max(0.33, 1 - 0.80 * occ / 12); skyK[o] = 0; } // shaft: graded
       } else {
         shadow[o] = Math.max(0.33, 1 - 0.80 * Math.min(1, occ / 12));
         skyK[o] = 0;
+      }
+    }
+  }
+  // R2 skylight fix: a wide HORIZONTAL smooth on the occlusion fields. The
+  // 3x3 blur below is too narrow to hide world-column steps at coarse zooms,
+  // so the light now falls off continuously instead of striping.
+  for (const field of [shadow, skyK]) {
+    const src = field.slice();
+    const W7 = [1, 2, 3, 4, 3, 2, 1]; // radius 3, binomial-ish
+    for (let j = 0; j < ch; j++) {
+      const row = j * cw;
+      for (let i = 0; i < cw; i++) {
+        let s = 0, w = 0;
+        for (let r = -3; r <= 3; r++) {
+          const ii = i + r;
+          if (ii < 0 || ii >= cw) continue;
+          const ww = W7[r + 3];
+          s += src[row + ii] * ww; w += ww;
+        }
+        field[row + i] = s / w;
       }
     }
   }
@@ -2707,9 +2761,11 @@ function buildLightGrid(dyn) {
       data[oo] = Math.min(255, r * 255);
       data[oo + 1] = Math.min(255, g * 255);
       data[oo + 2] = Math.min(255, b * 255);
-      // the sky band masks itself out: no destination-in resample needed,
-      // and the feathered skyK gives a soft edge for free
-      data[oo + 3] = sk > 0.5 ? 0 : 255;
+      // the sky band masks itself out: no destination-in resample needed.
+      // R2 skylight fix: the mask RAMPS instead of hard-stepping at sk=0.5 —
+      // the old binary threshold drew the sky band's edge as blocky
+      // 18px grid squares wherever open sky showed through.
+      data[oo + 3] = Math.round(clamp01((0.62 - sk) / 0.24) * 255);
     }
   }
   // static fire stamps (flicker is the per-frame additive glow)
