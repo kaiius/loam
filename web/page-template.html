@@ -1,0 +1,1371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Loam — a living world</title>
+<style>
+  :root {
+    --ink: rgba(232, 236, 232, 0.92);
+    --ink-dim: rgba(232, 236, 232, 0.55);
+    --glass: rgba(10, 13, 17, 0.62);
+    --glass-border: rgba(232, 236, 232, 0.14);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #07090c; }
+  body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--ink);
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+
+  .chrome {
+    position: fixed; z-index: 10;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  /* ---- canopy-paradigm chrome: one slim top bar (identity + status +
+         controls), camera cluster bottom-left, inspector right ---- */
+  #topbar {
+    top: 10px; left: 12px;
+    display: flex; align-items: center; gap: 7px;
+    padding: 8px 12px; font-size: 13px;
+    width: fit-content; max-width: calc(100vw - 24px);
+    flex-wrap: wrap;
+  }
+  #logo {
+    font-size: 14px; font-weight: 700;
+    letter-spacing: 0.22em; text-transform: uppercase;
+    white-space: nowrap;
+  }
+  #status {
+    font-size: 12px; color: var(--ink-dim); white-space: nowrap;
+  }
+  #status b { color: var(--ink); font-weight: 600; }
+  #topbar .spacer { width: 6px; }
+  #topbar button {
+    font: inherit; font-size: 14px; color: var(--ink);
+    background: rgba(232,236,232,0.07);
+    border: 1px solid var(--glass-border); border-radius: 9px;
+    padding: 5px 9px; cursor: pointer; white-space: nowrap;
+  }
+  #topbar button:hover { background: rgba(232,236,232,0.16); }
+  #topbar button.on { background: rgba(150, 200, 150, 0.18); border-color: rgba(150,200,150,0.45); }
+  #topbar button:disabled { opacity: 0.35; cursor: default; }
+  /* labeled buttons (canopy-sim paradigm): emoji + short text, not bare icons */
+  #topbar button .bl { font-size: 11px; margin-left: 5px; color: var(--ink-dim); font-weight: 600; }
+  #topbar button.on .bl { color: var(--ink); }
+  /* secondary controls: inline on desktop, overflow menu on the phone */
+  #moreWrap { display: flex; align-items: center; gap: 7px; }
+  #bMore { display: none; }
+  .seedlab { font-size: 10px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+  #speedSeg {
+    display: flex; gap: 2px; padding: 2px;
+    border: 1px solid var(--glass-border); border-radius: 11px;
+    background: rgba(232,236,232,0.04);
+  }
+  #speedSeg button {
+    border: none; background: transparent; border-radius: 8px;
+    padding: 4px 9px; font-size: 12px;
+  }
+  #speedSeg button:hover { background: rgba(232,236,232,0.14); }
+  #speedSeg button.on { background: rgba(150,200,150,0.25); }
+  #speedSeg #bPause { font-size: 13px; }
+  /* R6: the lit tier button IS the running speed — one tap each, no cycler,
+     no LED sharing between tiers, no silent resets (canopy-sim paradigm). */
+  /* the phone's persistent tier readout — all five tiers stay one tap away in ⋯ */
+  #speedSeg #tierChip {
+    display: none; font-size: 11px; font-weight: 700; color: var(--ink);
+    padding: 4px 8px; border: 1px solid var(--glass-border); border-radius: 8px;
+    background: rgba(232,236,232,0.07); cursor: pointer; white-space: nowrap;
+  }
+  .seedbox { display: flex; gap: 4px; align-items: center; }
+  #seed {
+    font: inherit; font-size: 12px; color: var(--ink);
+    background: rgba(232,236,232,0.07);
+    border: 1px solid var(--glass-border); border-radius: 9px;
+    padding: 5px 6px; width: 58px; text-align: center;
+  }
+  /* camera-state chip, bottom-right: the player always knows what the
+     camera is doing — following whom, or free. Tap toggles follow. */
+  #camstate {
+    right: 12px; bottom: 12px;
+    padding: 8px 14px; font-size: 12px; border-radius: 20px;
+    cursor: pointer; white-space: nowrap; max-width: 46vw;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  #camstate:hover { background: rgba(232,236,232,0.14); }
+  #camstate.free { color: var(--ink-dim); }
+  /* phone speed row: all five tiers reachable in one tap (lives in ⋯) */
+  #speedRow { display: none; gap: 4px; align-items: center; }
+  #speedRow button {
+    font: inherit; font-size: 11px; color: var(--ink);
+    background: rgba(232,236,232,0.07);
+    border: 1px solid var(--glass-border); border-radius: 7px;
+    padding: 5px 8px; cursor: pointer;
+  }
+  #speedRow button.on { background: rgba(150,200,150,0.25); }
+  /* camera cluster, bottom-left (canopy-sim wayfinding) */
+  #camctl {
+    left: 12px; bottom: 12px;
+    display: flex; gap: 6px; padding: 6px;
+  }
+  #camctl button {
+    width: 40px; height: 40px; border-radius: 12px;
+    border: 1px solid var(--glass-border);
+    background: rgba(232,236,232,0.07);
+    color: var(--ink); font: inherit; font-size: 18px; cursor: pointer;
+  }
+  #camctl button:hover { background: rgba(232,236,232,0.16); }
+  #camctl button:active { background: rgba(150,200,150,0.25); }
+  #note {
+    top: 14px; right: 14px; padding: 8px 12px; font-size: 11px;
+    color: var(--ink-dim); pointer-events: none; max-width: 240px; text-align: right;
+    display: none;
+  }
+  #hint {
+    left: 50%; bottom: 14px; transform: translateX(-50%);
+    padding: 7px 16px; font-size: 11px; color: var(--ink-dim);
+    pointer-events: none; transition: opacity 1.2s; white-space: nowrap;
+    border-radius: 20px;
+  }
+  /* ---- inspector panel (salvaged from canopy-sim's selection panel) ---- */
+  #panel {
+    top: 64px; right: 12px; width: 264px; max-height: calc(100vh - 110px);
+    overflow-y: auto; padding: 12px 14px; font-size: 12px;
+    display: none;
+  }
+  #panel.open { display: block; }
+  #panel .p-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  #panel .p-head h2 { font-size: 14px; font-weight: 600; flex: 1; }
+  #panel .p-head button {
+    font: inherit; font-size: 12px; color: var(--ink-dim);
+    background: none; border: none; cursor: pointer; padding: 2px 6px;
+  }
+  #panel .p-head button:hover { color: var(--ink); }
+  #panel .row { display: flex; justify-content: space-between; padding: 2px 0; color: var(--ink-dim); }
+  #panel .row b { color: var(--ink); font-weight: 600; }
+  #panel .bar-row { margin: 5px 0; }
+  #panel .bar-row .lbl { font-size: 11px; color: var(--ink-dim); margin-bottom: 2px; }
+  #panel .bar-track { height: 6px; border-radius: 3px; background: rgba(232,236,232,0.12); overflow: hidden; }
+  #panel .bar-fill { height: 100%; border-radius: 3px; }
+  /* R7: trend glyph on the bar label (▲/▼/·, title tooltip has the rate) */
+  #panel .bar-row .lbl .trend { opacity: .8; font-size: 10px; }
+  /* R7: arion's "changed since you last acted" line under the bars */
+  #panel .since-line { font-size: 11px; color: var(--ink-dim); margin: 6px 0 2px; line-height: 1.5; }
+  #panel .p-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  #panel .p-actions button {
+    font: inherit; font-size: 11px; color: var(--ink);
+    background: rgba(232,236,232,0.07);
+    border: 1px solid var(--glass-border); border-radius: 7px;
+    padding: 6px 10px; cursor: pointer;
+  }
+  #panel .p-actions button:hover { background: rgba(232,236,232,0.14); }
+  #panel .p-actions button.on { background: rgba(150,200,150,0.18); border-color: rgba(150,200,150,0.4); }
+  #panel .census-row {
+    display: block; width: 100%; text-align: left;
+    font: inherit; font-size: 12px; color: var(--ink);
+    background: rgba(232,236,232,0.05);
+    border: 1px solid var(--glass-border); border-radius: 7px;
+    padding: 8px 10px; margin: 6px 0; cursor: pointer;
+  }
+  #panel .census-row:hover { background: rgba(232,236,232,0.12); }
+  #panel .census-row .sub { font-size: 10px; color: var(--ink-dim); margin-top: 2px; }
+  /* creature card (R6, canopy-sim's way): swatch + badges + temperament */
+  #panel .swatch {
+    width: 22px; height: 22px; border-radius: 50%; flex: none;
+    border: 1px solid var(--glass-border);
+  }
+  #panel .badges { font-size: 11px; color: var(--ink-dim); margin: 1px 0 6px; }
+  #panel .doing { font-size: 12px; margin: 6px 0 2px; color: var(--ink); }
+  #panel .traits { font-size: 11px; color: var(--ink-dim); font-style: italic; margin: 4px 0; }
+  #panel .note { font-size: 10px; color: var(--ink-dim); margin-top: 8px; line-height: 1.5; }
+  @media (max-width: 640px) {
+    #logo { font-size: 12px; }
+    /* ONE ROW on the phone: no wrap, icons only, the rest in the ⋯ menu */
+    #topbar { flex-wrap: nowrap; gap: 4px; padding: 6px 6px; font-size: 11px; }
+    #topbar button { padding: 5px 6px; font-size: 13px; }
+    #topbar button .bl { display: none; }
+    #status { overflow: hidden; text-overflow: ellipsis; }
+    #moreWrap {
+      display: none;
+      position: absolute; top: calc(100% + 6px); right: 0;
+      flex-direction: column; align-items: stretch; gap: 6px;
+      background: var(--glass); border: 1px solid var(--glass-border);
+      border-radius: 10px; padding: 8px; min-width: 170px;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    }
+    #moreWrap.open { display: flex; }
+    #topbar #moreWrap.open .bl { display: inline; }
+    #moreWrap .seedbox { justify-content: space-between; }
+    #moreWrap #seed { width: 74px; }
+    #logo .wordmark { display: none; } /* 🟫 alone on the phone: room for the status */
+    #speedSeg .tierBtn { display: none; } /* desktop's five tiers hide; the ⋯ menu's speed row covers all five */
+    #speedSeg #tierChip { display: inline-block; font-size: 10px; padding: 4px 6px; } /* persistent tier readout on the phone */
+    #speedRow { display: flex; }
+    #status { font-size: 10px; } /* the doing word stays visible on the phone now (R6) */
+    #aliveWord { display: none; } /* "35 · playing" fits the phone row; "35 alive · playing" doesn't */
+    #bMore { display: inline-block; }
+    /* hint sits under the topbar on the phone — the bottom belongs to thumbs (camctl, camstate) */
+    #hint { display: block; white-space: normal; max-width: 92vw; text-align: center; top: 64px; bottom: auto; }
+    #panel { width: calc(100vw - 28px); top: 130px; }
+    #camstate { bottom: 66px; max-width: 60vw; } /* above the bottom chrome, clear of the panel */
+  }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+
+<div id="topbar" class="chrome">
+  <span id="logo">🟫<span class="wordmark"> Loam</span></span>
+  <span id="status" title="day & time of day · creatures alive · what the followed creature is doing right now"><span id="dayIcon">☀️</span> <b id="dayLabel">Day 1, dawn</b> · <b id="popLabel">–</b><span id="aliveWord"> alive</span><span id="statusLabel"></span></span>
+  <div id="speedSeg" title="simulation speed — every tier one tap, the lit one is running">
+    <button id="bPause" title="pause (space)">⏸</button>
+    <span id="tierChip" title="current speed — tap for all tiers">12/s</span>
+    <button class="tierBtn" data-sp="0" title="3 ticks/s">3/s</button>
+    <button class="tierBtn" data-sp="1" title="6 ticks/s">6/s</button>
+    <button class="tierBtn" data-sp="2" title="12 ticks/s">12/s</button>
+    <button class="tierBtn" data-sp="3" title="24 ticks/s">24/s</button>
+    <button class="tierBtn" data-sp="4" title="48 ticks/s">48/s</button>
+  </div>
+  <span id="moreWrap">
+    <button id="bStep" title="advance a single tick (.)">⏭<span class="bl">Step</span></button>
+    <button id="bView" title="world / instruments view — currently: world">🔬<span class="bl">Lab</span></button>
+    <button id="bFire" class="on" title="fire on / off — currently: on">🔥<span class="bl">Fire</span></button>
+    <button id="bTunnels" title="burrows: cave in realistically / stay permanent once dug — currently: cave-in">🕳️<span class="bl">Burrows</span></button>
+    <span id="speedRow"><span class="seedlab">speed</span><button data-sp="0">3</button><button data-sp="1">6</button><button data-sp="2">12</button><button data-sp="3">24</button><button data-sp="4">48</button></span>
+    <span class="seedbox">
+      <span class="seedlab">seed</span>
+      <input id="seed" type="number" value="7" title="world seed — type a number, then 🌱 grows a new world from it">
+      <button id="bNew" title="grow a new world from this seed">🌱<span class="bl">New</span></button>
+    </span>
+  </span>
+  <button id="bCensus" title="census — every living creature; click one to inspect it">🐾<span class="bl">Census</span></button>
+  <button id="bMore" title="more controls">⋯</button>
+</div>
+<div id="hint" class="chrome">tap a creature to meet it · double-click to pet · 🐾 census lists everyone · drag to look, pinch to zoom</div>
+<div id="note" class="chrome"></div>
+<div id="panel" class="chrome"></div>
+
+<div id="camctl" class="chrome">
+  <button id="bZoomIn" title="zoom in">＋</button>
+  <button id="bZoomOut" title="zoom out">－</button>
+  <button id="bNext" title="jump to the next creature">🐒</button>
+  <button id="bHome" title="recenter on the whole world">⌂</button>
+</div>
+<div id="camstate" class="chrome" title="what the camera is doing — tap to follow / release"></div>
+
+<script>
+/*__SIM_BUNDLE__*/
+</script>
+
+<script>
+(function () {
+  'use strict';
+  const canvas = document.getElementById('cv');
+  const ctx = canvas.getContext('2d');
+  const panel = document.getElementById('panel');
+  // cached chrome refs (never re-queried per frame)
+  const dayIconEl = document.getElementById('dayIcon');
+  const dayLabelEl = document.getElementById('dayLabel');
+  const popLabelEl = document.getElementById('popLabel');
+  const statusLabelEl = document.getElementById('statusLabel');
+  const camstateEl = document.getElementById('camstate');
+  let lastStatusTick = -1; // status text is only rewritten when the tick changes
+
+  // ---- sim lifetime -------------------------------------------------------
+  let sim = null, mw = null, founder = null;
+
+  // Tick pacing (live-watch rule): the sim advances on a fixed clock in
+  // TICKS PER SECOND, decoupled from the display frame rate. Default 12:
+  // calm enough that gait and breath read naturally, alive enough that the
+  // world feels awake. (The old ticks-per-frame pacing ran 120 t/s and made
+  // everything frantic — walk, gait, breath, blink all ran 10-20x hot.)
+  const SPEEDS = [3, 6, 12, 24, 48]; // ticks per second
+  const state = {
+    playing: true,
+    speedIdx: 2,
+    viewMode: 'world',    // 'world' | 'inspect'
+    fireOn: true,
+    tunnelsPermanent: false,
+    camX: 0, camY: 0, camInit: false,
+    userPanX: 0, userPanY: 0,
+    zoom: 1,
+    dead: false,
+    // selection + follow (salvaged from canopy-sim)
+    selected: null,       // {kind:'creature',id} | {kind:'cell',cx,cy} | {kind:'plant',id}
+    censusOpen: false,
+    followId: null,       // creature id the camera follows; null = free
+    panelTick: -1,
+    panelFor: null,       // R6: what the panel's DOM currently shows ('census' | 'creature:<id>' | ...) — rebuild only on change, update values in place
+    badgeTop: 24,         // canvas-px y where the canvas inspect panel may start (below the title badge)
+  };
+  // Render positions interpolate between the last two COMMITTED tick
+  // states. EYE ONLY — nothing computed from rx/ry ever feeds back into the
+  // sim (live-watch rule: the sim never sees the in-between; one world,
+  // one clock). Replaces the old exponential ease, which stacked with the
+  // spring-joint root spring and rubber-banded.
+  const renderPos = new Map(); // id -> {rx, ry} (interpolated, for the eye)
+  const prevPos = new Map();   // id -> {x, y} (previous committed tick state)
+  let tickAcc = 0;             // fractional ticks banked toward the next tick
+  let lastFrameT = 0;
+  // portraitFor() is pure in (creature, tick) — cache it per tick instead of
+  // re-evaluating per creature per frame (~2,000 evals/sec at 60fps/34 creatures).
+  let portraitTick = -1;
+  const portraitById = new Map();
+  function portraitCached(c) {
+    if (mw.tick !== portraitTick) { portraitById.clear(); portraitTick = mw.tick; }
+    let d = portraitById.get(c.id);
+    if (!d) { d = sim.portraitFor(c, mw.tick); portraitById.set(c.id, d); }
+    return d;
+  }
+  // Follow zoom: the camera closes in on a followed creature (creatures read
+  // at 5–9% of screen height at 1×; 1.7× puts the founder at ~14%). User zoom
+  // multiplies on top; free view stays at the user's zoom.
+  const FOLLOW_ZOOM = 1.7;
+  function followedCreature() {
+    const c = state.followId != null ? creatureById(state.followId) : null;
+    return c && c.alive ? c : null;
+  }
+  function effZoom() { return state.zoom * (followedCreature() ? FOLLOW_ZOOM : 1); }
+  // transient toast on #note (the persistent showNote keeps its own path)
+  let toastTimer = 0;
+  function showToast(t) {
+    const n = document.getElementById('note');
+    n.textContent = t; n.style.display = 'block';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { n.style.display = 'none'; }, 2600);
+  }
+  // pinch navigation state
+  const pointers = new Map();
+  let pinchState = null;
+  // Motion-QA probe (dev only, inert unless activated): when
+  // window.__loamProbe.rec is true, each render() appends one frame
+  // {tick, pos:[[id,rx,ry],...]} of render positions. Eye-only data.
+  window.__loamProbe = { rec: false, frames: [] };
+
+  const MAT_NAMES = ['air','soil','sand','clay','rock','wood','deadwood','leaf','water','bedrock'];
+  // (R6: the deficit-framed DRIVE_META bars are gone — the creature card
+  // shows satiation-framed bars instead. Kept out, not commented.)
+
+  // ---- humanized status line ------------------------------------------------
+  // The sim's day is 2400 ticks (tick 0 = midnight). The status reads
+  // "Day N, midday" the way the old canopy-sim panel did — never "tick 702".
+  const TICKS_PER_DAY = 2400;
+  function todName(t) {
+    if (t >= 0.18 && t < 0.32) return 'dawn';
+    if (t >= 0.32 && t < 0.43) return 'morning';
+    if (t >= 0.43 && t < 0.57) return 'midday';
+    if (t >= 0.57 && t < 0.68) return 'afternoon';
+    if (t >= 0.68 && t < 0.80) return 'dusk';
+    return 'night';
+  }
+  // the trailing activity word, in plain language (was: raw action ids)
+  const ACTION_WORDS = {
+    seekFood: 'foraging', eat: 'eating', sleep: 'sleeping', play: 'playing',
+    approach: 'approaching', flee: 'fleeing', mate: 'courting', wander: 'wandering',
+    seekHome: 'heading home', climb: 'climbing', groom: 'grooming', jump: 'leaping',
+    vocal: 'calling', glide: 'gliding', brachiate: 'swinging', swim: 'swimming',
+    dive: 'diving', drink: 'drinking', bask: 'basking', dig: 'digging',
+    grasp: 'grabbing', carry: 'carrying', drop: 'dropping', bite: 'biting',
+    display: 'displaying',
+  };
+  function humanAction(name) { return ACTION_WORDS[name] || name; }
+
+  function founderRngSeed(seed) { return ((seed * 31 + 7) >>> 0); }
+
+  function livingCreatures() {
+    return mw ? mw.m2creatures.filter((c) => c.alive) : [];
+  }
+  function creatureById(id) {
+    return mw ? (mw.m2creatures.find((c) => c.id === id) || null) : null;
+  }
+
+  function newWorld(seed) {
+    sim = createSim();
+    mw = sim.createMaterialWorld(seed, 1);
+    // the page used to boot at tick 600 = dawn, the dimmest readable light.
+    // Day 1, midday: the world's first impression is at its kindest.
+    mw.tick = 1080;
+    mw.fireOn = state.fireOn;
+    mw.permanentTunnels = state.tunnelsPermanent;
+    founder = sim.addFounder(mw, sim.createRng(founderRngSeed(seed)));
+    // M3: stock the world — grazers, prey base, hunters, cleaners.
+    // Own deterministic sub-stream so the founder's world never changes.
+    sim.seedEcology(mw, sim.createRng(((seed * 31 + 0x9e37) >>> 0) || 1));
+    // a new world is a new painting: drop the terrain cache (regrowing the
+    // same seed lands the camera in the same place, so the old world's
+    // paint would otherwise keep blitting for ~8s) and reset the zoom —
+    // growing a new world at 4× drops you into a keyhole.
+    if (sim.clearTerrainCache) sim.clearTerrainCache();
+    state.zoom = 1;
+    state.dead = false;
+    state.camInit = false;
+    state.userPanX = 0; state.userPanY = 0;
+    state.selected = null;
+    state.censusOpen = false;
+    state.followId = founder ? founder.id : null;
+    state.followAnchor = null;
+    state.panelTick = -1;
+    state.dpr = Math.min(2, window.devicePixelRatio || 1);
+    renderPos.clear();
+    prevPos.clear();
+    portraitById.clear(); portraitTick = -1;
+    lastCensusSig = null;
+    tickAcc = 0; lastFrameT = 0;
+    hideNote(); closePanel();
+    seedInput.value = seed; // the seed box always shows the live world's seed
+    lastStatusTick = -1;
+    syncToggles();
+    syncSpeed();
+    render(true);
+  }
+
+  // ---- canvas sizing (HiDPI) ----------------------------------------------
+  function fit() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    state.dpr = dpr; // the terrain cache paints DPR-capped from this
+    const w = Math.floor(window.innerWidth * dpr);
+    const h = Math.floor(window.innerHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+      refreshBadgeTop();
+    }
+    ctx.w = canvas.width; ctx.h = canvas.height;
+  }
+  // The topbar's height is read once per resize and cached — the old code
+  // read title.offsetHeight inside fit(), a forced synchronous layout on
+  // every single frame.
+  function refreshBadgeTop() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const tb = document.getElementById('topbar');
+    // Keep the canvas-drawn inspect panel clear of the HTML top bar:
+    // bar top (10px) + bar height + 12px margin, in canvas px.
+    state.badgeTop = tb ? Math.ceil((tb.offsetTop + tb.offsetHeight + 12) * dpr) : 24;
+  }
+  window.addEventListener('resize', () => { fit(); refreshBadgeTop(); render(true); });
+
+  // ---- camera ---------------------------------------------------------------
+  const VIEW_H = 560;
+  function viewRect() {
+    const W = ctx.w, H = ctx.h;
+    const z = effZoom();
+    const vh = VIEW_H / z;
+    const vw = vh * (W / H);
+    const fc = followedCreature();
+    let fx = state.camX, fy = state.camY;
+    if (fc) {
+      const rp = renderPos.get(fc.id);
+      // the followed creature rides at ~60% down the screen (was: a fixed
+      // -120 world-px, which left ~40% empty sky on the phone)
+      const px = rp ? rp.rx : fc.x, py = (rp ? rp.ry : fc.y) - vh * 0.10;
+      // Follow deadzone (jank profile 2026-10-04): the founder's every step
+      // moved the view ~0.8px/frame, so the terrain cache missed ~99% even
+      // after key quantization — real panning, not shimmer. The camera now
+      // anchors until the founder leaves a deadzone around the anchor, so
+      // the common case (founder wandering near view center) is a perfectly
+      // still camera and a hitting cache; real roams still glide smoothly.
+      const DZ = 60; // world-px
+      const a = state.followAnchor;
+      if (!a || a.id !== fc.id || Math.hypot(px - a.x, py - a.y) > DZ) {
+        state.followAnchor = { id: fc.id, x: px, y: py };
+      }
+      fx = state.followAnchor.x; fy = state.followAnchor.y;
+    } else {
+      state.followAnchor = null;
+    }
+    if (!state.camInit) { state.camX = fx; state.camY = fy; state.camInit = true; }
+    // deadband (jank profile 2026-10-04): the exponential lerp is asymptotic —
+    // it never reaches the target, so the view drifted sub-pixel every frame,
+    // churning the terrain cache (99.4% miss → full repaint per frame) and
+    // shimmering the scene. Snap when close; the smooth lerp stays for real moves.
+    const cdx = fx - state.camX, cdy = fy - state.camY;
+    if (Math.abs(cdx) < 0.5 && Math.abs(cdy) < 0.5) { state.camX = fx; state.camY = fy; }
+    else { state.camX += cdx * 0.08; state.camY += cdy * 0.08; }
+    const worldW = mw.cols * sim.CELL_PX, worldH = mw.rows * sim.CELL_PX;
+    let x = state.camX + state.userPanX - vw / 2;
+    let y = state.camY + state.userPanY - vh / 2;
+    x = Math.max(0, Math.min(Math.max(0, worldW - vw), x));
+    y = Math.max(0, Math.min(Math.max(0, worldH - vh), y));
+    return { x, y, w: vw, h: vh };
+  }
+  function screenToWorld(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const v = viewRect();
+    const sx = (clientX - rect.left) / rect.width;
+    const sy = (clientY - rect.top) / rect.height;
+    return { x: v.x + sx * v.w, y: v.y + sy * v.h };
+  }
+
+  // ---- picking (click a creature, a plant, or the ground) ---------------------
+  function hitTest(x, y) {
+    // creatures first
+    let best = null, bestD = 48;
+    for (const c of livingCreatures()) {
+      const d = Math.hypot(c.x - x, c.y - y);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    if (best) return { kind: 'creature', id: best.id };
+    // plants: seed position in world px
+    if (mw.plants) {
+      for (const p of mw.plants) {
+        const px = (p.seedX + 0.5) * sim.CELL_PX, py = p.seedY * sim.CELL_PX;
+        if (Math.hypot(px - x, py - y) < 44) return { kind: 'plant', id: p.id };
+      }
+    }
+    // ground: the cell itself
+    const cx = Math.floor(x / sim.CELL_PX), cy = Math.floor(y / sim.CELL_PX);
+    return { kind: 'cell', cx, cy };
+  }
+
+  // ---- species identity -------------------------------------------------------
+  // Eleven species ship; the player used to meet "🐒 creature #id". Names are
+  // stable per creature id (hash-indexed pools, never reshuffled); the
+  // display name + blurb are honest to each species' sim role.
+  function creatureName(c) {
+    return (sim.creatureName ? sim.creatureName(c) : null) || ('creature #' + c.id);
+  }
+  function speciesLabel(c) {
+    return sim.speciesLabel ? sim.speciesLabel(c.species) : { display: c.species || '?', blurb: '' };
+  }
+  // the Lab/inspect view instruments the player's selection first —
+  // the creature they just tapped — falling back to the followed creature,
+  // then the founder. (It used to always show the founder.)
+  function labCreature() {
+    const s = state.selected;
+    if (s && s.kind === 'creature') {
+      const c = creatureById(s.id);
+      if (c && c.alive) return c;
+    }
+    return followedCreature() || (founder && founder.alive ? founder : null);
+  }
+
+  function creatureOpt(c) {
+    // render position: eased for the eye; the sim only ever sees c.x/c.y.
+    let rx = c.x, ry = c.y;
+    const rp = renderPos.get(c.id);
+    if (rp) { rx = rp.rx; ry = rp.ry; }
+    return {
+      x: rx, y: ry, facing: c.facing, species: c.species,
+      // the LIVE portrait: pose, gait, affect face, blink — a pure function
+      // of (creature, tick), cached per tick (not re-evaluated per frame).
+      drawing: portraitCached(c),
+      chem: c.chem, body: c.body, minerals: c.minerals,
+      lastReward: c.lastReward, carried: c.carried, piled: c.piled,
+    };
+  }
+
+  // ---- creature card helpers (R6, canopy-sim's way) -------------------------------
+  const MOOD_EMOJI = { content: '😊', calm: '😐', hungry: '🍽️', sleepy: '😴', afraid: '😨', unwell: '🤒' };
+  function moodOf(c) {
+    const d = sim.driveLevels(c.chem);
+    const comfort = (c.chem && c.chem.comfort) || 0;
+    if (d.fear > 0.5) return 'afraid';
+    if (d.illness > 0.4 || d.injury > 0.4) return 'unwell';
+    if (d.hunger > 0.7) return 'hungry';
+    if (d.tiredness > 0.7) return 'sleepy';
+    if (comfort > 0.7) return 'content';
+    return 'calm';
+  }
+  function temperament(c) {
+    const p = c.pheno || {};
+    const t = [];
+    if (p.curiosity > 0.66) t.push('curious');
+    else if (p.curiosity < 0.34) t.push('cautious');
+    if (p.sociability > 0.66) t.push('social');
+    else if (p.sociability < 0.34) t.push('solitary');
+    if (p.boldness > 0.66) t.push('bold');
+    else if (p.boldness < 0.34) t.push('timid');
+    return t.length ? t.join(' · ') : 'even-tempered';
+  }
+  function doingText(c) {
+    // the courtship display reads as "courting <name>" — the minimal real thing
+    if (c._courtingT > 0 && c._courting != null) {
+      const p = creatureById(c._courting);
+      return 'courting ' + (p ? creatureName(p) : 'a tanglekin');
+    }
+    return humanAction(sim.lastActionName(c));
+  }
+
+  // ---- inspector panel ----------------------------------------------------------
+  function esc(s) { return String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch])); }
+  function bar(label, v, color, trend) {
+    const pct = Math.max(0, Math.min(100, v * 100)).toFixed(0);
+    // R7: optional trend instrument — [glyph, tooltip] from trendGlyph().
+    const t = trend
+      ? ` <span class="trend" title="${esc(trend[1])}">${trend[0]}</span>` : '';
+    return `<div class="bar-row"><div class="lbl">${label}${t}</div>` +
+      `<div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div></div>`;
+  }
+
+  // R7: creature-card trend instruments (UI only — the sim is never touched).
+  // arion's point, stated explicitly because it's the whole reason this
+  // exists: a bar that shows velocity also shows NON-RESPONSE. When the
+  // player pets or nudges a creature, a row of flat · glyphs in the ticks
+  // after is a visible failed self-test — exercised-ness you can see. A
+  // rising ▲ after the same act is the response made legible. That ties back
+  // to the sterile-mate find: an action that does nothing shows nothing
+  // moving, and that silence is itself the readout. The derivative, not
+  // telemetry (cassini's decay-velocity + musefelipe's Now:/Soon: pairing,
+  // compressed to one glyph per bar).
+  const barHist = new Map(); // creature id → { hist:[{tick, vals:[5]}], act:{tick, vals:[5], kind} | null }
+  const BAR_HIST_MAX = 12;   // samples kept per creature (a short ring)
+  const BAR_HIST_IDS = 64;   // creature ids tracked before the oldest is evicted
+  const TREND_WINDOW = 100;  // velocity is scaled per this many ticks
+  const TREND_FLAT = 0.005;  // |v| below this per 100 ticks renders · (flat band)
+
+  // The five satiation-framed values, computed once per update and shared by
+  // the bars, the trend sampler, and the act snapshot below.
+  function barValues(c) {
+    const drives = sim.driveLevels(c.chem);
+    const health = (c.chem && Number.isFinite(c.chem.health)) ? c.chem.health
+      : 1 - Math.max(drives.illness || 0, drives.injury || 0);
+    return [1 - (drives.hunger || 0), 1 - (drives.thirst || 0),
+            1 - (drives.tiredness || 0), health, c.minerals || 0];
+  }
+
+  function barHistEntry(c) {
+    let e = barHist.get(c.id);
+    if (!e) {
+      if (barHist.size >= BAR_HIST_IDS) barHist.delete(barHist.keys().next().value); // oldest out
+      e = { hist: [], act: null };
+      barHist.set(c.id, e);
+    }
+    return e;
+  }
+
+  function recordBarSample(c, vals) {
+    const e = barHistEntry(c);
+    const last = e.hist[e.hist.length - 1];
+    if (last && last.tick === mw.tick) { last.vals = vals; return; } // one sample per tick
+    e.hist.push({ tick: mw.tick, vals });
+    if (e.hist.length > BAR_HIST_MAX) e.hist.shift();
+  }
+
+  // Velocity of bar i over the sample window: Δvalue/Δticks, per 100 ticks.
+  // Single sample or no tick movement ⇒ · (divide-by-zero safe).
+  function trendGlyph(c, i) {
+    const e = barHist.get(c.id);
+    if (!e || e.hist.length < 2) return ['·', 'not enough history yet — flat'];
+    const a = e.hist[0], b = e.hist[e.hist.length - 1];
+    const dt = b.tick - a.tick;
+    if (!(dt > 0)) return ['·', 'not enough history yet — flat'];
+    const v = (b.vals[i] - a.vals[i]) / dt * TREND_WINDOW;
+    const s = v > 0 ? '+' : '';
+    const rate = `${s}${v.toFixed(3)} per 100 ticks`;
+    if (v >= TREND_FLAT) return ['▲', 'rising — ' + rate];
+    if (v <= -TREND_FLAT) return ['▼', 'falling — ' + rate];
+    return ['·', 'flat — ' + rate];
+  }
+
+  // arion's third line: "changed since you last acted". Snapshotted at
+  // pet/nudge time in the delegated handler below; the deltas are the
+  // act-relative readout. Same self-test instrument as the trend glyphs: if
+  // the act did nothing, every bar sits at · and the player sees the
+  // non-response.
+  const SINCE_NAMES = ['satiation', 'hydration', 'energy', 'health', 'minerals'];
+  function snapshotAct(c, kind) {
+    const e = barHistEntry(c);
+    e.act = { tick: mw.tick, vals: barValues(c), kind };
+  }
+  function renderSinceLine(c, vals) {
+    const el = document.getElementById('pv-since');
+    if (!el) return;
+    const e = barHist.get(c.id);
+    const act = e && e.act;
+    if (!act) {
+      el.textContent = `you haven't acted on ${creatureName(c)} yet — 💕 Pet to see a response.`;
+      return;
+    }
+    const ago = Math.max(0, mw.tick - act.tick);
+    const parts = SINCE_NAMES.map((n, i) => {
+      const d = vals[i] - act.vals[i];
+      if (Math.abs(d) < TREND_FLAT) return `${n} ·`;
+      return `${n} ${d > 0 ? '▲' : '▼'}${Math.abs(d).toFixed(2)}`;
+    });
+    const emoji = act.kind === 'pet' ? '💕' : '👉';
+    el.textContent = `since ${emoji} ${ago} tick${ago === 1 ? '' : 's'} ago: ${parts.join(' · ')}`;
+  }
+  function openPanel() { panel.classList.add('open'); }
+  function closePanel() {
+    panel.classList.remove('open');
+    panel.innerHTML = '';
+    state.selected = null;
+    state.censusOpen = false;
+    state.panelFor = null;
+    document.getElementById('bCensus').classList.remove('on');
+  }
+
+  // R6: the panel never rebinds — one delegated click handler on the
+  // container (bound once below), and live values update in place via
+  // textContent instead of innerHTML rebuilds. The old 400ms wholesale
+  // rebuild could detach a button mid-tap and swallow it.
+  panel.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-act]');
+    if (!t) return;
+    const act = t.dataset.act;
+    if (act === 'close') { closePanel(); return; }
+    if (act === 'census') {
+      const c = creatureById(Number(t.dataset.cid));
+      if (c) {
+        state.selected = { kind: 'creature', id: c.id };
+        state.censusOpen = false;
+        state.followId = c.id; // selection ⇒ follow, same as a tap
+        state.userPanX = 0; state.userPanY = 0;
+        lastStatusTick = -1;
+        refreshPanel(true);
+      }
+      return;
+    }
+    const s = state.selected;
+    const c = (s && s.kind === 'creature') ? creatureById(s.id) : null;
+    if (!c || !c.alive) return;
+    if (act === 'follow') {
+      if (state.followId === c.id) {
+        state.followId = null;
+        showToast('free view — drag to look');
+      } else {
+        state.followId = c.id;
+        state.userPanX = 0; state.userPanY = 0;
+        showToast(`following ${creatureName(c)}`);
+      }
+      lastStatusTick = -1;
+      refreshPanel(true);
+    } else if (act === 'pet') {
+      // 💕 Pet: a real small delta through the affect/chem system —
+      // comfort rises in the next chemistry tick, then decays back.
+      if (sim.petMaterialCreature(c)) {
+        snapshotAct(c, 'pet'); // R7: freeze the bars — "changed since you last acted" starts here
+        showToast(`💕 You pet ${creatureName(c)}.`);
+      }
+    } else if (act === 'nudge') {
+      // 👉 Nudge: a tiny hop-shove the physics resolves — the world moves it.
+      if (sim.nudgeMaterialCreature(c)) {
+        snapshotAct(c, 'nudge'); // R7: freeze the bars
+        showToast(`👉 You nudge ${creatureName(c)}.`);
+      }
+    }
+  });
+
+  function buildCreaturePanel(c) {
+    const sp = speciesLabel(c);
+    const hue = (c.pheno && Number.isFinite(c.pheno.hueDeg)) ? c.pheno.hueDeg.toFixed(0) : 140;
+    panel.innerHTML =
+      `<div class="p-head"><span class="swatch" style="background:hsl(${hue},58%,60%)"></span>` +
+      `<h2>${esc(creatureName(c))}</h2><button data-act="close" title="close">✕</button></div>` +
+      `<div class="badges"><span id="pv-badges"></span></div>` +
+      `<div class="note" style="margin-top:0"><b style="color:var(--ink)">${esc(sp.display)}</b>` +
+      (sp.blurb ? ` — ${esc(sp.blurb)}` : '') + `</div>` +
+      `<div class="doing">Now: <i id="pv-doing"></i></div>` +
+      `<div class="traits" id="pv-traits"></div>` +
+      `<div id="pv-bars"></div>` +
+      `<div class="since-line" id="pv-since"></div>` + // R7: "changed since you last acted"
+      `<div class="p-actions">` +
+      `<button data-act="pet" title="a little comfort, through the real chemistry">💕 Pet</button>` +
+      `<button data-act="nudge" title="a gentle shove">👉 Nudge</button>` +
+      `<button data-act="follow" id="pv-follow" title="toggle camera follow"></button>` +
+      `</div>` +
+      `<div class="note">drives are live — they move as the chemistry ticks. ` +
+      `learning is endogenous: drive reduction is the only reward.</div>`;
+    state.panelFor = 'creature:' + c.id;
+  }
+
+  function updateCreaturePanel(c) {
+    const mood = moodOf(c);
+    document.getElementById('pv-badges').textContent = `${c.stage || '—'} · ${MOOD_EMOJI[mood] || ''} ${mood}`;
+    document.getElementById('pv-doing').textContent = doingText(c);
+    document.getElementById('pv-traits').textContent = temperament(c);
+    // satiation-framed bars (canopy-sim's way): what the creature HAS, not
+    // what it lacks. Bar nodes are divs (never interactive), so rewriting
+    // them can't swallow a tap; the buttons above are stable DOM.
+    // R7: each bar carries a trend instrument — ▲/▼/· on the label with the
+    // numeric rate in the title tooltip. A row of flat · after a pet/nudge
+    // is the self-test failing visibly: non-response, made legible.
+    const vals = barValues(c);
+    recordBarSample(c, vals); // one sample per tick into the page-scope ring
+    document.getElementById('pv-bars').innerHTML =
+      bar('🍽️ Satiation', vals[0], '#e8a13c', trendGlyph(c, 0)) +
+      bar('💧 Hydration', vals[1], '#5fb4e8', trendGlyph(c, 1)) +
+      bar('⚡ Energy', vals[2], '#7ccf5f', trendGlyph(c, 2)) +
+      bar('🏥 Health', vals[3], '#e85c5c', trendGlyph(c, 3)) +
+      bar('⛏️ minerals', vals[4], '#c9a86a', trendGlyph(c, 4));
+    renderSinceLine(c, vals); // R7: "changed since you last acted"
+    const fbtn = document.getElementById('pv-follow');
+    const following = state.followId === c.id;
+    fbtn.textContent = following ? '📍 following ✓' : '📍 follow';
+    fbtn.classList.toggle('on', following);
+  }
+
+  function renderCreaturePanel(c) {
+    if (state.panelFor !== 'creature:' + c.id) buildCreaturePanel(c);
+    updateCreaturePanel(c);
+  }
+
+  function renderCellPanel(cx, cy) {
+    const g = mw.grid;
+    let html = `<div class="p-head"><h2>🟫 cell ${cx},${cy}</h2><button data-act="close">✕</button></div>`;
+    if (cx < 0 || cx >= g.cols || cy < 0 || cy >= g.rows) {
+      html += `<div class="note">outside the world.</div>`;
+    } else {
+      const i = cy * g.cols + cx;
+      const mat = g.mat[i];
+      const name = MAT_NAMES[mat] || ('mat#' + mat);
+      const props = sim.MAT_PROPS ? sim.MAT_PROPS[mat] : null;
+      html += `<div class="row"><span>material</span><b>${esc(name)}</b></div>`;
+      html += bar('💧 moisture', g.moist[i] || 0, '#5fb4e8');
+      if ((g.water[i] || 0) > 0.01) html += bar('🌊 water', g.water[i], '#3f8fd1');
+      if ((g.heat[i] || 0) > 0.01) html += bar('🔥 heat', Math.min(1, g.heat[i]), '#e8643c');
+      if ((g.food[i] || 0) > 0.01) html += bar('🍎 food', Math.min(1, g.food[i]), '#e8a13c');
+      html += `<div class="row"><span>dug</span><b>${g.dug[i] ? 'yes' : 'no'}</b></div>`;
+      html += `<div class="row"><span>rooted</span><b>${g.root[i] ? 'yes' : 'no'}</b></div>`;
+      if (props && props.flammability) {
+        html += `<div class="row"><span>flammability</span><b>${props.flammability}</b></div>`;
+      }
+    }
+    html += `<div class="note">every cell of Loam is material — click anywhere.</div>`;
+    panel.innerHTML = html;
+    state.panelFor = 'cell:' + cx + ',' + cy;
+  }
+
+  function renderPlantPanel(p) {
+    let html = `<div class="p-head"><h2>🌱 plant #${p.id}</h2><button data-act="close">✕</button></div>`;
+    html += `<div class="row"><span>grown in</span><b>${p.iters} iterations</b></div>`;
+    html += `<div class="row"><span>fruiting</span><b>${p.fruiting ? 'yes' : 'no'}</b></div>`;
+    if (p.fruiting) html += `<div class="row"><span>fruit</span><b>${p.fruit || 0}</b></div>`;
+    html += `<div class="row"><span>seed cell</span><b>${p.seedX},${p.seedY}</b></div>`;
+    html += `<div class="note">L-system flora, grown from soil — no floating orphans.</div>`;
+    panel.innerHTML = html;
+    state.panelFor = 'plant:' + p.id;
+  }
+
+  let lastCensusSig = null; // census re-renders only when the roster changes
+  function renderCensusPanel(force) {
+    const cs = livingCreatures();
+    const sig = cs.map((c) => c.id).join(',');
+    if (!force && sig === lastCensusSig && panel.classList.contains('open')) return;
+    lastCensusSig = sig;
+    let html = `<div class="p-head"><h2>🐾 census</h2><button data-act="close">✕</button></div>`;
+    html += `<div class="note" style="margin-top:0">${cs.length} living creature${cs.length === 1 ? '' : 's'}</div>`;
+    for (const c of cs) {
+      const drives = sim.driveLevels(c.chem);
+      const sp = speciesLabel(c);
+      html += `<button class="census-row" data-act="census" data-cid="${c.id}">` +
+        `<div><b>${esc(creatureName(c))}</b> · ${esc(sp.display)}</div>` +
+        `<div class="sub">${esc(c.stage || '')} · ${esc(doingText(c))} · hunger ${(drives.hunger || 0).toFixed(2)}</div>` +
+        `</button>`;
+    }
+    panel.innerHTML = html;
+    state.panelFor = 'census';
+  }
+
+  let lastPanelWall = 0; // panel values refresh at ~2.5Hz, not 12–48Hz
+  function refreshPanel(force) {
+    if (!state.selected && !state.censusOpen) return;
+    const nowMs = performance.now();
+    if (!force && nowMs - lastPanelWall < 400) return;
+    if (!force && mw.tick === state.panelTick) return;
+    lastPanelWall = nowMs;
+    state.panelTick = mw.tick;
+    openPanel();
+    if (state.censusOpen) { renderCensusPanel(force); return; }
+    const s = state.selected;
+    if (!s) return;
+    if (s.kind === 'creature') {
+      const c = creatureById(s.id);
+      if (!c) { closePanel(); return; }
+      renderCreaturePanel(c);
+    } else if (s.kind === 'cell') {
+      renderCellPanel(s.cx, s.cy);
+    } else if (s.kind === 'plant') {
+      const p = (mw.plants || []).find((pp) => pp.id === s.id);
+      if (!p) { closePanel(); return; }
+      renderPlantPanel(p);
+    }
+    document.getElementById('bCensus').classList.toggle('on', state.censusOpen);
+  }
+
+  // ---- render ---------------------------------------------------------------------
+  function render(force) {
+    if (!mw) return;
+    fit();
+    // interpolate render positions between the two committed tick states:
+    // alpha is the fraction of the way to the next tick, eased along the path
+    const alpha = Math.min(1, Math.max(0, tickAcc));
+    const e = alpha * alpha * (3 - 2 * alpha); // smoothstep
+    for (const c of mw.m2creatures) {
+      let rp = renderPos.get(c.id);
+      if (!rp) { rp = { rx: c.x, ry: c.y }; renderPos.set(c.id, rp); }
+      const p = prevPos.get(c.id);
+      const sx = p ? p.x : c.x, sy = p ? p.y : c.y;
+      rp.rx = sx + (c.x - sx) * e;
+      rp.ry = sy + (c.y - sy) * e;
+    }
+    // motion-QA probe: record one frame of render positions when activated
+    const probe = window.__loamProbe;
+    if (probe && probe.rec && probe.frames.length < 1500) {
+      const pos = [];
+      for (const [id, r] of renderPos) pos.push([id, Math.round(r.rx * 10) / 10, Math.round(r.ry * 10) / 10]);
+      probe.frames.push({ tick: mw.tick, t: performance.now(), pos });
+    }
+    const view = viewRect();
+    const lc = labCreature();
+    if (state.viewMode === 'inspect' && lc) {
+      const ccx = Math.floor(lc.x / sim.CELL_PX);
+      const ccy = Math.floor(lc.y / sim.CELL_PX);
+      sim.renderInspectView(ctx, mw, view, {
+        creature: creatureOpt(lc),
+        actionName: sim.lastActionName(lc),
+        inspect: { cx: ccx, cy: ccy },
+        panelTop: state.badgeTop, // canvas inspect panel starts below the title badge
+      });
+    } else {
+      // M3 refresh: the world view draws the whole living roster — founder,
+      // grazers, prey, hunters, cleaners — not just the founder.
+      // opts.now/opts.dpr feed the terrain cache: wall-clock repaint cadence
+      // (decoupled from the tick counter) and DPR-capped paint canvases.
+      sim.renderWorldView(ctx, mw, view,
+        { creatures: livingCreatures().map(creatureOpt), now: performance.now(), dpr: state.dpr || 1 });
+    }
+    // status readouts are rewritten only when the tick actually changes —
+    // the old code wrote tickLabel.textContent on every frame.
+    if (force || mw.tick !== lastStatusTick) {
+      lastStatusTick = mw.tick;
+      const day = Math.floor(mw.tick / TICKS_PER_DAY) + 1;
+      const tod = (mw.tick % TICKS_PER_DAY) / TICKS_PER_DAY;
+      dayIconEl.textContent = (tod >= 0.20 && tod < 0.78) ? '☀️' : '🌙';
+      dayLabelEl.textContent = `Day ${day}, ${todName(tod)}`;
+      popLabelEl.textContent = livingCreatures().length;
+      const fc = followedCreature();
+      if (fc) {
+        statusLabelEl.textContent = ' · ' + doingText(fc);
+      } else if (state.dead || !founder || !founder.alive) {
+        statusLabelEl.textContent = ' · the founder has died';
+      } else {
+        statusLabelEl.textContent = '';
+      }
+      // the camera-state chip: the player always knows what the camera is
+      // doing — following whom, or free. (The old 📍 #id chip hid on phones.)
+      const fc2 = followedCreature();
+      if (fc2) {
+        camstateEl.textContent = `📍 ${creatureName(fc2)} · ${speciesLabel(fc2).display}`;
+        camstateEl.classList.remove('free');
+        camstateEl.title = `following ${creatureName(fc2)} (${speciesLabel(fc2).display}) — tap to release`;
+      } else {
+        camstateEl.textContent = 'free view';
+        camstateEl.classList.add('free');
+        camstateEl.title = 'camera is free — tap to follow the founder';
+      }
+    }
+    refreshPanel(false);
+  }
+
+  function doTick() {
+    // snapshot the committed state BEFORE ticking, for the interpolator
+    for (const c of mw.m2creatures) {
+      let p = prevPos.get(c.id);
+      if (!p) { p = { x: c.x, y: c.y }; prevPos.set(c.id, p); }
+      else { p.x = c.x; p.y = c.y; }
+    }
+    sim.tickMaterialWorldM2(mw);
+    if (founder && founder.alive === false && !state.dead) {
+      state.dead = true;
+      showNote('the founder has died — the world continues without them');
+    }
+    // prune position maps for the departed (bounded memory)
+    if (renderPos.size > mw.m2creatures.length + 40) {
+      const alive = new Set(mw.m2creatures.map((c) => c.id));
+      for (const id of [...renderPos.keys()]) {
+        if (!alive.has(id)) { renderPos.delete(id); prevPos.delete(id); }
+      }
+    }
+  }
+  // ---- main loop ------------------------------------------------------------
+  // Fixed-clock sim advance (live-watch: a few ticks per second, steady).
+  // Wall time decides WHEN ticks happen, never WHAT they compute — the sim
+  // stays deterministic per tick. Render interpolation (in render()) draws
+  // the in-between; the sim never sees it.
+  //
+  // TIME-SLICED (2026-10-05): the old loop ran up to 12 synchronous ticks
+  // per rAF (~120ms of uninterrupted JS — seven dropped frames), so input
+  // starved behind the sim. Now each frame gets a wall-clock budget for
+  // sim work; leftover ticks carry to the next frames instead of bursting,
+  // and banked time is clamped so a hitch can never grow the next burst.
+  const SIM_BUDGET_MS = 8;
+  const MAX_TICKS_PER_FRAME = 10;
+  function frame(t) {
+    requestAnimationFrame(frame);
+    if (!mw) return;
+    if (state.playing) {
+      // rAF hands us the frame timestamp; fall back to the clock (the
+      // headless UI harness drives frames with synthetic timestamps).
+      const now = (typeof t === 'number') ? t : performance.now();
+      const dt = Math.min(100, Math.max(0, now - (lastFrameT || now)));
+      lastFrameT = now;
+      const tps = SPEEDS[state.speedIdx];
+      tickAcc += (dt / 1000) * tps;
+      if (tickAcc > tps * 1.5) tickAcc = tps * 1.5; // shed backlog, never spiral
+      let n = 0;
+      const t0 = performance.now();
+      while (tickAcc >= 1 && n < MAX_TICKS_PER_FRAME &&
+             (performance.now() - t0) < SIM_BUDGET_MS) {
+        doTick(); tickAcc -= 1; n++;
+      }
+      render();
+    }
+  }
+
+  // ---- controls ---------------------------------------------------------------
+  const bPause = document.getElementById('bPause');
+  const tierChip = document.getElementById('tierChip');
+  const bStep = document.getElementById('bStep');
+  const bView = document.getElementById('bView');
+  const bFire = document.getElementById('bFire');
+  const bTunnels = document.getElementById('bTunnels');
+  const bCensus = document.getElementById('bCensus');
+  const bZoomIn = document.getElementById('bZoomIn');
+  const bZoomOut = document.getElementById('bZoomOut');
+  const bNext = document.getElementById('bNext');
+  const bHome = document.getElementById('bHome');
+  const bMore = document.getElementById('bMore');
+  const moreWrap = document.getElementById('moreWrap');
+  const seedInput = document.getElementById('seed');
+
+  function setPlaying(p) {
+    state.playing = p;
+    bStep.disabled = p;
+    syncSpeed();
+  }
+  function setSpeed(idx) {
+    state.speedIdx = ((idx % SPEEDS.length) + SPEEDS.length) % SPEEDS.length;
+    syncSpeed();
+  }
+  // speed control (R6, canopy-sim paradigm): every tier is one tap and the
+  // lit button IS the running speed — no cycler, no hidden menu, no LED
+  // sharing between tiers, no silent resets. The tier buttons also resume:
+  // the tier IS the play button.
+  function syncSpeed() {
+    bPause.classList.toggle('on', !state.playing);
+    document.querySelectorAll('#speedSeg .tierBtn').forEach((b) => {
+      b.classList.toggle('on', state.playing && Number(b.dataset.sp) === state.speedIdx);
+    });
+    // the phone's persistent tier readout — paused state reads at a glance too
+    tierChip.textContent = (state.playing ? '' : '⏸ ') + SPEEDS[state.speedIdx] + '/s';
+    document.querySelectorAll('#speedRow button').forEach((b) => {
+      b.classList.toggle('on', Number(b.dataset.sp) === state.speedIdx);
+    });
+  }
+  function syncView() {
+    const inspect = state.viewMode === 'inspect';
+    bView.innerHTML = (inspect ? '🌍' : '🔬') + `<span class="bl">${inspect ? 'World' : 'Lab'}</span>`;
+    bView.title = 'world / instruments view — currently: ' +
+      (inspect ? 'inspect (this creature)' : 'world');
+    bView.classList.toggle('on', inspect);
+  }
+  function syncToggles() {
+    bFire.classList.toggle('on', state.fireOn);
+    bFire.title = 'fire on / off — currently: ' + (state.fireOn ? 'on' : 'off');
+    bTunnels.classList.toggle('on', state.tunnelsPermanent);
+    bTunnels.title = 'burrows: cave in realistically / stay permanent once dug — currently: ' +
+      (state.tunnelsPermanent ? 'permanent' : 'cave-in');
+  }
+  bPause.onclick = () => setPlaying(false);
+  // every tier one tap; tapping a tier also resumes (the tier IS the play button)
+  document.querySelectorAll('#speedSeg .tierBtn').forEach((b) => {
+    b.onclick = () => { setSpeed(Number(b.dataset.sp)); setPlaying(true); };
+  });
+  // the phone's tier chip opens ⋯, where all five tiers live with the active one lit
+  tierChip.onclick = () => { if (!moreWrap.classList.contains('open')) bMore.click(); };
+  bStep.onclick = () => {
+    if (state.playing) return;
+    doTick();
+    tickAcc = 1; // show the stepped-to state, not the in-between
+    render(true);
+  };
+  bView.onclick = () => {
+    state.viewMode = state.viewMode === 'world' ? 'inspect' : 'world';
+    syncView();
+    render(true);
+  };
+  bFire.onclick = () => {
+    state.fireOn = !state.fireOn;
+    mw.fireOn = state.fireOn;
+    syncToggles();
+  };
+  bTunnels.onclick = () => {
+    state.tunnelsPermanent = !state.tunnelsPermanent;
+    mw.permanentTunnels = state.tunnelsPermanent;
+    syncToggles();
+  };
+  bCensus.onclick = () => {
+    if (state.censusOpen) { closePanel(); return; }
+    state.selected = null;
+    state.censusOpen = true;
+    state.panelTick = -1;
+    refreshPanel(true);
+  };
+  bZoomIn.onclick = () => { state.zoom = Math.min(4, state.zoom * 1.25); if (!state.playing) render(true); };
+  bZoomOut.onclick = () => { state.zoom = Math.max(0.5, state.zoom / 1.25); if (!state.playing) render(true); };
+  // 🐒 jump to the next creature — cycles the whole living roster, selecting
+  // and following each (canopy-sim wayfinding).
+  bNext.onclick = () => {
+    const cs = livingCreatures();
+    if (!cs.length) return;
+    let i = cs.findIndex((c) => c.id === state.followId);
+    i = (i + 1) % cs.length;
+    const c = cs[i];
+    state.selected = { kind: 'creature', id: c.id };
+    state.censusOpen = false;
+    state.followId = c.id;
+    state.userPanX = 0; state.userPanY = 0;
+    lastStatusTick = -1; state.panelTick = -1;
+    refreshPanel(true);
+    if (!state.playing) render(true);
+  };
+  bHome.onclick = () => {
+    // ⌂ is the WORLD, not the followed creature — a lost free camera gets
+    // one-tap recovery (canopy-sim wayfinding).
+    state.userPanX = 0; state.userPanY = 0;
+    state.followId = null;
+    const worldW = mw.cols * sim.CELL_PX;
+    const midCol = Math.max(0, Math.min(mw.cols - 1, Math.floor(mw.cols / 2)));
+    state.camX = worldW / 2;
+    state.camY = (mw.surf ? mw.surf[midCol] || 0 : 0) * sim.CELL_PX;
+    state.camInit = true;
+    lastStatusTick = -1;
+    showToast('world view');
+    if (!state.playing) render(true);
+  };
+  // phone overflow menu: ⋯ holds the lesser-used controls in one row's space.
+  // Tapping any item inside it closes the menu (it used to stay open).
+  bMore.onclick = (e) => { e.stopPropagation(); moreWrap.classList.toggle('open'); };
+  moreWrap.addEventListener('click', (e) => {
+    if (e.target.closest('button')) moreWrap.classList.remove('open');
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (moreWrap.classList.contains('open') &&
+        !moreWrap.contains(e.target) && e.target !== bMore) {
+      moreWrap.classList.remove('open');
+    }
+  });
+  // phone speed row: all five tiers in one tap
+  document.querySelectorAll('#speedRow button').forEach((b) => {
+    b.onclick = () => { setSpeed(Number(b.dataset.sp)); setPlaying(true); };
+  });
+  // camera-state chip: tap toggles follow. Following → release to free view;
+  // free → follow the selected creature, else the founder.
+  document.getElementById('camstate').onclick = () => {
+    const fc = followedCreature();
+    if (fc) {
+      state.followId = null;
+      showToast('free view — drag to look');
+    } else {
+      const s = state.selected;
+      const target = (s && s.kind === 'creature' ? creatureById(s.id) : null) ||
+        (founder && founder.alive ? founder : null);
+      if (target) {
+        state.followId = target.id;
+        state.userPanX = 0; state.userPanY = 0;
+        state.camInit = false;
+        showToast(`following ${creatureName(target)}`);
+      }
+    }
+    lastStatusTick = -1;
+    if (!state.playing) render(true);
+  };
+  document.getElementById('bNew').onclick = () => {
+    const s = parseInt(seedInput.value, 10);
+    newWorld(Number.isFinite(s) ? s : 7);
+  };
+  seedInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('bNew').click();
+    e.stopPropagation();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.target === seedInput) return;
+    if (e.code === 'Space') { e.preventDefault(); setPlaying(!state.playing); }
+    if (e.key === '.') bStep.onclick();
+    // keyboard navigation: arrows pan (manual — breaks follow), +/- zoom
+    const panK = 80 / effZoom();
+    let naved = false;
+    if (e.key === 'ArrowLeft') { state.userPanX -= panK; naved = true; }
+    else if (e.key === 'ArrowRight') { state.userPanX += panK; naved = true; }
+    else if (e.key === 'ArrowUp') { state.userPanY -= panK; naved = true; }
+    else if (e.key === 'ArrowDown') { state.userPanY += panK; naved = true; }
+    else if (e.key === '+' || e.key === '=') { state.zoom = Math.min(4, state.zoom * 1.2); renderIfPaused(); }
+    else if (e.key === '-' || e.key === '_') { state.zoom = Math.max(0.5, state.zoom / 1.2); renderIfPaused(); }
+    if (naved) { e.preventDefault(); breakFollow(); renderIfPaused(); }
+  });
+
+  // ---- pointer: tap to select, drag to pan (breaks follow), wheel to zoom,
+  //           two-finger pinch to zoom + pan ---------------------------------
+  // Navigation rules, stated once: the camera goes where the gesture says,
+  // immediately, paused or playing. Manual pan always breaks follow (the
+  // chip + a toast say so); zoom never does. Pinch is the phone's zoom.
+  let pdown = null;
+  function renderIfPaused() { if (!state.playing) render(true); }
+  // world px per client px: view height over the CSS height (canvas px / dpr)
+  function panScale() { return (VIEW_H / effZoom()) * (state.dpr || 1) / ctx.h; }
+  function breakFollow() {
+    if (state.followId != null) {
+      state.followId = null;
+      lastStatusTick = -1;
+      showToast('free view — drag to look');
+    }
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      pinchState = {
+        d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+        mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, panMoved: false,
+      };
+      pdown = null; // the second finger cancels the tap/drag
+    } else if (pointers.size === 1) {
+      pdown = { x: e.clientX, y: e.clientY, moved: false };
+    }
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!mw) return;
+    const p = pointers.get(e.pointerId);
+    if (p) { p.x = e.clientX; p.y = e.clientY; }
+    if (pointers.size === 2 && pinchState) {
+      const [a, b] = [...pointers.values()];
+      const d = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      // pinch zoom, centered on the midpoint
+      const before = screenToWorld(mx, my);
+      state.zoom = Math.max(0.5, Math.min(4, state.zoom * d / pinchState.d));
+      // midpoint pan (this is manual navigation — it breaks follow)
+      const wscale = panScale();
+      const mdx = mx - pinchState.mx, mdy = my - pinchState.my;
+      if (Math.hypot(mdx, mdy) > 2) pinchState.panMoved = true;
+      state.userPanX -= mdx * wscale;
+      state.userPanY -= mdy * wscale;
+      if (pinchState.panMoved) breakFollow();
+      const after = screenToWorld(mx, my);
+      state.userPanX += (before.x - after.x);
+      state.userPanY += (before.y - after.y);
+      pinchState = { d, mx, my, panMoved: pinchState.panMoved };
+      renderIfPaused();
+      return;
+    }
+    if (!pdown) return;
+    const dx = e.clientX - pdown.x, dy = e.clientY - pdown.y;
+    if (!pdown.moved && Math.hypot(dx, dy) > 6) pdown.moved = true;
+    if (pdown.moved) {
+      const scale = panScale();
+      state.userPanX -= dx * scale;
+      state.userPanY -= dy * scale;
+      pdown.x = e.clientX; pdown.y = e.clientY;
+      // manual pan breaks follow (canopy-sim wayfinding rule)
+      breakFollow();
+      renderIfPaused();
+    }
+  });
+  canvas.addEventListener('pointerup', (e) => {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinchState = null;
+    if (!pdown || !mw) {
+      pdown = null;
+      // pinch just ended with one finger still down: let it keep dragging
+      // (moved=true so lifting it doesn't fire a tap-select)
+      if (pointers.size === 1 && mw) {
+        const rem = [...pointers.values()][0];
+        pdown = { x: rem.x, y: rem.y, moved: true };
+      }
+      return;
+    }
+    const wasClick = !pdown.moved;
+    pdown = null;
+    if (!wasClick) return;
+    const wpt = screenToWorld(e.clientX, e.clientY);
+    const hit = hitTest(wpt.x, wpt.y);
+    if (hit.kind === 'creature') {
+      state.selected = { kind: 'creature', id: hit.id };
+      state.censusOpen = false;
+      // selection ⇒ follow (canopy-sim wayfinding): the camera goes where
+      // the tap went, immediately — panel and camera can never disagree.
+      // Manual pan still breaks follow.
+      state.followId = hit.id;
+      state.userPanX = 0; state.userPanY = 0;
+      lastStatusTick = -1; // the camera-state chip may have changed
+    } else if (hit.kind === 'plant') {
+      state.selected = { kind: 'plant', id: hit.id };
+      state.censusOpen = false;
+    } else {
+      state.selected = { kind: 'cell', cx: hit.cx, cy: hit.cy };
+      state.censusOpen = false;
+    }
+    state.panelTick = -1;
+    refreshPanel(true);
+  });
+  canvas.addEventListener('pointercancel', (e) => {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinchState = null;
+    pdown = null;
+  });
+  canvas.addEventListener('dblclick', (e) => {
+    if (!mw) return;
+    const wpt = screenToWorld(e.clientX, e.clientY);
+    const hit = hitTest(wpt.x, wpt.y);
+    if (hit.kind === 'creature') {
+      // double-click a creature = pet + toast (canopy-sim's gesture) — one
+      // meaningful touch with feedback, through the real chemistry.
+      const c = creatureById(hit.id);
+      if (c && sim.petMaterialCreature(c)) showToast(`💕 You pet ${creatureName(c)}.`);
+    } else if (hit.kind === 'cell') {
+      // double-click empty ground recenters the world — and closes the cell
+      // panel the first click opened, so the two gestures stop disagreeing.
+      closePanel();
+      document.getElementById('bHome').click();
+    }
+  });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (!mw) return;
+    // zoom centered on the cursor (canopy-sim wayfinding)
+    const before = screenToWorld(e.clientX, e.clientY);
+    state.zoom = Math.max(0.5, Math.min(4, state.zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+    const after = screenToWorld(e.clientX, e.clientY);
+    state.userPanX += (before.x - after.x);
+    state.userPanY += (before.y - after.y);
+    renderIfPaused();
+  }, { passive: false });
+
+  function showNote(t) {
+    const n = document.getElementById('note');
+    n.textContent = t; n.style.display = 'block';
+  }
+  function hideNote() {
+    const n = document.getElementById('note');
+    n.style.display = 'none';
+  }
+
+  // the hint line stays up (canopy-sim's way) — a returning player who
+  // missed the first seconds still gets the gestures re-taught.
+
+  // ---- go ---------------------------------------------------------------------
+  fit();
+  newWorld(7);
+  requestAnimationFrame(frame);
+
+  // Test/verification hook: exposes live sim state for headless checks.
+  // Read-only window into the running world; the page never reads it back.
+  window.__loam = {
+    get mw() { return mw; },
+    get founder() { return founder; },
+    get state() { return state; },
+    get sim() { return sim; },
+    screenToWorld,
+    hitTest,
+  };
+})();
+</script>
+</body>
+</html>

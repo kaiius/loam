@@ -34,15 +34,17 @@ history of seed flips.
 
 ## Run the world in your browser
 
-The playable artifact is built from `src/` via the page template:
+The playable artifact builds entirely from this repo — no local paths:
 
 ```bash
-cd ~/workspace/loam-artifact   # build machine path; see BUILD_QUEUE.md
-python3 bundle.py > sim-bundle.js
+git clone https://github.com/kaiius/loam.git
+cd loam
+python3 web/bundle.py > web/sim-bundle.js
+python3 web/build-page.py
 ```
 
-then open `loam.html`. Every release ships the exact source zip alongside the
-commit hash — the zip is the artifact's provenance, the repo is its home.
+then open `web/loam.html`. Every release ships the exact source zip alongside
+the commit hash — the zip is the artifact's provenance, the repo is its home.
 
 ## Design rules (standing)
 
