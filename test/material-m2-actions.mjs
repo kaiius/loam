@@ -109,12 +109,13 @@ test('probe: GEOPHAGY restores minerals from soil when deficient', () => {
   c.grounded = true;
   c.minerals = 0.2; // deficient
   const g = mw.grid;
-  const tx = Math.floor((c.x + 20) / CELL_PX), ty = Math.floor((c.y - 30) / CELL_PX);
-  g.mat[ty * g.cols + tx] = MAT.SOIL;
+  // R4: geophagy eats the ground underfoot — soil below the feet.
+  const fx = Math.floor(c.x / CELL_PX), fy = Math.floor((c.y + 1) / CELL_PX);
+  g.mat[fy * g.cols + fx] = MAT.SOIL;
   const m0 = c.minerals;
   executeAction(mw, c, IDX('geophagy'), gatherMaterialSenses(mw, c, { others: [] }), {});
   assert.ok(c.minerals > m0, `minerals rose: ${m0} → ${c.minerals}`);
-  assert.equal(g.mat[ty * g.cols + tx], MAT.AIR, 'the eaten soil cell is gone');
+  assert.equal(g.mat[fy * g.cols + fx], MAT.SOIL, 'a mouthful, not excavation — the cell stays');
 });
 
 test('probe: GEOPHAGY does nothing when minerals are fine', () => {
@@ -123,10 +124,24 @@ test('probe: GEOPHAGY does nothing when minerals are fine', () => {
   c.grounded = true;
   c.minerals = 0.9; // replete
   const g = mw.grid;
-  const tx = Math.floor((c.x + 20) / CELL_PX), ty = Math.floor((c.y - 30) / CELL_PX);
-  g.mat[ty * g.cols + tx] = MAT.SOIL;
+  const fx = Math.floor(c.x / CELL_PX), fy = Math.floor((c.y + 1) / CELL_PX);
+  g.mat[fy * g.cols + fx] = MAT.SOIL;
+  const m0 = c.minerals;
   executeAction(mw, c, IDX('geophagy'), gatherMaterialSenses(mw, c, { others: [] }), {});
-  assert.equal(g.mat[ty * g.cols + tx], MAT.SOIL, 'no needless earth-eating');
+  assert.equal(c.minerals, m0, 'no needless earth-eating when replete');
+});
+
+test('probe: GEOPHAGY fails honestly with no soil below (e.g. on a branch)', () => {
+  const mw = microWorld();
+  const c = spawnAt2(mw, 300, 200);
+  c.grounded = false;
+  c.minerals = 0.2; // deficient
+  const g = mw.grid;
+  const fx = Math.floor(c.x / CELL_PX), fy = Math.floor((c.y + 1) / CELL_PX);
+  g.mat[fy * g.cols + fx] = MAT.AIR; // nothing to eat underfoot
+  const m0 = c.minerals;
+  executeAction(mw, c, IDX('geophagy'), gatherMaterialSenses(mw, c, { others: [] }), {});
+  assert.equal(c.minerals, m0, 'no soil below: no minerals gained');
 });
 
 test('r2: GEOPHAGY pays more on nutrient-rich soil (rotted matter enriches)', () => {
@@ -136,9 +151,9 @@ test('r2: GEOPHAGY pays more on nutrient-rich soil (rotted matter enriches)', ()
     c.grounded = true;
     c.minerals = 0.2; // deficient
     const g = mw.grid;
-    const tx = Math.floor((c.x + 20) / CELL_PX), ty = Math.floor((c.y - 30) / CELL_PX);
-    g.mat[ty * g.cols + tx] = MAT.SOIL;
-    g.nutrient[ty * g.cols + tx] = nutrient;
+    const fx = Math.floor(c.x / CELL_PX), fy = Math.floor((c.y + 1) / CELL_PX);
+    g.mat[fy * g.cols + fx] = MAT.SOIL;
+    g.nutrient[fy * g.cols + fx] = nutrient;
     const m0 = c.minerals;
     executeAction(mw, c, IDX('geophagy'), gatherMaterialSenses(mw, c, { others: [] }), {});
     return c.minerals - m0;

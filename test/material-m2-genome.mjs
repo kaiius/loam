@@ -92,7 +92,7 @@ test('m2: M2 instinct genes target the new actions', () => {
     assert.ok(acts.includes(a), `action ${a} has an M2 gene`);
   }
   for (const g of M2_GENES) {
-    assert.ok(g.sense >= 0 && g.sense <= 45, `${g.key} sense in range`);
+    assert.ok(g.sense >= 0 && g.sense <= 46, `${g.key} sense in range`);
   }
   const d = m2PhenoDefaults();
   for (const g of M2_GENES) assert.equal(d[g.key], g.founder, `${g.key} default`);

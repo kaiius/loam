@@ -16,8 +16,8 @@ function founderPheno(seed = 7) {
   return { ...phenotype(randomGenome(createRng(seed), {})), ...m2PhenoDefaults() };
 }
 
-test('m2: brain I/O dims — 47 in, 33 out', () => {
-  assert.equal(N_IN, 47, 'N_IN = 46 senses + bias');
+test('m2: brain I/O dims — 48 in, 33 out', () => {
+  assert.equal(N_IN, 48, 'N_IN = 47 senses + bias');
   assert.equal(ACTIONS.length, 33, '30 ported + pile + instPile + geophagy');
   assert.equal(ACTIONS[30], 'pile');
   assert.equal(ACTIONS[31], 'instPile');
@@ -28,14 +28,15 @@ test('m2: brain I/O dims — 47 in, 33 out', () => {
   assert.equal(ACTIONS[0], 'seekFood');
 });
 
-test('m2: senseVector47 is 47 long with the material senses appended', () => {
-  const s = { hunger: 0.5, digAhead: 0.8, soilBelow: 0.9, enclosed: 0.25 };
+test('m2: senseVector47 is 48 long with the material senses appended', () => {
+  const s = { hunger: 0.5, digAhead: 0.8, soilBelow: 0.9, enclosed: 0.25, mineral: 0.6 };
   const v = senseVector47(s);
-  assert.equal(v.length, 47);
+  assert.equal(v.length, 48);
   assert.equal(v[43], 0.8, 'sense 43 digAhead');
   assert.equal(v[44], 0.9, 'sense 44 soilBelow');
   assert.equal(v[45], 0.25, 'sense 45 enclosed');
-  assert.equal(v[46], 1, 'bias');
+  assert.equal(v[46], 0.6, 'sense 46 mineral deficit');
+  assert.equal(v[47], 1, 'bias');
   assert.equal(v[0], 0.5, 'sense 0 hunger');
 });
 

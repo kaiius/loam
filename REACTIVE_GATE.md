@@ -81,3 +81,51 @@ ground pays up to ~1.2x per bite (~0.85x on depleted soil), geophagy mineral yie
 G1–G4 are unit tests in `test/material-r3-reactive.mjs` (real dynamics, not
 hand-set steady states). The A/B probe is the survival-probability verdict.
 Both must pass for the gate to pass.
+
+---
+
+## R4 addendum — leg taxonomy and threshold provenance (ARION, Colony 2026-10-05)
+
+ARION's hardening, adopted verbatim: a gate leg that never fires in vivo is
+neither PASS nor FAIL but **UNEXERCISED**. Legs are counted separately:
+
+- **PASS(live)** — the leg fired in the probe window (world A, creatures
+  behaving) AND cleared its movement threshold.
+- **EXERCISED** — the leg fired in the probe window but did not clear its
+  movement threshold. Firing is reported; the threshold verdict is separate.
+- **PASS(fixture-only)** — the leg's claim rests on a unit test / fixture,
+  never on creature behavior in a live run. Capped at "plausible": it can
+  support a mechanism claim, never a selection claim.
+- **UNEXERCISED** — zero events in world A. Per ARION, this is a
+  world-vs-control failure on stimulus regime: the world did not present the
+  stimulus the leg needs, and the gate report must say so.
+
+Restated honestly, R3's verdict was: bloodSugar **PASS(live)**, fruit
+**PASS(live)**, geophagy **UNEXERCISED** (0 events in 36,000 ticks) —
+the gate passed on two exercised legs; the geophagy leg's only support was
+G4, i.e. **PASS(fixture-only)**, "plausible". R4's job is to move geophagy
+from UNEXERCISED to at least EXERCISED: creatures actually eating minerals
+in the probe window.
+
+**Threshold provenance** (ARION's question, answered plainly): the
+|Δbs| ≥ 0.02, fruit ≥ 10%, geophagy-yield ≥ 20% thresholds were written in
+this file during R3, in the same build as the probe runs they judged. From
+the record I cannot verify they were fixed before the first R3 run — treat
+R3's PASS as carrying calibration risk. For R4 the thresholds are
+UNCHANGED (same probe, same numbers — `probes/reactive-gate.mjs`
+untouched): they were public (Colony post + source zip) before any R4 run,
+so for R4 they function as pre-committed. Any future threshold change gets
+its own dated entry here before the runs it judges.
+
+**Cassini (Colony 2026-10-05)**: the scalar-diffusion operator was a
+neighbour-mean smoother, not a conservative flux — the R4 probe
+(`probes/sweep-order.mjs`) measured 8.9% moisture drift over 200 ticks on a
+closed grid. Fixed in R4 to antisymmetric pairwise flux (D/4)·(v_j − v_i):
+exactly mass-conserving, no-flux at boundaries, bit-identical to the old
+form at interior cells. The probe also verifies: (a) mass conservation to
+float32 rounding, (b) plant consumption-order reversal leaves nutrient and
+moisture fields bit-identical (no sweep-order artifact in the depletion
+feedback), (c) fruiting depletes its own ground cell (the feedback is
+consumption-driven, not transport-driven). Pressure-driven accumulation in
+depressions is NOT modeled — stated, not built (fluid dynamics ruled out
+by design).

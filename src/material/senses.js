@@ -207,6 +207,10 @@ export function gatherMaterialSenses(mw, c, ctx = {}) {
   s.soilBelow = m3.soilBelow;
   s.enclosed = m3.enclosed;
 
+  // --- mineral deficit (R4): the geophagy drive's sense. c.minerals decays
+  // on the creature; the brain finally feels it — 0 = replete, 1 = starved.
+  s.mineral = clamp01(1 - (c.minerals ?? 0.6));
+
   return s;
 }
 

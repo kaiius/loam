@@ -11,10 +11,14 @@
 // M2 genes arrives with reproduction in M3. The brain's wiring loop reads
 // `gene.founder` when the phenotype lacks the key (see material/brain.js).
 //
-// Sense indices referenced: 0 hunger, 6 foodDist, 33 heldWeight, 45 enclosed.
+// Sense indices referenced: 0 hunger, 6 foodDist, 33 heldWeight, 45 enclosed,
+// 46 mineral (R4).
 // (2026-10-03 fix): instCarriedPile was wired to sense 34 (falling) — a
 // latent M2 miswire; the intent "carrying nudges placing" is heldWeight (33).
 // pile is rarely selected while falling, so the miswire was dormant.
+// (2026-10-05 R4 fix): instHungerGeo's founder was 0.3 — weight −0.48, hunger
+// INHIBITED earth-eating against its own comment. Founder 0.7 now, a whisper
+// in the comment's direction. The mineral sense (46) carries the real drive.
 
 export const M2_GENES = [
   // Carrying something nudges placing it — pile is construction.
@@ -24,8 +28,15 @@ export const M2_GENES = [
   // Carrying nudges dumping too — instPile is the fast, thoughtless twin.
   { key: 'instCarriedDump', kind: 'float', sense: 34, action: 31, founder: 0.4 },
   // Hunger nudges earth-eating; the geophagy action itself gates on the
-  // mineral deficit, so this is a whisper, not a command.
-  { key: 'instHungerGeo', kind: 'float', sense: 0, action: 32, founder: 0.3 },
+  // mineral deficit, so this is a whisper, not a command. (R4: founder was
+  // 0.3 — a negative weight that inhibited earth-eating against this very
+  // comment. Now 0.7, the whisper the comment always meant.)
+  { key: 'instHungerGeo', kind: 'float', sense: 0, action: 32, founder: 0.7 },
+  // Mineral deficit IS the geophagy drive's wire — the sense the action was
+  // always meant to answer (R4: sense 46, new with the mineral sense). Strong
+  // but not pinned: at full deficit it outranks idleness, not a starving
+  // creature's hunger→eat (1.2). The creature chooses; the physics is fair.
+  { key: 'instMineralGeo', kind: 'float', sense: 46, action: 32, founder: 0.8 },
   // Distance vetoes the consummatory act (the starvation fix, 2026-10-03):
   // hunger may cry for food, but EAT only fires when food is within reach.
   // foodDist 0 (adjacent) → no veto; foodDist 1 (far/none) → full veto, so

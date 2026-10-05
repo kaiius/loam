@@ -4,6 +4,7 @@
 // Ported, not rewritten: the sparse 3-layer net, decide(), learn(), and the
 // instinct-gene wiring are unchanged. What changed for the material world:
 //   - N_IN 44 → 47 (three appended material senses: digAhead/soilBelow/enclosed)
+//   - N_IN 47 → 48 (R4: mineral-deficit sense 46 — the geophagy drive's sense)
 //   - ACTIONS +3 (pile, instPile, geophagy — append-only, never renumbered)
 //   - instinct wiring also reads M2_GENES (./genes.js)
 // The platform track's sim/brain.js is untouched; its tests still pin N_IN=44.
@@ -78,7 +79,7 @@ export const ACTIONS = [
   // ANATOMY: none — a mouth is enough.
 ];
 
-export const N_IN = 47; // 46 senses + bias... see senseVector47
+export const N_IN = 48; // 47 senses + bias... see senseVector47
 const N_OUT = ACTIONS.length;
 
 const ATTENTION_ALPHA = 0.15; // EMA rate for attention
@@ -118,6 +119,7 @@ export function senseVector(s) {
     s.digAhead || 0, // M2 Loam: diggability of the facing cell (sense 43)
     s.soilBelow || 0, // M2 Loam: material under feet, rock 0 → soil 1 (sense 44)
     s.enclosed || 0, // M2 Loam: fraction of solid neighbors — the burrow sense (45)
+    s.mineral || 0, // R4 Loam: mineral deficit, 0 replete → 1 starved (sense 46)
     1,
   ];
 }

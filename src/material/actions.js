@@ -384,16 +384,21 @@ function dumpAtFeet(mw, c) {
 // whisper, the chemistry decides.
 // R2: the payoff scales with the target cell's nutrient content — soil
 // enriched by rotted corpses or rotted deadwood pays up to 2x.
+// R4: eat the ground UNDERFOOT, not the facing wall. The old code targeted
+// digTargetCell (the facing cell at body height, built for digging walls) —
+// on the open surface that's AIR, so even a selected geophagy failed
+// silently. Grazing the earth you stand on is the honest consummatory act;
+// from a branch (no soil below) it fails honestly. A mouthful, not a cubic
+// meter: the cell stays, no digging side-effects.
 function tryGeophagy(mw, c) {
   if ((c.minerals ?? 0.5) > 0.6) return 0; // not deficient — no need
   const g = mw.grid;
-  const t = digTargetCell(mw, c);
-  if (!t) return 0;
-  const m = g.mat[t.idx];
+  const fx = Math.floor(c.x / CELL_PX), fy = Math.floor((c.y + 1) / CELL_PX);
+  if (fx < 0 || fx >= g.cols || fy < 0 || fy >= g.rows) return 0;
+  const idx = fy * g.cols + fx;
+  const m = g.mat[idx];
   if (m === MAT.SOIL || m === MAT.CLAY) {
-    g.mat[t.idx] = MAT.AIR;
-    g.dug[t.idx] = 1;
-    const nut = g.nutrient ? g.nutrient[t.idx] : 0;
+    const nut = g.nutrient ? g.nutrient[idx] : 0;
     const yield_ = GEOPHAGY_BASE + GEOPHAGY_NUTRIENT_BONUS * clamp01(nut);
     // R3: instrument geophagy for the reactive-gate A/B probe — billed
     // mineral yield per event, accumulated on the world.

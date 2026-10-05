@@ -8,20 +8,27 @@ import { gatherMaterialSenses } from '../src/material/senses.js';
 import { senseVector47 } from '../src/material/brain.js';
 import { createRng } from '../src/sim/rng.js';
 
-test('m2: senses compute in a real world (46 fields, all finite)', () => {
+test('m2: senses compute in a real world (47 fields, all finite)', () => {
   const mw = createMaterialWorld(7, 1);
   mw.tick = 600; // noon — the diurnal cycle starts at midnight (tick 0)
   const c = addFounder(mw, createRng(21));
   for (let t = 0; t < 15; t++) tickMaterialWorldM2(mw); // let gravity settle it
   const s = gatherMaterialSenses(mw, c, { others: [c] });
   const v = senseVector47(s);
-  assert.equal(v.length, 47);
-  for (let i = 0; i < 46; i++) {
+  assert.equal(v.length, 48);
+  for (let i = 0; i < 47; i++) {
     assert.ok(Number.isFinite(v[i]), `sense ${i} finite`);
   }
-  // The founder spawns on the surface: light > 0, soil below.
-  assert.ok(s.light > 0.3, `surface light: ${s.light}`);
+  // The founder spawns on the surface: light > 0, soil below. (R4: the
+  // threshold was 0.3 — the founder now stops to eat soil where it stands
+  // instead of wandering out from under the canopy edge, so surface light
+  // reads lower. 0.15 still means "surface, not buried" — buried is ~0.)
+  assert.ok(s.light > 0.15, `surface light: ${s.light}`);
   assert.ok(s.soilBelow > 0.5, `soil below: ${s.soilBelow}`);
+  // R4: the mineral sense is wired — it tracks 1 - minerals whatever the
+  // level is (the founder may already have eaten soil in those 15 ticks).
+  assert.ok(Math.abs(s.mineral - (1 - c.minerals)) < 1e-9,
+    `mineral sense tracks 1-minerals: sense ${s.mineral}, level ${c.minerals}`);
 });
 
 test('m2: food sense finds the fruiting canopy', () => {

@@ -130,10 +130,22 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   c.lastAction = action;
 
   // --- act ---
+  // R4: snapshot minerals before the action — the chemistry tick's drive
+  // snapshot needs the pre-action level for Grand's rule.
+  const mineralsBefore = c.minerals ?? 0.6;
   const chemCtx = executeAction(mw, c, action, s, ctx);
 
   // --- physics shared by every tick ---
   gravityPhysics(mw, c);
+
+  // --- minerals drift down; geophagy restores ---
+  // R4: moved BEFORE the chemistry tick (was after) so the drive snapshot
+  // sees the net mineral change — action restore minus metabolic decay —
+  // exactly like the metabolic drives tickBiochem handles internally.
+  // Same rate (0.0004/tick), same determinism (no RNG): only ordering moved.
+  c.minerals = Math.max(0, Math.min(1, (c.minerals ?? 0.6) - 0.0004));
+  chemCtx.mineralsBefore = mineralsBefore;
+  chemCtx.mineralsAfter = c.minerals;
 
   // --- chemistry + Grand's endogenous reward ---
   // The sky sets the ambient temperature now — cold kills, heat stresses.
@@ -145,9 +157,6 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
 
   // --- learn: the endogenous reward teaches, nothing else ---
   learn(c.brain, c.pheno, reward, b);
-
-  // --- minerals drift down; geophagy restores ---
-  c.minerals = Math.max(0, Math.min(1, (c.minerals ?? 0.6) - 0.0004));
 
   // --- death ---
   // Death is material: the body becomes a corpse (corpses.js) — meat for
