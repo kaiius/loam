@@ -39,6 +39,58 @@ export const WIND_NOISE_BLOCK = 200;  // material ticks per noise-pattern block
 export const WIND_LEAN_PER = 0.25;    // degrees of tree lean per px/s of wind
 export const WIND_LEAN_MAX = 14;      // degrees: wind-shaped, not wind-bent
 
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+// --- D4 deep time: millennial drift + extreme pulses ------------------------
+// Drift: a whole-world baseline, period ~1M ticks (~104 years) plus a
+// weaker 4M-tick component. Amplitude 0.06 T-units ≈ 2.7°C — enough to move
+// biome-label boundaries over deep time (classifier bands are ~0.13
+// T-units), not enough to flip the world. Both sines integrate to ~zero
+// over the 4M-tick cycle by construction — the v0.27 annual-mean-T
+// certification is protected by symmetry, and the builder re-runs that
+// probe (P4/P6).
+// Pulses: each year y = floor(tick/9600) gets a deterministic schedule
+// from stateless hashes — no stream, no RNG, fully testable. ~15% of
+// years carry a drought (rain × 0.2, evap × 1.5) or frost (target − 0.15),
+// 600–1200 ticks long. A pulse year is predictable from (seed, y).
+// All three pin at zero under mw.frozenBiome (the control world is the old
+// steady state). P6 neutrals: mw.driftAmp = 0, mw.pulsesOn = false.
+export const DRIFT_T1 = 1000000;
+export const DRIFT_T2 = 4000000;
+export const DRIFT_AMP1 = 0.06;
+export const DRIFT_AMP2 = 0.03;
+export const MDRIFT_K = 0.001; // soil-stock bias per Mdrift-unit per tick
+export const FROST_PULSE_DROP = 0.15; // ≈ −6.75°C
+const P_DRIFT = 0xD400;
+const P_PULSE_YEAR = 0xD401;
+const P_PULSE_TYPE = 0xD402;
+const P_PULSE_START = 0xD403;
+const P_PULSE_LEN = 0xD404;
+const PULSE_YEAR_P = 0.15;
+
+function driftPhase(seed) {
+  return hash2(seed, 0, 0, 0, P_DRIFT) * 2 * Math.PI;
+}
+
+// Millennial temperature drift at a tick (T-units). Pure function of
+// (seed, tick) — no stream, no state.
+export function tempDrift(seed, tick) {
+  return DRIFT_AMP1 * Math.sin((2 * Math.PI * tick) / DRIFT_T1) +
+         DRIFT_AMP2 * Math.sin((2 * Math.PI * tick) / DRIFT_T2 + driftPhase(seed));
+}
+
+// The year's extreme pulse at a tick: 'drought', 'frost', or null.
+// Exported so the succession probe can PREDICT pulse years from (seed, y).
+export function pulseAt(seed, tick) {
+  const y = Math.floor(tick / YEAR_TICKS);
+  if (hash2(seed, y, 0, 0, P_PULSE_YEAR) >= PULSE_YEAR_P) return null;
+  const type = hash2(seed, y, 0, 0, P_PULSE_TYPE) < 0.5 ? 'drought' : 'frost';
+  const start = Math.floor(hash2(seed, y, 0, 0, P_PULSE_START) * (YEAR_TICKS - 1200));
+  const len = 600 + Math.floor(hash2(seed, y, 0, 0, P_PULSE_LEN) * 600);
+  const ty = tick - y * YEAR_TICKS;
+  return ty >= start && ty < start + len ? type : null;
+}
+
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 // --- construction -------------------------------------------------------
@@ -77,7 +129,10 @@ export function createSky(seed, widthPx, opts = {}) {
     windU: iw.U,
     windV: iw.V,
     baseT: cols.map((c) => c.T),
-    seasonAmp: new Array(ncols).fill(opts.seasonAmp ?? 0.4),
+    // D4: thermal-position seasonal amplitude — mid-latitude-equivalent
+    // columns swing hardest; the thermal equator and the cold pole swing
+    // least. The Earth pattern, derived from generated fields, not painted.
+    seasonAmp: cols.map((c) => opts.seasonAmp ?? clamp(0.15 + 1.4 * Math.abs(c.T - 0.5), 0.15, 0.85)),
     lightning: [],
     tick: 0,
   };
@@ -150,6 +205,16 @@ export function tickSky(mw, dt = SKY_EVERY) {
   const sSin = seasonSin(mw);
   const n = sky.ncols;
 
+  // D4: millennial drift + extreme pulses. Frozen control pins all three
+  // at zero; P6 neutrals via mw.driftAmp = 0 / mw.pulsesOn = false.
+  const frozen = !!mw.frozenBiome;
+  const seed = mw.seed || 1;
+  const tick = mw.tick || 0;
+  const driftAmp = frozen ? 0 : (mw.driftAmp ?? 1);
+  const Tdrift = driftAmp * tempDrift(seed, tick);
+  const Mdrift = -0.5 * Tdrift; // warm phases run drier
+  const pulse = frozen || mw.pulsesOn === false ? null : pulseAt(seed, tick);
+
   // Water fraction per column for evaporation (open water evaporates freely).
   const waterFrac = new Array(n).fill(0);
   const biomass = new Array(n).fill(0);
@@ -164,7 +229,10 @@ export function tickSky(mw, dt = SKY_EVERY) {
   for (let i = 0; i < n; i++) {
     const c = sky.cols[i];
     const seasonal = (sky.seasonAmp[i] || 0.4) * SEASON_AMP_MAX * sSin * dayCurve;
-    const target = clamp01(sky.baseT[i] + diurnal + seasonal);
+    // D4: the millennial drift rides the target; frost pulses cut it.
+    let target = sky.baseT[i] + diurnal + seasonal + Tdrift;
+    if (pulse === 'frost') target -= FROST_PULSE_DROP;
+    target = clamp01(target);
     c.T += (target - c.T) * Math.min(1, dt * 0.02);
     c.T += rng.range(-1, 1) * 0.006 * sdt;
     c.T = clamp01(c.T);
@@ -188,8 +256,10 @@ export function tickSky(mw, dt = SKY_EVERY) {
     const c = sky.cols[i];
     // Open water evaporates freely (the sea doesn't run out); soil
     // moisture only limits the transpiration share.
-    const rateWater = (EVAP_BASE + EVAP_WARM * c.T) * waterFrac[i] * 2.0;
-    const rateSoil = (EVAP_BASE + EVAP_WARM * c.T) * biomass[i] * 0.9;
+    let rateWater = (EVAP_BASE + EVAP_WARM * c.T) * waterFrac[i] * 2.0;
+    let rateSoil = (EVAP_BASE + EVAP_WARM * c.T) * biomass[i] * 0.9;
+    // D4: drought pulses parch — evap × 1.5.
+    if (pulse === 'drought') { rateWater *= 1.5; rateSoil *= 1.5; }
     const drawSoil = Math.min(c.soil, rateSoil * dt);
     c.soil -= drawSoil;
     const draw = rateWater * dt + drawSoil;
@@ -222,13 +292,20 @@ export function tickSky(mw, dt = SKY_EVERY) {
       }
     }
     // Wet summers, dry winters — same clock as the T forcing.
-    const rain = Math.min(c.cloud, RAIN_K * Math.pow(c.cloud, 2.5) * (1 + 0.5 * sSin) * dt);
+    let rain = Math.min(c.cloud, RAIN_K * Math.pow(c.cloud, 2.5) * (1 + 0.5 * sSin) * dt);
+    // D4: drought pulses starve the rain — × 0.2.
+    if (pulse === 'drought') rain *= 0.2;
     c.cloud -= rain;
     c.rain = rain; // current rainfall rate (eye + grid signal), not an accumulator
     if (rain > 0.001) rainOntoGrid(mw, i, rain);
     // 85% soaks into the column's soil stock; the grid's moist field is
     // written in the coupling pass below.
     c.soil = clamp01(c.soil + rain * RAIN_SOIL);
+    // D4: millennial moisture drift — warm phases run drier. A weak
+    // additive bias on the column soil stock; the rain/evap machinery is
+    // untouched, and clamp01 bounds it. MDRIFT_K is set so the full
+    // ±0.045 Mdrift is a ~1% nudge against a moderate rain event.
+    c.soil = clamp01(c.soil + Mdrift * MDRIFT_K * dt);
   }
 
   // 4. Vapor advection: donor-limited, two-sided.

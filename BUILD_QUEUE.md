@@ -650,14 +650,11 @@ declared anatomical prerequisites; mass conservation; same seed → same world.
       (today it's feedforward + Hebbian). No ceiling on intelligence is the
       ruling — this is the sanctioned frontier. Keep the instinct/learned
       split (nature/nurture) and the evolvable organization (B family).
-- [ ] D3 — Physics: material richness inside the no-fluids ruling. Deeper
+- [x] D3 — Physics: material richness inside the no-fluids ruling. DONE 2026-10-06 ~08:05 EDT (commit 99e0580, resumed after daemon restart killed the previous builder mid-build). Deeper
       fire spread, erosion/soil mechanics, thermoregulation, body
       thermodynamics, richer collision/material properties. No Navier-Stokes,
       ever — the ruling stands.
-- [ ] D4 — World: deep time + ecology. Geology, climate dynamics past the
-      existing ITCZ, food webs with real trophic pressure, succession,
-      coevolution with the plant genomes. The world the creatures adapt to
-      gets as deep as the creatures.
+- [x] D4 — World: deep time + ecology. DONE 2026-10-06 (Joshua: "Keep going"). Geology (strata/veins/weathering), climate drift + pulses, trophic census/kill ledger, succession (colonizer/longevity), coevolution (tannin/detoxTol). See release record below.
 
 ## R7 network release — DONE (2026-10-06 ~00:30 EDT, release hold lifted by Joshua)
 - Pinned commit: f0cbd6f (CI material-gate green, run 37412894986 success, 171/171)
@@ -693,3 +690,11 @@ declared anatomical prerequisites; mass conservation; same seed → same world.
 - (c) working-memory FAIL — STRUCTURAL (independently verified): 300 trials, memory genome 0.097 vs founder control 0.113 vs chance 0.030. The memory machinery performs WORSE than the memoryless founder — the Hebbian read-projection learns a destructive association (post pattern is probe-driven, not cue-specific; accuracy decreases as weights clamp).
 - Decision: STOP the track. The failures are in the design's specified learning rules, not the implementation — fixing means redesigning the mechanism, which contradicts "implement exactly what the doc specifies" and is Joshua's call. Tree left UNCOMMITTED on branch loam for his review. NOT pushed; no network release. D1 (40005b2) remains the shipped tip.
 - Needs Joshua's eyes/decision: amend the doc's mechanism (trace update rule, read-projection learning rule) and success criteria, or accept (b)/(c) as documented spec limitations, or descope D2.
+
+## D3 network release — DONE (2026-10-06 ~08:05 EDT)
+- Commit: 99e0580 (CI material-gate green, run 37459807181 success)
+- Zip: loam-d3-99e0580.zip (17.5MB, git archive, smoke-tested 179/179 on extracted tree): https://muse.ai/files/1296226820244950/1051532934514051/v27haqg6s6mj2ijwprngr3f1/loam-d3-99e0580.zip (expires 2026-10-08T12:01:39Z)
+- Colony (general colony): post 0582d460-0e1a-4149-878c-3049f394ba9b "Loam D3: fire learns to smolder, soil learns to creep, bodies learn to shiver" + durable-references comment cf628f9f-3168-42ea-addb-7140bf70d4f9 — both verified served
+- Moltbook (ALife thread e39bd40f): top-level comment 19a9007e-da8f-4d4e-8f21-54e8a4ff63f2 — verification challenge solved in-session (23+7=30.00), status verified, 1384 chars served
+- Watermark keys: colony_post_loam_d3_20261006_* / moltbook_loam_d3_20261006_*
+- NOTE (caught mid-build): the gates.js refactor had dropped genome.js's re-export of gateMultiplier/hasActiveGates — test/sim.mjs imports them from genome.js, so the whole sim file failed at load and its 25 subtests vanished from the failure list (looked like "fewer failures"). Fixed with an explicit re-export; failure sets now byte-identical to 29f7bf9 baseline. Lesson: a shrinking failure list is as suspicious as a growing one.

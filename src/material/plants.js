@@ -65,7 +65,12 @@ export function seedFromFeeding(mw, plant, eater) {
   // roll differ per feeding even when no ticks pass between them.
   const n = (mw._feedCount = (mw._feedCount || 0) + 1);
   const h = hash2(mw.seed || 1, plant.id * 31 + (eater ? eater.id : 0) + n * 7919, mw.tick || 0);
-  if (h > 0.35) return null; // most fruit is just eaten
+  // D4: tannin — defended seeds survive the gut worse. The survival roll is
+  // 0.35 × (1 − 0.3 × tannin_pheno), applied after the roll (the outcrossing
+  // logic below is untouched). Founder tannin 0.2 → 0.329.
+  const tannin = (plant.pheno && plant.pheno.tannin) ?? 0.2;
+  const gutSurvival = 0.35 * (1 - 0.3 * Math.min(1, Math.max(0, tannin)));
+  if (h > gutSurvival) return null; // most fruit is just eaten
   const mom = plant.genome;
   let dad = mom; // self-pollination is the common case
   const sp = eater ? eater.species : null;
@@ -137,14 +142,24 @@ export function tickSeeds(mw) {
 }
 
 // R3: the nutrient half of the germination gate, exported for the
+// D4: the pioneer axis — high-colonizer seeds sprout on bare, poor,
+// freshly-weathered ground (threshold → 0.02); low-colonizer seeds need
+// enriched ground. Founder colonizer 0.5 → ×0.625 (0.05).
+export function sproutThreshold(ph) {
+  const col = (ph && ph.colonizer) ?? 0.5;
+  const c = col < 0 ? 0 : col > 1 ? 1 : col;
+  return NUTRIENT_SPROUT_MIN * (1 - 0.75 * c);
+}
+
 // reactive-gate tests (G3). True iff the ground cell below (cx, cy) holds
-// enough nutrient to sprout.
-export function nutrientOkForSprout(mw, cx, cy) {
+// enough nutrient to sprout. Optional threshold (D4: the pioneer's
+// colonizer-adjusted gate); defaults to the founder threshold.
+export function nutrientOkForSprout(mw, cx, cy, threshold = NUTRIENT_SPROUT_MIN) {
   const g = mw.grid;
   if (!g.nutrient) return true;
   const gi = (cy + 1) * g.cols + cx;
   if (gi < 0 || gi >= g.nutrient.length) return false;
-  return g.nutrient[gi] >= NUTRIENT_SPROUT_MIN;
+  return g.nutrient[gi] >= threshold;
 }
 
 function tryGerminate(mw, s, cx, cy) {
@@ -161,9 +176,11 @@ function tryGerminate(mw, s, cx, cy) {
   if (tempC < -6 + ph.coldTol * 16) return;       // too cold
   if (tempC > 22 + ph.heatTol * 13) return;       // too hot
   // R3 (reactive biomes): nutrient fronts gate germination — a seed on
-  // depleted ground (nutrient < NUTRIENT_SPROUT_MIN) does not sprout.
-  // Groves that fruit hard eat their own soil and stop regenerating.
-  if (!nutrientOkForSprout(mw, cx, cy)) return;
+  // depleted ground (nutrient < threshold) does not sprout. Groves that
+  // fruit hard eat their own soil and stop regenerating.
+  // D4: the threshold is the pioneer's — high-colonizer seeds sprout on
+  // poor ground where climax seeds can't.
+  if (!nutrientOkForSprout(mw, cx, cy, sproutThreshold(ph))) return;
   // Sprout: a new plant, generation + 1, growing from seed.
   const pid = 100000 + s.id; // runtime ids live above worldgen's
   const iters = Math.round(24 + ph.growthRate * 40);
@@ -321,6 +338,12 @@ export function tickPlants(mw) {
     if (moist < 0.12) { p.stress += 1; stressing = true; }
     if (tempC < -6 + (ph.coldTol || 0.5) * 16) { p.stress += 1; stressing = true; }
     if (tempC > 22 + (ph.heatTol || 0.5) * 13) { p.stress += 1; stressing = true; }
+    // D4: foraging pressure — a plant whose crop was stripped to zero
+    // twice in one plant-tick (actions.js tryEat counts _stripped) is
+    // overgrazed: stress += 1. Overgrazed plants die younger; the plant
+    // population feels the herbivores (bottom-up coupling, §2.3).
+    if ((p._stripped || 0) >= 2) { p.stress += 1; stressing = true; }
+    p._stripped = 0;
     if (!stressing && p.stress > 0) p.stress = Math.max(0, p.stress - 2);
 
     // Fire check: any burning cell of this plant.
@@ -366,7 +389,9 @@ export function tickPlants(mw) {
     // Death: stress overload, old age, fire, or the ground dug out from
     // under a young plant. (The support cell: worldgen plants root IN
     // their seed cell; seedlings rest in the air cell ABOVE soil.)
-    const maxAge = 1200 + (ph.growthRate || 0.5) * 800; // plant-ticks; ~40-80 days
+    // D4: the lifespan axis — pioneers live ~40% of baseline, climax ~2×.
+    // Founder longevity 0.5 → ×1.2, inside the 1200–2000 band.
+    const maxAge = (1200 + (ph.growthRate || 0.5) * 800) * (0.4 + 1.6 * ((ph.longevity ?? 0.5)));
     const seedCellSolid = g.mat[p.seedY * g.cols + p.seedX] !== MAT.AIR;
     const gy = seedCellSolid ? p.seedY : Math.min(g.rows - 1, p.seedY + 1);
     const groundGone = g.mat[gy * g.cols + p.seedX] === MAT.AIR && p.growth < 1;

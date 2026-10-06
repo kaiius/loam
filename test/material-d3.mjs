@@ -6,8 +6,9 @@ import assert from 'node:assert/strict';
 
 import { MAT, MAT_PROPS, createGrid, cellIndex } from '../src/material/grid.js';
 import {
-  tickMaterials, CREEP_K, WEATHER_TICKS, FUEL_K, WIND_SPREAD_K,
-  CHAR_TICKS, CHAR_BURN,
+  tickMaterials, CREEP_K, FUEL_K, WIND_SPREAD_K,
+  CHAR_TICKS, CHAR_BURN, WEATHER_EVERY, WEATHER_STEP, WEATHER_CONVERT,
+  tickWeathering,
 } from '../src/material/process.js';
 import {
   FRICTION_K, IMPACT_K, DIG_HARD_K, WEAR_K, BRITTLE_K,
@@ -99,19 +100,55 @@ test('d3: creep conserves per-material counts on a slope', () => {
   assert.deepEqual(counts(), c0, 'creep relocates whole cells, counts bit-identical');
 });
 
-// ---------- weathering founder-off ----------
-test('d3: weathering disabled at founder (WEATHER_TICKS = Infinity)', () => {
-  assert.equal(WEATHER_TICKS, Infinity);
+// ---------- weathering (D4 scheme — supersedes the D3 tickRot hook) ----------
+// D4: weathering is a geological pass (tickWeathering, every WEATHER_EVERY
+// ticks) on the grid's own Uint8 `weather` array — not a tickRot aux.
+// At founder step 1, one conversion takes 255 × 200 = 51,000 ticks
+// (deep time, not disabled). The old WEATHER_TICKS/Infinity probe hook is
+// retired.
+test('d4: weathering accrues slowly, converts ROCK to SOIL at 255', () => {
+  assert.equal(WEATHER_EVERY, 200);
+  assert.equal(WEATHER_STEP, 1);
+  assert.equal(WEATHER_CONVERT, 255);
   assert.equal(CREEP_K, 0);
-  const mw = makeMw(10, 10, { fireOn: false }); // no weatherTicks -> founder
+  const mw = makeMw(10, 10, { fireOn: false });
+  const g = mw.grid;
+  // A ROCK block with AIR above (weatherable contact).
+  for (let x = 3; x <= 6; x++) for (let y = 3; y <= 6; y++) {
+    g.mat[I(g, x, y)] = MAT.ROCK; g.moist[I(g, x, y)] = 0.9;
+  }
+  // 5000 ticks = 25 passes: accrual, but no conversion yet (25 < 255).
+  // Edge cells (AIR neighbor) accrue; interior cells (ROCK on all sides)
+  // don't — the 4-neighborhood rule.
+  tickN(mw, 5000);
+  for (let x = 3; x <= 6; x++) for (let y = 3; y <= 6; y++) {
+    const i = I(g, x, y);
+    assert.equal(g.mat[i], MAT.ROCK, 'no conversion at 25/255');
+  }
+  assert.ok(g.weather[I(g, 3, 3)] > 0, 'edge cell accrues (AIR neighbor)');
+  assert.equal(g.weather[I(g, 4, 4)], 0, 'interior cell does not accrue');
+  // Drive one cell to conversion directly: 255/255 → SOIL in place.
+  // (3,3) is an edge cell with an AIR neighbor — weatherable.
+  const ci = I(g, 3, 3);
+  g.weather[ci] = 254;
+  tickWeathering(mw);
+  assert.equal(g.mat[ci], MAT.SOIL, 'ROCK → SOIL at 255');
+  assert.equal(g.weather[ci], 0, 'scalar resets');
+  assert.equal(g.nutrient[ci], 0, 'fresh soil is nutrient-poor');
+});
+
+test('d4: weathering is off with mw.weatherStep = 0 (P6 neutral)', () => {
+  const mw = makeMw(10, 10, { fireOn: false, weatherStep: 0 });
   const g = mw.grid;
   for (let x = 3; x <= 6; x++) for (let y = 3; y <= 6; y++) {
     g.mat[I(g, x, y)] = MAT.ROCK; g.moist[I(g, x, y)] = 0.9;
   }
   tickN(mw, 5000);
-  for (let x = 3; x <= 6; x++) for (let y = 3; y <= 6; y++)
-    assert.equal(g.mat[I(g, x, y)], MAT.ROCK, 'no weathering at founder');
-  assert.equal(mw.weather, undefined, 'weather aux never allocated at founder');
+  for (let x = 3; x <= 6; x++) for (let y = 3; y <= 6; y++) {
+    const i = I(g, x, y);
+    assert.equal(g.mat[i], MAT.ROCK, 'no weathering when disabled');
+    assert.equal(g.weather[i], 0, 'no accrual when disabled');
+  }
 });
 
 // ---------- texture founder identities ----------

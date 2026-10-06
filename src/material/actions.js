@@ -308,6 +308,10 @@ const EXECUTORS = {
           if (o.body && o.body.marks) {
             o.body.marks.push({ tick: mw.tick || 0, kind: 'bite', limb: -1, severity: Math.min(1, dmg), note: c.species || 'predator' });
           }
+          // D4: kill credit — a bite that pushes injury past the lethal
+          // threshold marks the victim; the death handler (mcreature.js)
+          // records it in the ecology kill ledger. Additive only.
+          if (o.chem.injury >= 1 && o.alive) o._killCredit = c.species || 'unknown';
           c._lastBiteDmg = dmg;
         }
         chemCtx.active = 1.0;
@@ -409,7 +413,11 @@ function tryEat(mw, c, s) {
   }
   if (fruitPlant && (fruitPlant.fruit || 0) > 0) {
     fruitPlant.fruit -= 1;
+    // D4: overgrazing instrument — a crop stripped to zero counts a
+    // stripping event (tickPlants turns two-per-plant-tick into stress).
+    if (fruitPlant.fruit <= 0) fruitPlant._stripped = (fruitPlant._stripped || 0) + 1;
     const bitter = (fruitPlant.pheno && fruitPlant.pheno.bitterness) || 0;
+    const tannin = (fruitPlant.pheno && fruitPlant.pheno.tannin) ?? 0.2;
     const size = (fruitPlant.pheno && fruitPlant.pheno.fruitSize) || 0.5;
     // A seed may ride along — endozoochory (plants.js).
     seedFromFeeding(mw, fruitPlant, c);
@@ -422,7 +430,15 @@ function tryEat(mw, c, s) {
       const ni = groundIndexBelow(g, fruitPlant.seedX, fruitPlant.seedY);
       if (ni >= 0) nutF = 0.85 + 0.35 * clamp01(g.nutrient[ni]);
     }
-    return 0.35 * (1 - 0.5 * bitter) * (0.7 + 0.6 * size) * nutF;
+    // D4: coevolution — tannin is the plant's move (fruit nutrition ×
+    // (1 − 0.5 × tannin), paralleling bitterness exactly); detoxTol is the
+    // herbivore's answer (realized defense loss × (1 − detoxTol_pheno)).
+    // Founder (bitter 0.3, tannin 0.2, detoxTol 0.2): 0.812 vs 0.85 before —
+    // inside the existing bitterness variance.
+    const defenseLoss = 1 - (1 - 0.5 * bitter) * (1 - 0.5 * clamp01(tannin));
+    const detox = (c.pheno && c.pheno.detoxTol) ?? 0.2;
+    const palatable = 1 - defenseLoss * (1 - clamp01(detox));
+    return 0.35 * palatable * (0.7 + 0.6 * size) * nutF;
   }
   // 2. Buried: a food cell within a body length.
   if (g.food) {
@@ -456,6 +472,11 @@ function digWork(mw, c) {
   c.digTicks = (c.digTicks || 0) + 1;
   if (c.digTicks >= Math.ceil(work / power)) {
     c.digTicks = 0;
+    // D4: mineral veins — a vein tag on the dug cell becomes a mineral tag
+    // on the carried soil (flint/quartz/stone); the deposit depletes (vein
+    // consumed). The platform track's "depleted deposits stay labeled"
+    // honesty, in reverse: the cell keeps MAT.ROCK→AIR, the tag is gone.
+    const v = g.vein ? g.vein[t.idx] : 0;
     g.mat[t.idx] = MAT.AIR;
     g.dug[t.idx] = 1;
     g.root[t.idx] = 0;
@@ -464,6 +485,10 @@ function digWork(mw, c) {
     let edible = false;
     if (g.food && g.food[t.idx] > 0) { g.food[t.idx] = 0; edible = true; }
     c.carried = { material: matName(m), weight: 1, edible };
+    if (v > 0) {
+      c.carried.mineral = VEIN_MINERAL[v] || 'stone';
+      g.vein[t.idx] = 0;
+    }
   }
 }
 
@@ -504,6 +529,13 @@ function dumpAtFeet(mw, c) {
     c.dumped = (c.dumped || 0) + 1;
   }
 }
+
+// D4: vein tag → mineral name for the carried-soil tag (digWork) and the
+// geophagy payout (tryGeophagy). 1 = flint, 2 = quartz, 3 = stone.
+export const VEIN_MINERAL = { 1: 'flint', 2: 'quartz', 3: 'stone' };
+// D4: vein bonus on the geophagy payout — flint/quartz pay in the mineral
+// ledger, stone pays as grit (smaller).
+export const VEIN_YIELD = { 1: 0.3, 2: 0.3, 3: 0.1 };
 
 // --- geophagy ---------------------------------------------------------------
 // Eat soil for minerals. Gates on the mineral deficit — the instinct is a
@@ -553,7 +585,12 @@ function tryGeophagy(mw, c) {
     // exist — the stock is never decremented per bite, by design — and
     // the probe confirms the billed number follows the quantum, not the
     // cell (specie's absorption-coefficient question, answered by data).
-    const yield_ = GEOPHAGY_BASE * (mw.geoQuantumScale ?? 1) + GEOPHAGY_NUTRIENT_BONUS * clamp01(nut);
+    let yield_ = GEOPHAGY_BASE * (mw.geoQuantumScale ?? 1) + GEOPHAGY_NUTRIENT_BONUS * clamp01(nut);
+    // D4: mineral veins — a vein tag on the grazed cell (surviving from a
+    // weathered ROCK, tickWeathering preserves it) pays by mineral type.
+    // Flint/quartz pay in the mineral ledger; stone pays as grit.
+    const v = g.vein ? g.vein[idx] : 0;
+    if (v > 0) yield_ += VEIN_YIELD[v] || 0;
     // R3: instrument geophagy for the reactive-gate A/B probe — billed
     // mineral yield per event, accumulated on the world.
     // R7: deficit depth at firing time (arion's discriminating metric),

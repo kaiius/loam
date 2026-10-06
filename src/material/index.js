@@ -16,7 +16,7 @@ import { renderWorldView, renderInspectView } from './render.js';
 
 // M2: the living creature
 import { spawnMaterialCreature, spawnFounder, tickMaterialCreature, lastActionName, petMaterialCreature, nudgeMaterialCreature } from './mcreature.js';
-import { reproduceTanglekins } from './species.js';
+import { reproduceTanglekins, LOAM_ROSTER, countSpecies } from './species.js';
 import { createBonds, tickBonds } from '../sim/social.js';
 // M3: the living world — sky, plants with genomes, corpses, the roster
 import { createSky, tickSky, SKY_EVERY } from './weather.js';
@@ -107,6 +107,12 @@ export function tickMaterialWorldM2(mw, ctx = {}) {
   if (mw.tick % 50 === 0) tickPlants(mw);
   // M3: corpses rot.
   if (mw.tick % 50 === 0) tickCorpses(mw);
+  // D4: the census — population series per species, appended every 2400
+  // ticks (one day) via the existing countSpecies. The kill ledger
+  // (actions.js bite → mcreature.js death) rides the same object. These
+  // are the instruments for trophic coupling — verbs + records, never
+  // imposed equations.
+  if (mw.tick % 2400 === 0) tickCensus(mw);
   // Social substrate: bonds decay/drift. The adapter maps the material
   // world onto social.js's expected interface (M2 foundation — full troops
   // and tribe detection in M3).
@@ -114,6 +120,22 @@ export function tickMaterialWorldM2(mw, ctx = {}) {
     tickBonds({ bonds: mw.bonds, creatures, time: mw.tick, _spatial: null }, 1);
   } catch { /* bonds optional */ }
   return mw;
+}
+
+// D4: the ecology census — mw.ecology = { day, series, kills }.
+// series[speciesKey] is the per-day population count (countSpecies);
+// kills[pred][prey] is incremented on bite-credited deaths. Appended on
+// tick % 2400 === 0 (one "day" = TICKS_PER_DAY). Deterministic: the census
+// reads state, never draws.
+export function tickCensus(mw) {
+  if (!mw.ecology) mw.ecology = { day: 0, series: {}, kills: {} };
+  const e = mw.ecology;
+  e.day++;
+  for (const key of LOAM_ROSTER) {
+    if (!e.series[key]) e.series[key] = [];
+    e.series[key].push(countSpecies(mw, key));
+  }
+  return mw.ecology;
 }
 
 // Add a founder creature to the world (spawns on the surface).

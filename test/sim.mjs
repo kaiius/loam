@@ -611,7 +611,7 @@ test('v0.5: mate finally has an instinct pathway', () => {
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 349); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci + D1's 92 regulatory loci
+  assert.equal(GENES.length, 350); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci + D1's 92 regulatory loci + D4's detoxTol
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -3691,9 +3691,9 @@ function evoGenome(rng, overrides) {
 }
 
 test('v0.17: 217 loci, 9 chromosomes — the evo-devo 25 ride together', () => {
-  assert.equal(GENES.length, 349); // v0.17's 223 + v0.20's 3 hands instincts + instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci (8 drive + 4 rate + 6 instinct) + D1's 92 (32 G + 4 Q + 32 ext-R + 24 ext-C)
+  assert.equal(GENES.length, 350); // v0.17's 223 + v0.20's 3 hands instincts + instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci (8 drive + 4 rate + 6 instinct) + D1's 92 (32 G + 4 Q + 32 ext-R + 24 ext-C) + D4's detoxTol
   assert.equal(EVO17_KEYS.size, 25);
-  assert.equal(new Set(GENES.map((g) => g.key)).size, 349, 'no duplicate keys');
+  assert.equal(new Set(GENES.map((g) => g.key)).size, 350, 'no duplicate keys');
   assert.equal(CHROMOSOMES.length, 10);
   for (const k of EVO17_KEYS) {
     assert.ok(CHROMOSOMES[8].includes(k), `${k} rides the new chromosome 9`);

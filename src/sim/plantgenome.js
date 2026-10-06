@@ -28,14 +28,24 @@ export const PLANT_GENES = [
   { key: 'saltTol', kind: 'float', founder: 0.5 },    // saltwater tolerance
   // M — medicine family (herbs; fruit trees ignore it)
   { key: 'potency', kind: 'float', founder: 0.5 },    // medicinal strength
+  // D4 "Deep time": the succession + coevolution axes (append-only —
+  // existing indices 0–9 never shift; these are 10–12).
+  { key: 'colonizer', kind: 'float', founder: 0.5 },  // pioneer axis: germination threshold × (1 − 0.75 × colonizer)
+  { key: 'longevity', kind: 'float', founder: 0.5 },  // lifespan axis: maxAge × (0.4 + 1.6 × longevity)
+  { key: 'tannin', kind: 'float', founder: 0.2 },     // defense axis: fruit nutrition × (1 − 0.5 × tannin)
 ];
 
 // Two chromosomes: [yield, fruitSize, interval, growthRate],
 // [bitterness, waterRet, coldTol, potency]. Linked genes travel together.
 // v0.18: heatTol + saltTol join the second (climate) chromosome; append-only.
+// D4: a third chromosome for the succession/coevolution axes —
+// [colonizer, longevity, tannin]. plantMeiosis iterates the array, so
+// appending a chromosome is safe (new draws at the end; earlier
+// chromosomes' draws are untouched).
 const PLANT_CHROMOSOMES = [
   ['yield', 'fruitSize', 'interval', 'growthRate'],
   ['bitterness', 'waterRet', 'coldTol', 'potency', 'heatTol', 'saltTol'],
+  ['colonizer', 'longevity', 'tannin'],
 ];
 
 const PLANT_MUTATION_RATE = 0.008;

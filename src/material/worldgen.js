@@ -17,10 +17,15 @@
 // Draw order on the worldgen stream (load-bearing, documented):
 //   sea level -> noise frequencies -> noise seed -> ridge params ->
 //   rift params -> lake-basin carves -> climate wave -> soilDepth jitter ->
-//   clay lens draws -> [growth: stateless hash only, no draws] ->
+//   clay lens draws -> [strata bands + vein tags: D4 geology, after erosion]
+//   -> [growth: stateless hash only, no draws] ->
 //   [spawn: deterministic pick, no draws]
 // (Sea level leads, mirroring design §2.2's "landFrac target" first draw;
 // the lake carves target it, so inland basins reliably sit below it.)
+// D4: the geology block draws from gen AFTER rasterize's clay-lens draws
+// and AFTER the erosion passes (strata ride the final geometry), BEFORE
+// growFlora. Growth is stateless-hash only and nothing downstream of the
+// geology block draws from gen, so insertion shifts no existing draw.
 //
 // Determinism: same (seed, size) -> bit-identical substrate. All worldgen
 // draws come from `gen`; the tick never draws. Growth branching angles come
@@ -713,6 +718,68 @@ export function checkViability(world) {
   return { ok: failures.length === 0, failures };
 }
 
+// === D4 geology: strata bands + mineral veins ==============================
+// Strata: per-column bands (2–4 deep) over the subsoil — ROCK (and CLAY
+// lenses) below the soil/sand layer, above BEDROCK. Column-coherent by
+// construction: one type per band per column, so strata form lens-like
+// regions, not confetti. Types: 0 sediment (the default), 1 granite
+// (flint/quartz association), 2 limestone (stone association), 3 shale
+// (clay association).
+// Veins: a subset of ROCK cells at strata boundaries (the cell above a
+// contact, where its strata differs from the cell below — minerals
+// concentrate at contacts), tagged 1 = flint, 2 = quartz, 3 = stone. Vein
+// cells keep MAT.ROCK — the renderer and physics don't change;
+// digging/geophagy read the tag. Drawn from gen in one block (after the
+// clay-lens draws, after erosion, before growth — nothing downstream draws).
+const VEIN_DENSITY = 0.25; // fraction of boundary ROCK cells carrying a vein
+
+function assignGeology(gen, g, cols, rows, surf, seaRow, log) {
+  const { mat, strata, vein } = g;
+  let veinCount = 0;
+  for (let c = 0; c < cols; c++) {
+    const s = surf[c];
+    // Subsoil span: first ROCK/CLAY at/after the surface, down to BEDROCK.
+    let top = -1, bot = -1;
+    for (let r = s; r < rows; r++) {
+      const m = mat[r * cols + c];
+      if (m === MAT.BEDROCK) { bot = r; break; }
+      if (top < 0 && (m === MAT.ROCK || m === MAT.CLAY)) top = r;
+    }
+    if (top < 0 || bot < 0 || bot - top < 2) continue;
+    const depth = bot - top;
+    // 2–4 bands; cut points spread evenly over the depth (column-coherent).
+    const nBands = 2 + gen.int(0, 2);
+    const cuts = [];
+    for (let b = 1; b < nBands; b++) cuts.push(Math.floor((b * depth) / nBands));
+    const bandType = [];
+    for (let b = 0; b < nBands; b++) {
+      const r = gen.next();
+      bandType.push(r < 0.4 ? 0 : r < 0.6 ? 1 : r < 0.8 ? 2 : 3);
+    }
+    for (let r = top; r < bot; r++) {
+      const i = r * cols + c;
+      let band = 0;
+      for (const cut of cuts) if (r - top >= cut) band++;
+      strata[i] = bandType[band];
+    }
+    // Veins at strata boundaries: the ROCK cell above the contact.
+    for (let r = top; r < bot - 1; r++) {
+      const i = r * cols + c;
+      if (mat[i] !== MAT.ROCK) continue;
+      if (strata[i] === strata[i + cols]) continue;
+      if (gen.next() >= VEIN_DENSITY) continue;
+      const sa = strata[i], sb = strata[i + cols];
+      let v;
+      if (sa === 1 || sb === 1) v = gen.next() < 0.5 ? 1 : 2; // granite: flint/quartz
+      else if (sa === 2 || sb === 2) v = 3;                  // limestone: stone
+      else v = 1 + gen.int(0, 2);                            // otherwise: any
+      vein[i] = v;
+      veinCount++;
+    }
+  }
+  if (log) log.push(`geology: strata bands assigned, ${veinCount} vein cells`);
+}
+
 // === driver ==================================================================
 function buildWorld(seed, size, attempt, gentle, log) {
   const gen = createRng(mixSeed(seed, size, attempt));
@@ -730,6 +797,9 @@ function buildWorld(seed, size, attempt, gentle, log) {
   erode(grid, cols, rows, surf, seaRow);
   // 4. water table
   const lakes = fillWater(grid, cols, rows, surf, seaRow);
+  // 4b. D4 geology: strata bands + mineral veins (own draw block on gen —
+  // after the clay-lens draws, after erosion, before growth).
+  assignGeology(gen, grid, cols, rows, surf, seaRow, log);
   // 5. flora (stateless hash only)
   // R2 (SIM-C): trees grow into the sky's global wind — the wind at growth
   // is the sky's initial global wind, a pure function of the seed (same

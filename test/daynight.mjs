@@ -23,7 +23,7 @@ import { gatherSenses, visionLightFactor, phaseSleepiness, predatorVigor, spawnP
 import { seasonalForcing, SEASON_AMP_MAX } from '../src/sim/weather.js';
 
 test('v0.28: exactly two new loci — activityPhase + instPhaseSleep (GENES 232)', () => {
-  assert.equal(GENES.length, 349); // D1: 257 + 92 regulatory loci
+  assert.equal(GENES.length, 350); // D4: 257 + 92 regulatory loci + detoxTol
   assert.deepEqual([...DAYNIGHT28_KEYS].sort(), ['activityPhase', 'instPhaseSleep']);
   const chr4 = CHROMOSOMES[3];
   assert.ok(chr4.includes('activityPhase'), 'activityPhase rides the behavior chromosome');

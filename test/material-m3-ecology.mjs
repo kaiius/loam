@@ -141,8 +141,10 @@ test('probe: HEREDITY — two generations show heritable trait shifts', () => {
 test('unit: plant genomes are diploid with meiosis + mutation', () => {
   const rng = createRng(1234);
   const a = randomPlantGenome(rng), b = randomPlantGenome(rng);
-  assert.equal(Object.keys(a.alleles).length, 10, '10 loci');
+  // D4: 13 loci (10 + colonizer/longevity/tannin, append-only).
+  assert.equal(Object.keys(a.alleles).length, 13, '13 loci');
   assert.equal(a.alleles.yield.length, 2, 'diploid');
+  assert.ok('colonizer' in a.alleles && 'longevity' in a.alleles && 'tannin' in a.alleles, 'D4 loci present');
   // Meiosis via seedFromFeeding path is covered above; check phenotype ranges.
   const ph = plantPhenotype(a);
   for (const k of Object.keys(ph)) {

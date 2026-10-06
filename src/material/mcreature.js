@@ -193,7 +193,18 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   if (b.bloodSugar <= 0 && b.fatigue >= 1) c.alive = false; // starved + exhausted
   if ((b.illness || 0) >= 1) c.alive = false;
   if ((b.injury || 0) >= 1) c.alive = false;
-  if (wasAlive && !c.alive) spawnCorpse(mw, c);
+  if (wasAlive && !c.alive) {
+    // D4: the kill ledger — a bite-credited death is predation. Additive
+    // only: mw.ecology.kills[pred][prey]++. (The bite verb sets _killCredit;
+    // death here confirms it.)
+    if (c._killCredit && mw.ecology) {
+      const k = mw.ecology.kills;
+      const pred = c._killCredit, prey = c.species || 'unknown';
+      if (!k[pred]) k[pred] = {};
+      k[pred][prey] = (k[pred][prey] || 0) + 1;
+    }
+    spawnCorpse(mw, c);
+  }
 
   return reward;
 }

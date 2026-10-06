@@ -87,6 +87,10 @@ export function createGrid(cols, rows) {
     water: new Float32Array(n),
     food: new Float32Array(n),
     nutrient: new Float32Array(n),
+    // D4: geology — per-cell tags, zero-cost when unused.
+    strata: new Uint8Array(n), // 0 sediment, 1 granite, 2 limestone, 3 shale
+    vein: new Uint8Array(n),   // 0 none, 1 flint, 2 quartz, 3 stone
+    weather: new Uint8Array(n), // weathering scalar (0-255) on ROCK
   };
 }
 

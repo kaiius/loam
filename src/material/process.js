@@ -32,10 +32,12 @@ export const SMOLDER_OUT = 120;     // smolder-ticks to burn out to inert residu
 export const EMBER_K = 0.02;        // smoldering ember deposit rate to flammable neighbors
 export const WIND_SPREAD_K = 0.12;  // wind bias on spread; test worlds have windU=0 -> bias exactly 1
 export const FUEL_K = 0;            // fuel-load damping on spread; 0 = today's flat term exactly
-// D3: dry granular creep (erosion) + weathering.
+// D3: dry granular creep (erosion). (D4: weathering moved to the
+// tickWeathering geological pass below — no longer part of tickRot.)
 export const REPOSE_DH = 2;         // cells of drop per column boundary that a slope holds
 export const CREEP_K = 0;           // creep rate (cells/tick per excess cell); 0 = no tick-time erosion
-export const WEATHER_TICKS = Infinity; // exposed wet ROCK -> SOIL after this many ticks; Infinity = off
+// (D4: D3's WEATHER_TICKS/Infinity weathering hook is retired — superseded
+// by the tickWeathering geological pass below.)
 
 // Rot tuning.
 export const ROT_THRESHOLD = 1000;  // damp deadwood -> soil after this many wet ticks
@@ -110,6 +112,9 @@ export function tickMaterials(mw, opts = {}) {
   tickDiffuse(mw); // R3: scalar diffusion before fire — moisture gates ignition
   tickFire(mw, fireOn);
   tickRot(mw);
+  // D4: the geological weathering pass — every 200 ticks, ROCK at soil
+  // interfaces accrues toward SOIL (deep time; ~51k ticks per conversion).
+  if (((mw.tick | 0) % WEATHER_EVERY) === 0) tickWeathering(mw);
   mw.tick = (mw.tick | 0) + 1;
   return mw;
 }
@@ -145,7 +150,8 @@ function fallTargetBlocked(g, bi, permanentTunnels) {
 function swapCells(g, mw, a, b) {
   // Every per-cell field travels with the cell when it falls — nutrient
   // included (R2), so enrichment moves with slumping soil, not against it.
-  for (const f of ['mat', 'moist', 'root', 'grownId', 'dug', 'heat', 'water', 'nutrient']) {
+  // D4: the geology tags (strata, vein, weather) travel too.
+  for (const f of ['mat', 'moist', 'root', 'grownId', 'dug', 'heat', 'water', 'nutrient', 'strata', 'vein', 'weather']) {
     const t = g[f][a];
     g[f][a] = g[f][b];
     g[f][b] = t;
@@ -608,12 +614,8 @@ export function tickFire(mw, fireOn) {
 // deadwood is worth eating (geophagy).
 export function tickRot(mw) {
   const g = mw.grid;
-  const { cols, mat, moist, nutrient } = g;
+  const { mat, moist, nutrient } = g;
   const rot = aux(mw, 'rot', Float32Array);
-  // D3: weathering accrual — exposed wet ROCK slowly becomes SOIL.
-  // Probe hook: mw.weatherTicks overrides the founder default (Infinity).
-  const wt = mw.weatherTicks ?? WEATHER_TICKS;
-  const weather = Number.isFinite(wt) ? aux(mw, 'weather', Float32Array) : null;
   const n = g.cols * g.rows;
   for (let i = 0; i < n; i++) {
     if (mat[i] === MAT.DEADWOOD && moist[i] > 0.3) {
@@ -626,18 +628,60 @@ export function tickRot(mw) {
         if (nutrient && !mw.frozenBiome) nutrient[i] = Math.min(NUTRIENT_MAX, nutrient[i] + DEADWOOD_NUTRIENT);
       }
     }
-    // D3 weathering: exposed ROCK (air above) with moist > 0.4 accrues;
-    // at weatherTicks it becomes SOIL — the slow complement to creep.
-    // Invariant: total cell count constant (rock -1, soil +1); moisture
-    // and fertility stay in the cell, same discipline as rot. At founder
-    // WEATHER_TICKS = Infinity this never fires (weather aux not even
-    // allocated) — today's behavior exactly.
-    if (weather && mat[i] === MAT.ROCK && moist[i] > 0.4 && (i < cols || mat[i - cols] === MAT.AIR)) {
-      weather[i] += 1;
-      if (weather[i] >= wt) {
-        mat[i] = MAT.SOIL;
-        weather[i] = 0;
+  }
+}
+
+// --- D4 geology: the weathering pass ----------------------------------------
+// D4 supersedes D3's tickRot weathering (WEATHER_TICKS/Infinity probe hook,
+// removed): weathering is now a first-class geological process on the
+// grid's own Uint8 `weather` array (grid.js), run every WEATHER_EVERY
+// material ticks.
+//
+// Rule: ROCK cells adjacent (4-neighborhood) to SOIL, SAND, CLAY, or AIR
+// accrue weather[i] += step; at 255 the cell becomes SOIL in place —
+// 51,200 ticks per conversion at founder step 1 (~21 days), honest deep
+// time. Fresh-weathered soil starts nutrient-poor (nutrient = 0); the vein
+// tag survives the conversion (the minerals don't vanish when the rock
+// becomes soil — geophagy reads it there). Mass-conserving: the cell above
+// is unchanged; no teleportation.
+//
+// Frozen control (same pattern as tickRot's rot deposit): the conversion
+// still happens (mechanics), but the scalar side-effects (moist, nutrient
+// writes) are skipped.
+// P6 neutral: mw.weatherStep = 0 disables the pass entirely.
+export const WEATHER_EVERY = 200;
+export const WEATHER_STEP = 1;
+export const WEATHER_CONVERT = 255;
+
+export function tickWeathering(mw) {
+  const g = mw.grid;
+  const step = mw.weatherStep ?? WEATHER_STEP;
+  if (!(step > 0)) return;
+  const { cols, rows, mat, moist, nutrient, weather } = g;
+  if (!weather) return;
+  const frozen = !!mw.frozenBiome;
+  const n = cols * rows;
+  const weatherable = (m) => m === MAT.SOIL || m === MAT.SAND || m === MAT.CLAY || m === MAT.AIR;
+  for (let i = 0; i < n; i++) {
+    if (mat[i] !== MAT.ROCK) continue;
+    const x = i % cols, y = (i / cols) | 0;
+    let adj = false, mSum = 0, mN = 0;
+    if (x > 0 && weatherable(mat[i - 1])) { adj = true; mSum += moist[i - 1]; mN++; }
+    if (x < cols - 1 && weatherable(mat[i + 1])) { adj = true; mSum += moist[i + 1]; mN++; }
+    if (y > 0 && weatherable(mat[i - cols])) { adj = true; mSum += moist[i - cols]; mN++; }
+    if (y < rows - 1 && weatherable(mat[i + cols])) { adj = true; mSum += moist[i + cols]; mN++; }
+    if (!adj) continue;
+    const w = weather[i] + step;
+    if (w >= WEATHER_CONVERT) {
+      mat[i] = MAT.SOIL;
+      weather[i] = 0;
+      // The vein tag survives (mineral endowment, not material).
+      if (!frozen) {
+        moist[i] = mN > 0 ? mSum / mN : moist[i];
+        if (nutrient) nutrient[i] = 0; // fresh soil is poor — it must be earned
       }
+    } else {
+      weather[i] = w;
     }
   }
 }
