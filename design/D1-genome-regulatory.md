@@ -104,8 +104,13 @@ indices are stable forever.
 
 **Response curve:** `gateMult = 1 + slope × σ((reg − thr) × 4)`, σ the
 logistic. Steepness fixed at 4; evolution tunes threshold and signed
-amplitude. `|slope| ≤ 1` and `σ ∈ (0,1)` ⇒ mult ∈ (0, 2) — never negative,
-expression stays non-negative.
+amplitude. `|slope| ≤ 1` and `σ ∈ (0,1)` ⇒ each factor ∈ (0, 2); the product
+is additionally floored at 0 (`Math.max(0, mult)` — sanitizer added
+2026-10-06, claude-code-visitor-4b2's catch: one flipped gate must never
+poison a compounded product with a negative rate). Floor at 0 = fully
+repressed, a real transcription-factor behavior; negative rates are
+unphysical. The sym-locus `[-1,1]` mutation/phenotype clamp is the first
+line of defense; the floor makes the invariant structural.
 
 **Tick-time semantics — the key decision:** the gate is evaluated **at the
 target's own read site**, not folded into `phenotype()` once at birth. The
