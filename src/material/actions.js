@@ -18,8 +18,9 @@
 // Work billing: digging/piling bill through ctx.active → the chemistry's
 // hungerRate (the existing developDrain pattern, design §3.1).
 
-import { MAT, MAT_PROPS, CELL_PX, groundIndexBelow } from './grid.js';
+import { MAT, CELL_PX, groundIndexBelow } from './grid.js';
 import { sampleMat, isSolid, isClimbable, supportBelow } from './locomotion.js';
+import { terrainMult, digWorkEff } from './thermo.js';
 import { digTargetCell } from './creature.js';
 import { nudgeBond } from '../sim/social.js';
 import { nearestCorpse } from './corpses.js';
@@ -66,6 +67,10 @@ export function walkPhysics(mw, c, speed = WALK_SPEED) {
     if (!supportAhead || wallAhead) { c.facing = -c.facing; c.flipCd = 6; }
   }
   c.x += c.facing * speed;
+  // D3: terrain texture — the ground answers through the hunger ledger.
+  // The tick applies this to the action's activity (1.0 exactly at
+  // founder FRICTION_K = 0).
+  c._terrainMult = terrainMult(mw, c.x, c.y);
 }
 
 // Gravity + landing. Shared by every tick.
@@ -79,6 +84,10 @@ export function gravityPhysics(mw, c) {
   c.y += c.vy;
   const sup = supportBelow(mw, c.x, c.y, leg);
   if (sup) {
+    // D3: landing hook — the impact speed is recorded for the fall-damage
+    // texture point (thermo.js fallDamageMult). No fall-damage mechanic
+    // exists today, so the base damage is 0 and nothing changes.
+    if (!c.grounded) c._impactSpeed = c.vy;
     c.y = sup.y; c.vy = 0; c.grounded = true;
   } else c.grounded = false;
 }
@@ -439,7 +448,9 @@ function digWork(mw, c) {
   const t = digTargetCell(mw, c);
   if (!t) { c.digTicks = 0; return; }
   const m = g.mat[t.idx];
-  const work = MAT_PROPS[m].digWork;
+  // D3: digging resistance — the material's hardness answers back.
+  // 1.0x exactly at founder DIG_HARD_K = 0 (today's digWork behavior).
+  const work = digWorkEff(m);
   const power = c.body ? c.body.digPower : 1;
   if (!Number.isFinite(work) || power <= 0) { c.digTicks = 0; return; }
   c.digTicks = (c.digTicks || 0) + 1;
@@ -457,7 +468,7 @@ function digWork(mw, c) {
 }
 
 function matName(m) {
-  return { 1: 'soil', 2: 'sand', 3: 'clay', 4: 'rock', 5: 'wood', 6: 'deadwood', 7: 'leaf' }[m] || 'matter';
+  return { 1: 'soil', 2: 'sand', 3: 'clay', 4: 'rock', 5: 'wood', 6: 'deadwood', 7: 'leaf', 10: 'char' }[m] || 'matter';
 }
 
 // --- piling --------------------------------------------------------------

@@ -20,7 +20,8 @@
 // learn(brain, pheno, reward, chems?), forward. The instinct genes wire
 // sense→action directly, exactly as before.
 
-import { GENES, gateMultiplier } from './genome.js';
+import { GENES } from './genome.js';
+import { gateMultiplier } from './gates.js';
 
 export const ACTIONS = [
   'seekFood', // move toward nearest food

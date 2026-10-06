@@ -1,7 +1,8 @@
 // A creature: genome + biochemistry + brain + body in the world.
 // Per tick: sense → brain decides → act → learn from the outcome.
 
-import { phenotype, markLocus, gateMultiplier, hasActiveGates } from './genome.js';
+import { phenotype, markLocus } from './genome.js';
+import { gateMultiplier, hasActiveGates } from './gates.js';
 import { createBiochem, tickBiochem, ageStage, stageSize, isDead, mood, coldSense, heatSense } from './biochem.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import {

@@ -24,6 +24,7 @@ export const MAT = {
   LEAF: 7,
   WATER: 8,
   BEDROCK: 9,
+  CHAR: 10, // D3: partially-burned wood between WOOD and DEADWOOD (appended; table order untouched)
 };
 
 // Per-material properties. integrity = max unsupported horizontal span
@@ -31,27 +32,35 @@ export const MAT = {
 // cell at digPower 1 (Infinity = undiggable). solid lists what counts as
 // ground; climbable flags WOOD here — the steep-ROCK slope check lives in
 // locomotion (M2), not in this table.
+// D3: four appended texture columns (existing columns untouched):
+// friction (locomotion cost), hardness (fall impact, dig resistance),
+// brittleness (shatter on hard impact), durability (object wear).
+// All D3 coefficients are founder-zero, so every new term is an identity
+// (x1.0 / +0) at founder defaults — the world answers with more texture
+// only when the coefficients go live.
 export const MAT_PROPS = [
   // AIR
-  { digWork: 0,        integrity: 0,        fertility: 0,    flammability: 0,   permeability: 0,    solid: false, climbable: false },
+  { digWork: 0,        integrity: 0,        fertility: 0,    flammability: 0,   permeability: 0,    solid: false, climbable: false, friction: 0.5, hardness: 0,   brittleness: 0,   durability: 0   },
   // SOIL — the living earth
-  { digWork: 3,        integrity: 3,        fertility: 1.0,  flammability: 0.1, permeability: 0.7,  solid: true,  climbable: false },
+  { digWork: 3,        integrity: 3,        fertility: 1.0,  flammability: 0.1, permeability: 0.7,  solid: true,  climbable: false, friction: 0.5, hardness: 0.2, brittleness: 0.1, durability: 0.5 },
   // SAND — collapses always
-  { digWork: 2,        integrity: 0,        fertility: 0.25, flammability: 0.0, permeability: 0.9,  solid: true,  climbable: false },
+  { digWork: 2,        integrity: 0,        fertility: 0.25, flammability: 0.0, permeability: 0.9,  solid: true,  climbable: false, friction: 0.7, hardness: 0.1, brittleness: 0.0, durability: 0.5 },
   // CLAY — piled soil compacts toward this
-  { digWork: 5,        integrity: 5,        fertility: 0.5,  flammability: 0.0, permeability: 0.2,  solid: true,  climbable: false },
+  { digWork: 5,        integrity: 5,        fertility: 0.5,  flammability: 0.0, permeability: 0.2,  solid: true,  climbable: false, friction: 0.4, hardness: 0.4, brittleness: 0.2, durability: 0.5 },
   // ROCK — needs claw/digPower
-  { digWork: 12,       integrity: 8,        fertility: 0.05, flammability: 0.0, permeability: 0.05, solid: true,  climbable: false },
+  { digWork: 12,       integrity: 8,        fertility: 0.05, flammability: 0.0, permeability: 0.05, solid: true,  climbable: false, friction: 0.3, hardness: 0.9, brittleness: 0.6, durability: 0.5 },
   // WOOD — living trunks/limbs
-  { digWork: 8,        integrity: 6,        fertility: 0.0,  flammability: 0.6, permeability: 0.0,  solid: true,  climbable: true  },
+  { digWork: 8,        integrity: 6,        fertility: 0.0,  flammability: 0.6, permeability: 0.0,  solid: true,  climbable: true,  friction: 0.5, hardness: 0.6, brittleness: 0.3, durability: 0.8 },
   // DEADWOOD — fallen, rots -> soil
-  { digWork: 6,        integrity: 4,        fertility: 0.3,  flammability: 0.9, permeability: 0.0,  solid: true,  climbable: false },
+  { digWork: 6,        integrity: 4,        fertility: 0.3,  flammability: 0.9, permeability: 0.0,  solid: true,  climbable: false, friction: 0.6, hardness: 0.4, brittleness: 0.7, durability: 0.5 },
   // LEAF — canopy cells
-  { digWork: 1,        integrity: 0,        fertility: 0.4,  flammability: 0.8, permeability: 0.0,  solid: false, climbable: false },
+  { digWork: 1,        integrity: 0,        fertility: 0.4,  flammability: 0.8, permeability: 0.0,  solid: false, climbable: false, friction: 0.8, hardness: 0.0, brittleness: 0.0, durability: 0.5 },
   // WATER
-  { digWork: Infinity, integrity: 0,        fertility: 0,    flammability: 0.0, permeability: 0.0,  solid: false, climbable: false },
+  { digWork: Infinity, integrity: 0,        fertility: 0,    flammability: 0.0, permeability: 0.0,  solid: false, climbable: false, friction: 0.5, hardness: 0,   brittleness: 0,   durability: 0   },
   // BEDROCK — world floor, undiggable
-  { digWork: Infinity, integrity: Infinity, fertility: 0,    flammability: 0.0, permeability: 0.0,  solid: true,  climbable: false },
+  { digWork: Infinity, integrity: Infinity, fertility: 0,    flammability: 0.0, permeability: 0.0,  solid: true,  climbable: false, friction: 0.3, hardness: 1.0, brittleness: 0.0, durability: 0.5 },
+  // CHAR — partially-burned wood (D3): still flammable, weakly
+  { digWork: 6,        integrity: 4,        fertility: 0.3,  flammability: 0.3, permeability: 0.0,  solid: true,  climbable: false, friction: 0.6, hardness: 0.3, brittleness: 0.8, durability: 0.3 },
 ];
 
 // Create an empty grid. All fields zeroed: mat starts as AIR everywhere.

@@ -1210,6 +1210,11 @@ function cellHSL(m, cx, cy, i, grid, mw, lit) {
       const v = h3(seed, cx, cy);
       return [30 + (v - 0.5) * 8, 13, shade(29 + (v - 0.5) * 6, lit)];
     }
+    case MAT.CHAR: {
+      // D3: charred wood — near-black umbers, the visible memory of fire.
+      const v = h3(seed, cx, cy);
+      return [18 + (v - 0.5) * 8, 22, shade(13 + (v - 0.5) * 5, lit)];
+    }
     case MAT.LEAF: {
       // Greens varied per cell by stateless hash — canopy clusters, never
       // sticker dots. Interior leaves are dimmed by the AO so the crown has

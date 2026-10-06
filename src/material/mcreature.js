@@ -23,7 +23,7 @@ import { tickChem } from './chem.js';
 import { gatherMaterialSenses } from './senses.js';
 import { executeAction, gravityPhysics } from './actions.js';
 import { spawnCorpse } from './corpses.js';
-import { tempAt } from './weather.js';
+import { effectiveTemp, thermoStep, TORPOR_T } from './thermo.js';
 import { MAT } from './grid.js';
 
 export { ACTIONS };
@@ -103,7 +103,10 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   // --- decide (exploration noise: stateless hash, never a stream) ---
   const input = senseVector47(s);
   const erng = createRng(hash3(mw.seed || 1, mw.tick || 0, c.id * 7919));
-  const decision = decide(c.brain, input, c.exploration, erng);
+  // D3: cold torpor — below TORPOR_T the brain's exploration noise halves.
+  // Deterministic: the hash stream is unchanged, only the amplitude scales.
+  const torpor = Number.isFinite(b.coreTemp) && b.coreTemp < TORPOR_T;
+  const decision = decide(c.brain, input, torpor ? (c.exploration ?? 0.1) * 0.5 : c.exploration, erng);
   let action = decision.index;
   // Action-level proximity fallback (the starvation fix, part 3): the
   // instinct gate (instFoodDistEat) is evolvable and neural, hence noisy —
@@ -136,6 +139,15 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   // snapshot needs the pre-action level for Grand's rule.
   const mineralsBefore = c.minerals ?? 0.6;
   const chemCtx = executeAction(mw, c, action, s, ctx);
+  // D3: terrain texture + torpor answer through the activity the chemistry
+  // bills. Both are x1.0 at founder (FRICTION_K = 0; no torpor) — today's
+  // behavior exactly. Torpor x1.5 on movement energy: the cold makes every
+  // step cost more (the exertion term scales; metabolic heat follows).
+  if (c._terrainMult !== undefined) {
+    chemCtx.active = Math.min(1.5, (chemCtx.active ?? 0.6) * c._terrainMult);
+    c._terrainMult = undefined;
+  }
+  if (torpor) chemCtx.active = Math.min(1.5, (chemCtx.active ?? 0.6) * 1.5);
   // R6: the player's pet lands here — the chemistry hears it this tick
   // (tickBiochem soothes comfort on ctx.petted: a real small delta, then
   // it decays back like everything else).
@@ -154,9 +166,19 @@ export function tickMaterialCreature(mw, c, ctx = {}) {
   chemCtx.mineralsAfter = c.minerals;
 
   // --- chemistry + Grand's endogenous reward ---
-  // The sky sets the ambient temperature now — cold kills, heat stresses.
-  // (M2 hardcoded 0.5; the material world has weather now.)
-  chemCtx.ambientTemp = mw.sky ? tempAt(mw, c.x) : 0.5;
+  // D3: the experienced ambient — sky temperature (or 0.5) as the base,
+  // plus cold snaps, fire-warmed ground, shelter buffering, huddle warmth
+  // (effectiveTemp) — through the existing ctx.ambientTemp path. The
+  // Newtonian exchange itself (k/C insulation/inertia + ACT_HEAT) runs in
+  // the material track (thermoStep); biochem's own coreTemp drift is
+  // neutralized by handing it the post-step coreTemp as ambient, so the
+  // exchange is single-counted. Everything else in biochem (panting,
+  // hypo/hyperthermia ledgers, metabolic heat, regFuel) runs untouched.
+  // Heat illness runs through the existing hyperthermia ledger, not a
+  // parallel drain — the universe is amoral, the ledger is single.
+  const T_eff = effectiveTemp(mw, c, s, ctx.others || []);
+  thermoStep(b, c, T_eff, chemCtx);
+  chemCtx.ambientTemp = b.coreTemp;
   chemCtx.daySun = 1;
   const { reward } = tickChem(b, c.pheno, dt, chemCtx);
   c.lastReward = reward;

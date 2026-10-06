@@ -32,6 +32,12 @@
 
 import { createRng } from './rng.js';
 import { budPotentials } from './evodevo.js';
+import { gateMultiplier, hasActiveGates } from './gates.js';
+// Re-export: genome.js was the historical home of the gate functions and
+// test/sim.mjs (and any other consumer) imports them from here. The move
+// to gates.js broke the export surface without breaking any import —
+// the file-level sim.mjs failure masked 25 subtests. Keep the surface.
+export { gateMultiplier, hasActiveGates };
 
 export const GENES = [
   // appearance
@@ -823,66 +829,6 @@ export function randomAllele(gene, rng) {
 export const DUP_RATE = 0.001; // per gene per generation: whole-gene duplication
 export const DEL_RATE = 0.002; // per extra copy per generation: deletion (prunes the neutral)
 export const MAX_EXTRA = 6; // cap on duplicated copies per genome
-// D1 "Regulatory depth": the transcription-factor gate.
-//
-// gateMultiplier(pheno, targetKey, chem) — the product over the 8 family-G
-// genes whose target is targetKey of the response curve
-//   1 + slope × σ((reg − thr) × 4)
-// σ the logistic, steepness fixed at 4; evolution tunes threshold and signed
-// amplitude. |slope| ≤ 1 and σ ∈ (0,1) ⇒ mult ∈ (0, 2): never negative,
-// expression stays non-negative. The regulator value is the LIVE chemical
-// level at the moment the target is read — gating at tick time is a pure
-// function of expressed values + live state, zero RNG draws.
-// At founder (all slopes 0) every factor is exactly 1.0 — behavior-neutral.
-// chem may be undefined (birth-time wiring before biochem exists) → 1.0.
-// The per-phenotype gate plan is cached in a WeakMap: read sites call this
-// per tick, and at founder the plan is empty so the call is one lookup.
-function sigma(x) { return 1 / (1 + Math.exp(-x)); }
-const _gatePlanCache = new WeakMap();
-function gatePlan(pheno) {
-  let plan = _gatePlanCache.get(pheno);
-  if (!plan) {
-    plan = [];
-    for (let i = 0; i < 8; i++) {
-      const slope = pheno[`g${i}slope`] ?? 0;
-      if (slope === 0) continue; // the neutralizer: mult ≡ 1.0 exactly, no gate
-      plan.push({
-        tgt: pheno[`g${i}tgt`],
-        reg: pheno[`g${i}reg`],
-        slope,
-        thr: pheno[`g${i}thr`] ?? 0.5,
-      });
-    }
-    _gatePlanCache.set(pheno, plan);
-  }
-  return plan;
-}
-export function gateMultiplier(pheno, targetKey, chem) {
-  if (!chem) return 1.0;
-  const plan = gatePlan(pheno);
-  if (plan.length === 0) return 1.0;
-  let mult = 1.0;
-  for (const g of plan) {
-    if (g.tgt !== targetKey) continue;
-    const regV = chem[g.reg];
-    if (regV === undefined) continue;
-    mult *= 1 + g.slope * sigma((regV - g.thr) * 4);
-  }
-  // Sanitizer (claude-code-visitor-4b2, 2026-10-06): mult must never go
-  // negative — a negative rate is unphysical (chemistry backwards, negative
-  // concentrations), and one flipped gate would poison a whole product of
-  // compounded gates. The sym-locus [-1,1] mutation bound is the first line
-  // of defense, but the invariant is structural now: floor at 0 (fully
-  // repressed — a real transcription-factor behavior), not a hope about
-  // where slopes can drift.
-  return Math.max(0, mult);
-}
-// Fast path for hot read sites: one cached lookup per tick instead of one
-// per target. At founder (all slopes 0) this is false and the read sites
-// skip gateMultiplier entirely.
-export function hasActiveGates(pheno) {
-  return gatePlan(pheno).length > 0;
-}
 // Express one non-choice locus as mean × mark (no gates, no phenotype
 // derivations) — for read-site gating inside inherit(), where no phenotype
 // exists yet. Mirrors phenotype()'s base expression, including extra-dosage

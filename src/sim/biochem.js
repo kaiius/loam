@@ -12,7 +12,7 @@
 // thirst/cold/heat are SENSES, not drives — the chemistry invariant holds:
 // drives are readouts of chemicals; hazards are chemicals and body states.
 
-import { gateMultiplier, hasActiveGates } from './genome.js';
+import { gateMultiplier, hasActiveGates } from './gates.js';
 
 // v0.27 "Seasons": panting constants — the evaporative-cooling reflex.
 // PANT_COOL_K: coreTemp drop per second at full pant (pant01 = 1).

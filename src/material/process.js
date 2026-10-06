@@ -14,12 +14,28 @@ import { MAT, MAT_PROPS } from './grid.js';
 
 // Fire tuning.
 export const IGNITION_HEAT = 0.5;   // heat above this ignites flammable cells
-export const BURNING_HEAT = 0.7;    // heat above this counts as burning
+export const BURNING_HEAT = 0.7;    // legacy burning predicate (kept for reference; D3 uses phase)
 export const HEAT_DECAY = 0.95;     // heat multiplier per tick
 export const SPREAD_K = 0.3;        // heat[n] += heat[c] * flammability[n] * SPREAD_K
 export const BURN_TICKS_LEAF = 3;   // burning leaf -> AIR after this many ticks
 export const BURN_TICKS_DEADWOOD = 30; // burning deadwood -> SOIL after this many
-export const BURN_TICKS_WOOD = 60;  // burning wood -> DEADWOOD after this many
+export const BURN_TICKS_WOOD = 60;  // legacy wood burn (kept for reference; D3 splits it into CHAR_TICKS + CHAR_BURN)
+// D3 (material physics): fire as a state machine, not a heat predicate.
+export const SMOLDER_HEAT = 0.35;   // heat below this: flaming -> smoldering
+export const CHAR_TICKS = 30;       // burning WOOD -> CHAR after this many ticks
+export const CHAR_BURN = 30;        // burning CHAR -> DEADWOOD after this many ticks
+// Founder parity: CHAR_TICKS + CHAR_BURN = 60 = BURN_TICKS_WOOD, so the
+// aggregate WOOD -> DEADWOOD timing is bit-identical to the old path.
+export const REFLARE_HEAT = 0.55;   // smoldering cell above this heat re-flares...
+export const REFLARE_MOIST = 0.25;  // ...if drier than this moisture
+export const SMOLDER_OUT = 120;     // smolder-ticks to burn out to inert residue
+export const EMBER_K = 0.02;        // smoldering ember deposit rate to flammable neighbors
+export const WIND_SPREAD_K = 0.12;  // wind bias on spread; test worlds have windU=0 -> bias exactly 1
+export const FUEL_K = 0;            // fuel-load damping on spread; 0 = today's flat term exactly
+// D3: dry granular creep (erosion) + weathering.
+export const REPOSE_DH = 2;         // cells of drop per column boundary that a slope holds
+export const CREEP_K = 0;           // creep rate (cells/tick per excess cell); 0 = no tick-time erosion
+export const WEATHER_TICKS = Infinity; // exposed wet ROCK -> SOIL after this many ticks; Infinity = off
 
 // Rot tuning.
 export const ROT_THRESHOLD = 1000;  // damp deadwood -> soil after this many wet ticks
@@ -73,12 +89,23 @@ function aux(mw, name, Ctor) {
   return a;
 }
 
+// Variant for auxiliary arrays that are not per-cell (e.g. per-column).
+function auxN(mw, name, Ctor, n) {
+  let a = mw[name];
+  if (!a || a.length !== n) {
+    a = new Ctor(n);
+    mw[name] = a;
+  }
+  return a;
+}
+
 // Advance the whole substrate one tick. Advances mw.tick by 1.
 export function tickMaterials(mw, opts = {}) {
   const fireOn = opts.fireOn ?? mw.fireOn ?? true;
   const permanentTunnels = opts.permanentTunnels ?? mw.permanentTunnels ?? false;
   const waterEvery = opts.waterEvery ?? 1;
   tickSlump(mw, permanentTunnels);
+  tickCreep(mw); // D3: dry granular creep (no-op at founder CREEP_K = 0)
   if ((mw.tick | 0) % waterEvery === 0) tickWater(mw);
   tickDiffuse(mw); // R3: scalar diffusion before fire — moisture gates ignition
   tickFire(mw, fireOn);
@@ -123,7 +150,7 @@ function swapCells(g, mw, a, b) {
     g[f][a] = g[f][b];
     g[f][b] = t;
   }
-  for (const f of ['rot', 'burn']) {
+  for (const f of ['rot', 'burn', 'phase', 'smolder', 'weather']) {
     const arr = mw[f];
     if (arr) {
       const t = arr[a];
@@ -208,6 +235,62 @@ function tickSlump(mw, permanentTunnels) {
       fall[bi] = 1;
       fall[i] = 0;
     }
+  }
+}
+
+// ---- Creep: dry granular erosion (D3) ----
+//
+// Sediment-ledger creep — NO fluids. One column pass per tick: where the
+// surface drops more than REPOSE_DH cells across a column boundary, the
+// higher column sheds its top loose cell (SOIL/SAND/CLAY only;
+// ROCK/BEDROCK/WOOD immune) onto the lower column's surface. Cells
+// relocate whole — every per-cell field travels via the swapCells
+// discipline — so the invariant is exact: sum over columns of
+// count(mat = m) is constant for every material m. Nothing is created or
+// destroyed; nothing pours.
+//
+// Deterministic: boundaries process west -> east; when two boundaries
+// compete for one donor column in a tick, west wins (sweep order).
+// At founder CREEP_K = 0 this is a no-op — tick-time erosion did not
+// exist before D3 (worldgen keeps its own erosion passes).
+function surfaceHeight(g, c) {
+  // y of the topmost solid cell in column c, or rows if none.
+  for (let y = 0; y < g.rows; y++) {
+    if (MAT_PROPS[g.mat[y * g.cols + c]].solid) return y;
+  }
+  return g.rows;
+}
+
+const CREEP_LOOSE = new Set([MAT.SOIL, MAT.SAND, MAT.CLAY]);
+
+export function tickCreep(mw) {
+  // Probe hook: mw.creepK overrides the founder default (0) so the live
+  // value can be exercised without touching the shipped constant.
+  const ck = mw.creepK ?? CREEP_K;
+  if (ck <= 0) return;
+  const g = mw.grid;
+  const { cols, rows, mat } = g;
+  const H = auxN(mw, '_surfH', Int32Array, cols);
+  for (let c = 0; c < cols; c++) H[c] = surfaceHeight(g, c);
+  const acc = auxN(mw, '_creepAcc', Float32Array, cols - 1);
+  for (let c = 0; c < cols - 1; c++) {
+    const d = H[c] - H[c + 1]; // signed drop (y grows downward)
+    const excess = Math.abs(d) - REPOSE_DH;
+    if (excess <= 0) continue;
+    acc[c] = Math.min(4, acc[c] + ck * excess); // bounded pressure memory
+    if (acc[c] < 1) continue;
+    const dc = d < 0 ? c : c + 1; // donor = the higher column (smaller y)
+    const lc = dc === c ? c + 1 : c;
+    const dy = H[dc];
+    if (dy >= rows) continue;
+    const di = dy * cols + dc;
+    if (!CREEP_LOOSE.has(mat[di])) continue; // only loose cells creep
+    const ly = H[lc] - 1; // the air cell atop the lower column's surface
+    if (ly < 0 || mat[ly * cols + lc] !== MAT.AIR) continue;
+    swapCells(g, mw, di, ly * cols + lc);
+    acc[c] -= 1;
+    H[dc] = surfaceHeight(g, dc);
+    H[lc] = surfaceHeight(g, lc);
   }
 }
 
@@ -358,66 +441,149 @@ export function tickDiffuse(mw) {
 
 // ---- Fire ----
 //
+// D3: fire as a state machine, not a heat predicate. Per-cell `phase`
+// (Uint8 aux): 0 unlit / 1 flaming / 2 smoldering — phase carries the
+// memory that heat alone cannot. `smolder` (Float32 aux) accrues
+// smolder-ticks on smoldering cells.
+//
 // Cells with flammability > 0 and heat above the moisture-gated ignition
-// heat to flammable 8-neighbors: heat[n] += heat[c] * flammability[n] * 0.3.
-// Burning cells (heat > BURNING_HEAT) convert after sustained burn:
-// LEAF -> AIR (fast), DEADWOOD -> SOIL (rots to earth), WOOD -> DEADWOOD
-// (long burn). Heat decays *0.95 per tick. With fireOn=false there is no
-// ignition, no spread, and no conversion — heat just decays.
+// ignite (phase 0 -> 1). Flaming cells spread heat to flammable
+// 8-neighbors (post-sweep, ~1 cell/tick) and convert after sustained
+// burn: LEAF -> AIR (fast), WOOD -> CHAR -> DEADWOOD (the char layer is
+// timing-neutral at founder defaults: 30 + 30 = today's 60-tick WOOD
+// burn), DEADWOOD -> SOIL. When a flaming cell's heat falls below
+// SMOLDER_HEAT it smolders: slow charring, ember deposits to neighbors,
+// re-flare if reheated while dry, burnout to inert residue after
+// SMOLDER_OUT smolder-ticks. With fireOn=false there is no ignition, no
+// spread, and no conversion — heat just decays and phase clears.
+function burnTicksFor(m) {
+  if (m === MAT.LEAF) return BURN_TICKS_LEAF;
+  if (m === MAT.WOOD) return CHAR_TICKS;
+  if (m === MAT.CHAR) return CHAR_BURN;
+  return BURN_TICKS_DEADWOOD;
+}
+
+const clampSpread = (v) => (v < 0 ? 0 : v > 2 ? 2 : v);
+
 export function tickFire(mw, fireOn) {
   const g = mw.grid;
   const { cols, rows, mat, heat, moist } = g;
   const burn = aux(mw, 'burn', Float32Array);
+  const phase = aux(mw, 'phase', Uint8Array);
+  const smolder = aux(mw, 'smolder', Float32Array);
   // Spread accumulates here and applies after the sweep: fire advances
   // ~1 cell per tick. (Applying spread in-sweep let one tick chain
   // across the whole fuel bed — a lightning strike flash-burned half
   // the world's canopy. It also let heat run to Infinity.)
   const spread = aux(mw, 'spread', Float32Array);
+  // D3: wind bias drinks from the pinned global sky wind only (not the
+  // per-cell hash noise, which stays in the renderer/leaf-sway domain).
+  // No sky (test worlds) -> windU = 0 -> bias exactly 1, deterministic.
+  const windU = mw.sky ? mw.sky.windU : 0;
+  // Probe hook: mw.fuelK overrides the founder default (0).
+  const fuelK = mw.fuelK ?? FUEL_K;
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       const i = y * cols + x;
       heat[i] *= HEAT_DECAY;
       // Heat is a 0..1-ish intensity (strike sets 0.9) — clamp it.
       if (heat[i] > 1.5) heat[i] = 1.5;
-      if (!fireOn) continue;
+      if (!fireOn) {
+        // Heat decays only; the fire's memory clears with it.
+        if (phase[i] !== 0) { phase[i] = 0; burn[i] = 0; smolder[i] = 0; }
+        continue;
+      }
       const m = mat[i];
       const fl = MAT_PROPS[m].flammability;
-      if (fl <= 0) continue;
+      if (fl <= 0) {
+        // Unburnable (or became so mid-fire, e.g. dug out) — no phase.
+        if (phase[i] !== 0) { phase[i] = 0; burn[i] = 0; smolder[i] = 0; }
+        continue;
+      }
+      // Ignition (phase 0 -> 1). Two doors, matching the old code's two
+      // independent predicates: the moisture-gated ignition gate (which
+      // also arms spreading), and the raw burning predicate — a cell hot
+      // enough to burn is burning even when too wet to carry fire
+      // (it burns out alone, spreading nothing: the spread loop below
+      // stays gate-limited by the cell's own moisture, as before).
       // R3 (reactive biomes): ignition is moisture-gated — dry fuel catches
       // at IGNITION_HEAT, soaked fuel needs twice the heat. A lightning
       // strike (heat 0.9) ignites at moist < 0.80, fizzles above it.
-      if (heat[i] > IGNITION_HEAT * (1 + moist[i])) {
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            if (dx === 0 && dy === 0) continue;
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
-            const n = ny * cols + nx;
-            const fn = MAT_PROPS[mat[n]].flammability;
-            // R2 (SIM-A): target moisture damps spread — wet cells don't
-            // carry fire. (1 - moist[n]) is 1 for dry fuel, 0 when soaked.
-            if (fn > 0) spread[n] = Math.min(1.5, spread[n] + heat[i] * fn * SPREAD_K * (1 - moist[n]));
+      if (phase[i] === 0) {
+        if (heat[i] > IGNITION_HEAT * (1 + moist[i]) || heat[i] > BURNING_HEAT) phase[i] = 1;
+        else continue;
+      }
+      if (phase[i] === 1) {
+        // ---- flaming ----
+        burn[i] += 1;
+        if (heat[i] < SMOLDER_HEAT) {
+          phase[i] = 2; // the fire goes underground, into the coals
+        } else if (heat[i] > IGNITION_HEAT * (1 + moist[i])) {
+          // Spread, modulated — only while hot enough to carry. The
+          // post-sweep accumulation discipline is unchanged (this is the
+          // guardrail the old flash-burn bug taught).
+          // windBias = clamp(1 + WIND_SPREAD_K·U·sign(dx), 0, 2);
+          // fuelLoad = 1 - FUEL_K·(burn/BURN_TICKS_m) — a nearly-spent cell
+          // pushes the front weakly. At founder defaults (FUEL_K = 0,
+          // windU = 0 in test worlds) this is today's flat term exactly.
+          const fuel = 1 - fuelK * (burn[i] / burnTicksFor(m));
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
+              const n = ny * cols + nx;
+              const fn = MAT_PROPS[mat[n]].flammability;
+              // R2 (SIM-A): target moisture damps spread — wet cells don't
+              // carry fire. (1 - moist[n]) is 1 for dry fuel, 0 when soaked.
+              if (fn > 0) {
+                const wb = clampSpread(1 + WIND_SPREAD_K * windU * Math.sign(dx));
+                spread[n] = Math.min(1.5, spread[n] + heat[i] * fn * SPREAD_K * (1 - moist[n]) * wb * fuel);
+              }
+            }
           }
         }
-      }
-      if (heat[i] > BURNING_HEAT) {
-        burn[i] += 1;
+        // Conversions. LEAF -> AIR (fast), DEADWOOD -> SOIL (rots to
+        // earth), WOOD -> CHAR -> DEADWOOD (long burn through the char layer).
         if (m === MAT.LEAF && burn[i] >= BURN_TICKS_LEAF) {
           mat[i] = MAT.AIR;
-          heat[i] = 0;
-          burn[i] = 0;
+          heat[i] = 0; burn[i] = 0; smolder[i] = 0; phase[i] = 0;
+        } else if (m === MAT.WOOD && burn[i] >= CHAR_TICKS) {
+          mat[i] = MAT.CHAR;
+          heat[i] = 0; burn[i] = 0; smolder[i] = 0; // still flaming, now as char
+        } else if (m === MAT.CHAR && burn[i] >= CHAR_BURN) {
+          mat[i] = MAT.DEADWOOD;
+          heat[i] = 0; burn[i] = 0; smolder[i] = 0;
         } else if (m === MAT.DEADWOOD && burn[i] >= BURN_TICKS_DEADWOOD) {
           mat[i] = MAT.SOIL; // mass-conserving: it rots to earth
-          heat[i] = 0;
-          burn[i] = 0;
-        } else if (m === MAT.WOOD && burn[i] >= BURN_TICKS_WOOD) {
-          mat[i] = MAT.DEADWOOD;
-          heat[i] = 0;
-          burn[i] = 0;
+          heat[i] = 0; burn[i] = 0; smolder[i] = 0; phase[i] = 0;
         }
       } else {
-        burn[i] = 0;
+        // ---- smoldering (phase 2) ----
+        smolder[i] += 0.25; // slow charring — quarter rate
+        if (heat[i] > REFLARE_HEAT && moist[i] < REFLARE_MOIST) {
+          phase[i] = 1; // re-flare: the coals catch again
+          smolder[i] = 0;
+        } else if (smolder[i] >= SMOLDER_OUT) {
+          phase[i] = 0; // burned out to inert CHAR/DEADWOOD residue
+          burn[i] = 0; smolder[i] = 0;
+        } else {
+          // Ember carryover: a smoldering log is a real ignition risk,
+          // but too slow to run away on its own.
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
+              const n = ny * cols + nx;
+              if (MAT_PROPS[mat[n]].flammability > 0) {
+                spread[n] = Math.min(1.5, spread[n] + EMBER_K * (1 - moist[n]));
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -442,8 +608,12 @@ export function tickFire(mw, fireOn) {
 // deadwood is worth eating (geophagy).
 export function tickRot(mw) {
   const g = mw.grid;
-  const { mat, moist, nutrient } = g;
+  const { cols, mat, moist, nutrient } = g;
   const rot = aux(mw, 'rot', Float32Array);
+  // D3: weathering accrual — exposed wet ROCK slowly becomes SOIL.
+  // Probe hook: mw.weatherTicks overrides the founder default (Infinity).
+  const wt = mw.weatherTicks ?? WEATHER_TICKS;
+  const weather = Number.isFinite(wt) ? aux(mw, 'weather', Float32Array) : null;
   const n = g.cols * g.rows;
   for (let i = 0; i < n; i++) {
     if (mat[i] === MAT.DEADWOOD && moist[i] > 0.3) {
@@ -454,6 +624,19 @@ export function tickRot(mw) {
         // Frozen control: the rot still converts (it's R1 mechanics), but
         // the nutrient deposit is scalar flux — skipped.
         if (nutrient && !mw.frozenBiome) nutrient[i] = Math.min(NUTRIENT_MAX, nutrient[i] + DEADWOOD_NUTRIENT);
+      }
+    }
+    // D3 weathering: exposed ROCK (air above) with moist > 0.4 accrues;
+    // at weatherTicks it becomes SOIL — the slow complement to creep.
+    // Invariant: total cell count constant (rock -1, soil +1); moisture
+    // and fertility stay in the cell, same discipline as rot. At founder
+    // WEATHER_TICKS = Infinity this never fires (weather aux not even
+    // allocated) — today's behavior exactly.
+    if (weather && mat[i] === MAT.ROCK && moist[i] > 0.4 && (i < cols || mat[i - cols] === MAT.AIR)) {
+      weather[i] += 1;
+      if (weather[i] >= wt) {
+        mat[i] = MAT.SOIL;
+        weather[i] = 0;
       }
     }
   }

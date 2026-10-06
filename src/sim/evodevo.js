@@ -28,7 +28,7 @@
 // read what the genome WANTS (choosing genes, not bodies); the realized
 // body is what development built under regulation.
 
-import { gateMultiplier } from './genome.js';
+import { gateMultiplier } from './gates.js';
 
 // Paired (bilaterally symmetric) limb sites. Append-only — a future version
 // may add e.g. 'crown' or 'flank' without breaking old genomes.
