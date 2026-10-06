@@ -1,0 +1,24 @@
+name: material-gate
+
+# Every push runs the full material test suite. The figures in release posts
+# (171/171 etc.) are this workflow's, not the author's word — check the
+# Actions tab for the run attached to any cited commit.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  material-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: run material gate
+        run: node --test test/material-*.mjs
+      - name: viability proof (seed 7, 20000 ticks)
+        run: node test/viability-proof.mjs 7 20000
