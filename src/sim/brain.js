@@ -20,7 +20,7 @@
 // learn(brain, pheno, reward, chems?), forward. The instinct genes wire
 // sense→action directly, exactly as before.
 
-import { GENES } from './genome.js';
+import { GENES, gateMultiplier } from './genome.js';
 
 export const ACTIONS = [
   'seekFood', // move toward nearest food
@@ -128,7 +128,12 @@ function randSparse(rng, rows, cols, density, scale) {
   return { idx, w };
 }
 
-export function createBrain(pheno, rng) {
+export function createBrain(pheno, rng, chem) {
+  // chem (optional): live chemical levels at wiring time. D1 "Regulatory
+  // depth": instinct weights are G-gateable — birth-time gating of the
+  // sense→action reflexes. Gating scales an existing wire's strength; it
+  // never invents a verb (Paul's v0.5 rule satisfied vacuously — no new
+  // actions). Undefined chem → gates ≡ 1.0.
   const nAssoc = assocSize(pheno);
   // v2 (B): brainPlan splits the brainSize neuron budget across 1–3 hidden
   // layers (founder 1 = the classic single-layer brain). Layers get an
@@ -162,10 +167,11 @@ export function createBrain(pheno, rng) {
   // Instincts: evolvable sense→action reflexes, wired straight from the genome.
   // Each instinct gene's [0,1] phenotype maps to a weight in [-1.2, 1.2].
   // These weights are genetic — they change only via inheritance + mutation.
+  // D1: each wire is G-gateable at birth (gateMultiplier ≡ 1.0 at founder).
   const instW = Array.from({ length: N_OUT }, () => new Array(N_IN).fill(0));
   for (const gene of GENES) {
     if (gene.sense === undefined || gene.action >= N_OUT) continue;
-    instW[gene.action][gene.sense] = (pheno[gene.key] - 0.5) * 2.4;
+    instW[gene.action][gene.sense] = (pheno[gene.key] - 0.5) * 2.4 * gateMultiplier(pheno, gene.key, chem);
   }
 
   // Small personality baselines so newborns aren't blank slates.
@@ -546,6 +552,6 @@ function pruneAssocNeuron(brain) {
 // A newborn's brain inherits structure from its parents: sparse topology is
 // resampled, but the instinct wiring (genetic) is fresh and the attention
 // prior starts uniform. Kept for API parity with the Emberhollow design.
-export function inheritStructure(pheno, rng) {
-  return createBrain(pheno, rng);
+export function inheritStructure(pheno, rng, chem) {
+  return createBrain(pheno, rng, chem);
 }

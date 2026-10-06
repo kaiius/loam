@@ -12,6 +12,8 @@
 // thirst/cold/heat are SENSES, not drives — the chemistry invariant holds:
 // drives are readouts of chemicals; hazards are chemicals and body states.
 
+import { gateMultiplier, hasActiveGates } from './genome.js';
+
 // v0.27 "Seasons": panting constants — the evaporative-cooling reflex.
 // PANT_COOL_K: coreTemp drop per second at full pant (pant01 = 1).
 // PANT_WATER_K: hydration drain per second at full pant. Sized so a
@@ -409,13 +411,19 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   // substrate holds and what the product can take — chemistry rearranges,
   // never creates or destroys. Founder rates are near-zero: quiet
   // chemistry that evolution can turn up.
-  for (let i = 0; i < 8; i++) {
+  // D1 "Regulatory depth": the loop extends 8→16 (rx8–rx15 founder-silent:
+  // rate 0 → the continue path, behavior-identical at founder). Rate and
+  // threshold are G-gateable — live TF dynamics: the gate is evaluated at
+  // the target's own read site, from live chemistry. Gating scales only the
+  // move magnitude; the min-bounds hold regardless.
+  const _gated = hasActiveGates(pheno); // one cached lookup per tick
+  for (let i = 0; i < 16; i++) {
     const sub = pheno[`rx${i}sub`];
-    const thr = pheno[`rx${i}thr`] ?? 0.5;
+    const thr = (pheno[`rx${i}thr`] ?? 0.5) * (_gated ? gateMultiplier(pheno, `rx${i}thr`, b) : 1.0);
     const subV = b[sub];
     if (subV === undefined || subV <= thr) continue;
     const prod = pheno[`rx${i}prod`];
-    const rate = pheno[`rx${i}rate`] ?? 0;
+    const rate = (pheno[`rx${i}rate`] ?? 0) * (_gated ? gateMultiplier(pheno, `rx${i}rate`, b) : 1.0);
     if (rate <= 0 || sub === prod) continue;
     const move = Math.min(rate * (subV - thr) * dt, subV, 1 - b[prod]);
     if (move > 0) {
@@ -435,8 +443,12 @@ export function tickBiochem(b, pheno, dt, ctx = {}) {
   // (mood() §6), or the label lies about what's driving behavior.
   const depressed = b.serotonin < 0.35;
   const depGain = depressed ? 1.3 : 1.0;
-  const dg = (d) => (pheno['driveGain' + d] ?? 1) * depGain;
-  const db = (d) => pheno['driveBase' + d] ?? 0;
+  // D1 "Regulatory depth": drive gain/baseline are G-gateable — the gate is
+  // evaluated here, at the readout, from live chemistry. The chemical→drive
+  // correspondence itself is never gated (the chemistry invariant stands).
+  const _gatedD = hasActiveGates(pheno); // one cached lookup per tick
+  const dg = (d) => (pheno['driveGain' + d] ?? 1) * (_gatedD ? gateMultiplier(pheno, 'drv' + d + 'Gain', b) : 1.0) * depGain;
+  const db = (d) => (pheno['driveBase' + d] ?? 0) * (_gatedD ? gateMultiplier(pheno, 'drv' + d + 'Base', b) : 1.0);
   b.hunger = clamp01((1 - b.bloodSugar) * dg('Hunger') + db('Hunger'));
   b.energy = clamp01((1 - b.fatigue) * dg('Energy') + db('Energy'));
   b.social = clamp01((1 - b.oxytocin) * dg('Social') + db('Social'));

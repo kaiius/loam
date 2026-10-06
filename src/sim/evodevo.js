@@ -20,6 +20,15 @@
 //   This is the honest developmental story, not a special case.
 // - Growth is nutrition-scaled and permanent: starved juveniles stunt and
 //   the stunt factor freezes at maturation (canalization is a v+1 question).
+//
+// D1 "Regulatory depth": the bud float loci (grow/pow/len, plus the adopted
+// armLength/legLength len sources) are legal G targets. The gate is applied
+// in expressBuds — the developmental window — from live chemistry (chem).
+// budPotentials(p) without chem stays ungated: mate choice and divergence
+// read what the genome WANTS (choosing genes, not bodies); the realized
+// body is what development built under regulation.
+
+import { gateMultiplier } from './genome.js';
 
 // Paired (bilaterally symmetric) limb sites. Append-only — a future version
 // may add e.g. 'crown' or 'flank' without breaking old genomes.
@@ -43,31 +52,36 @@ function typeDefault(site) {
   return site === 'dorsal' ? 1 : site === 'neck' ? 3 : 0; // membrane / gill latent
 }
 
-function budGrow01(site, p) { return clamp01(p['bud' + cap(site) + 'Grow'] ?? growDefault(site)); }
+function budGrow01(site, p, chem) {
+  return clamp01((p['bud' + cap(site) + 'Grow'] ?? growDefault(site)) * gateMultiplier(p, 'bud' + cap(site) + 'Grow', chem));
+}
 function budType(site, p) {
   const v = p['bud' + cap(site) + 'Type'];
   // phenotype() maps choice genes to their string; accept a raw index too.
   if (typeof v === 'string' && BUD_TYPES.includes(v)) return v;
   return BUD_TYPES[v] ?? BUD_TYPES[typeDefault(site)];
 }
-function budPow01(site, p) { return clamp01(p['bud' + cap(site) + 'Pow'] ?? 0.5); }
+function budPow01(site, p, chem) {
+  return clamp01((p['bud' + cap(site) + 'Pow'] ?? 0.5) * gateMultiplier(p, 'bud' + cap(site) + 'Pow', chem));
+}
 
 // Len source per site: shoulder/hip adopt the ancestral genes (armLength,
 // legLength) — zero dead genes, founder-exact by construction. Dorsal has
 // no ancestral len gene: the founder proportion 0.5. Mid/neck read their own.
-function budLen01(site, p) {
-  if (site === 'shoulder') return clamp01(p.armLength ?? 0.5);
-  if (site === 'hip') return clamp01(p.legLength ?? 0.5);
-  if (site === 'mid') return clamp01(p.budMidLen ?? 0.5);
-  if (site === 'neck') return clamp01(p.budNeckLen ?? 0.5);
+// D1: the adopted len sources are legal G targets too — gated at this read.
+function budLen01(site, p, chem) {
+  if (site === 'shoulder') return clamp01((p.armLength ?? 0.5) * gateMultiplier(p, 'armLength', chem));
+  if (site === 'hip') return clamp01((p.legLength ?? 0.5) * gateMultiplier(p, 'legLength', chem));
+  if (site === 'mid') return clamp01((p.budMidLen ?? 0.5) * gateMultiplier(p, 'budMidLen', chem));
+  if (site === 'neck') return clamp01((p.budNeckLen ?? 0.5) * gateMultiplier(p, 'budNeckLen', chem));
   return 0.5; // dorsal — the founder proportion
 }
 
 // px length of a bud's limb — mirrors the founder limb formulas for the
 // adopted sites so the founder draws pixel-identically.
-export function budLenPx(site, p) {
+export function budLenPx(site, p, chem) {
   const r = p.bodyRadius || 30;
-  const len01 = budLen01(site, p);
+  const len01 = budLen01(site, p, chem);
   if (site === 'shoulder') return r * (0.45 + len01 * 0.65); // = painter armLen
   if (site === 'hip') return r * (0.15 + len01 * 0.6);       // = painter legLen
   return r * (0.3 + len01 * 0.7);
@@ -75,24 +89,26 @@ export function budLenPx(site, p) {
 
 // Gene-level bud potentials — stage-independent, what the genome WANTS.
 // Mate choice and divergence read these (choosing genes, not bodies).
-export function budPotentials(p) {
+// chem (optional, D1): when provided, the bud float reads are G-gated —
+// expressBuds passes live chemistry; plain budPotentials(p) stays ungated.
+export function budPotentials(p, chem) {
   let wingArea = 0, sailArea = 0, gillArea = 0, finArea = 0;
   let graspSites = 0, reachPx = 0;
   for (const site of BUD_SITES) {
-    const grow01 = budGrow01(site, p);
+    const grow01 = budGrow01(site, p, chem);
     const type = budType(site, p);
     // Organ power: a strong bud does more with the same size — a big
     // membrane with no muscle is a sail, not a wing. ×1.0 at founder
     // (pow 0.5), so the founder plan is untouched by construction.
-    const powK = 0.5 + budPow01(site, p);
-    const area = grow01 * budLen01(site, p) * powK;
+    const powK = 0.5 + budPow01(site, p, chem);
+    const area = grow01 * budLen01(site, p, chem) * powK;
     if (type === 'membrane') wingArea += area;
     else if (type === 'sail') sailArea += area;
     else if (type === 'gill') gillArea += area;
     else if (type === 'fin') finArea += area;
     if (type === 'grasp' && grow01 >= BUD_ERUPT) {
       graspSites++;
-      const lp = budLenPx(site, p) * powK;
+      const lp = budLenPx(site, p, chem) * powK;
       if (lp > reachPx) reachPx = lp;
     }
   }
@@ -110,18 +126,20 @@ export function budPotentials(p) {
 
 // The realized body plan: potentials × growth01, with the limb list a
 // creature actually has. Physics reads THIS, never the genes.
-export function expressBuds(p, growth01) {
+// D1: chem (optional) — live chemistry for G-gating the bud floats at the
+// developmental window. Undefined → ungated (founder-identical).
+export function expressBuds(p, growth01, chem) {
   const g = clamp01(growth01 ?? 1);
-  const pot = budPotentials(p);
+  const pot = budPotentials(p, chem);
   const limbs = [];
   let graspPairs = 0;
   for (const site of BUD_SITES) {
-    const grown = budGrow01(site, p) * g;
+    const grown = budGrow01(site, p, chem) * g;
     if (grown < BUD_ERUPT) continue;
     const type = budType(site, p);
     if (type === 'grasp') graspPairs++;
-    const lenPx = budLenPx(site, p);
-    const pow01 = budPow01(site, p);
+    const lenPx = budLenPx(site, p, chem);
+    const pow01 = budPow01(site, p, chem);
     for (const side of ['L', 'R']) {
       limbs.push({ site, side, type, grow01: grown, lenPx, pow01 });
     }

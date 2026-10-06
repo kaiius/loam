@@ -1,7 +1,7 @@
 // A creature: genome + biochemistry + brain + body in the world.
 // Per tick: sense → brain decides → act → learn from the outcome.
 
-import { phenotype, markLocus } from './genome.js';
+import { phenotype, markLocus, gateMultiplier, hasActiveGates } from './genome.js';
 import { createBiochem, tickBiochem, ageStage, stageSize, isDead, mood, coldSense, heatSense } from './biochem.js';
 import { createBrain, decide, learn, senseVector, ACTIONS } from './brain.js';
 import {
@@ -98,6 +98,11 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
   // v0.18 "Realms": the aquatic derivations (swimSpeed/sailDump/waterDrag)
   // overwrite the old fin-based swimSpeed with the membrane formula.
   const pheno = deriveAquaticPheno(phenotype(genome));
+  // D1 "Regulatory depth": the newborn's biochem is created BEFORE the body
+  // plan and brain — G-gated bud growth (expressBuds) and instinct wiring
+  // (createBrain) read live chemistry at birth (birth-time gating). At
+  // founder all gates ≡ 1.0, so this reordering is behavior-identical.
+  const biochem = createBiochem();
   const c = {
     kind: 'creature',
     id: nextId++,
@@ -106,9 +111,9 @@ export function createCreature(genome, x, platformIndex, rng, opts = {}) {
     pheno,
     // v0.17 "Bauplan": the realized body plan — what development has built
     // so far. Newborns are babies; the plan re-expresses on stage changes.
-    bodyPlan: expressBuds(pheno, developmentalGrowth01('baby')),
-    biochem: createBiochem(),
-    brain: createBrain(pheno, rng),
+    bodyPlan: expressBuds(pheno, developmentalGrowth01('baby'), biochem),
+    biochem,
+    brain: createBrain(pheno, rng, biochem),
     memory: createMemory(pheno), // episodic memory: lived + observed episodes
     episodeReward: 0, // outcome accumulating since the last decision
     episodeInput: null, // senses at the last decision
@@ -490,7 +495,8 @@ export function gatherSenses(c, world) {
       // Choosiness on the candidate's novel-structure area (wings + sails
       // + gills + fins), read from the GENES (choosing genes, not bodies).
       // Founder 0 → nearest/color wins, exactly as before.
-      const novelChoosy = c.pheno.matePrefNovel ?? 0;
+      // D1: matePrefNovel is a legal G target — gated at its own read site.
+      const novelChoosy = (c.pheno.matePrefNovel ?? 0) * gateMultiplier(c.pheno, 'matePrefNovel', c.biochem);
       if (novelChoosy > 0) {
         const novelty = (o.pheno.wingArea || 0) + (o.pheno.sailArea || 0) +
           (o.pheno.gillArea || 0) + (o.pheno.finArea || 0);
@@ -609,9 +615,13 @@ export function gatherSenses(c, world) {
   // adds gain × max(0, chem − thr) to its target sense. Founder gains are 0:
   // silent by default, evolvable. This is how a lineage can learn that
   // oxytocin means company, or that adrenaline sharpens fear.
+  // D1 "Regulatory depth": the loop extends 6→12 (rc6–rc11 founder-silent:
+  // gain 0 → the continue path, behavior-identical at founder). Gain is
+  // G-gateable — live TF dynamics at the sense readout.
   const pheno = c.pheno;
-  for (let i = 0; i < 6; i++) {
-    const gain = pheno[`rc${i}gain`] ?? 0;
+  const _gated = hasActiveGates(pheno); // one cached lookup per tick
+  for (let i = 0; i < 12; i++) {
+    const gain = (pheno[`rc${i}gain`] ?? 0) * (_gated ? gateMultiplier(pheno, `rc${i}gain`, b) : 1.0);
     if (gain === 0) continue;
     const chem = pheno[`rc${i}chem`];
     const chemV = b[chem];
@@ -810,12 +820,14 @@ export function integrateGravity(c, world, dt) {
 // v2 (E): emitters — firing an action releases a pulse of a chemical.
 // Each emitter gene names a trigger action and a chemical; committing to
 // the action adds the amount (founder: small nudges, not floods).
+// D1 "Regulatory depth": the amount is G-gateable — evaluated once per
+// commitment, at event time, from live chemistry.
 function fireEmitters(c) {
   const pheno = c.pheno;
   const b = c.biochem;
   for (let i = 0; i < 6; i++) {
     if (pheno[`em${i}trig`] !== c.action) continue;
-    const amt = pheno[`em${i}amt`] ?? 0;
+    const amt = (pheno[`em${i}amt`] ?? 0) * gateMultiplier(pheno, `em${i}amt`, b);
     if (amt === 0) continue;
     const chem = pheno[`em${i}chem`];
     if (b[chem] === undefined) continue;
@@ -2454,7 +2466,7 @@ export function updateCreature(c, world, dt) {
       const juvMean = c._juv && c._juv.n > 0 ? c._juv.sum / c._juv.n : undefined;
       if (stage === 'adult') c._stunt = 0.5 + 0.5 * (juvMean ?? 0.75);
       c._stage = stage;
-      c.bodyPlan = expressBuds(c.pheno, developmentalGrowth01(stage, juvMean, c._stunt));
+      c.bodyPlan = expressBuds(c.pheno, developmentalGrowth01(stage, juvMean, c._stunt), c.biochem);
     }
     // Commit to an action for a stretch; only urgent needs interrupt.
     // (Re-deciding every tick causes jitter — the creature can never
@@ -2631,7 +2643,7 @@ export function updateCreature(c, world, dt) {
     c.pheno = deriveAquaticPheno(phenotype(c.genome)); // marks change expression — refresh (v0.18: +aquatic)
     // v0.17: the body plan re-expresses too — the same developmental moment.
     const g01 = c.bodyPlan ? c.bodyPlan.growth01 : 1;
-    c.bodyPlan = expressBuds(c.pheno, g01);
+    c.bodyPlan = expressBuds(c.pheno, g01, c.biochem);
     world.events.push({ type: 'epimark', creature: c, note: marked, t: world.time });
   }
 

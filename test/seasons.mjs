@@ -277,5 +277,5 @@ test('v0.27: no new senses, no new actions — exactly one new locus (pantCapaci
   // not in the original seasons design; the v0.22 vulture QA gate regressed
   // under the seasonal climate and the design space contained no survivable
   // vulture genotype, so the panting reflex opened one (founder economics).
-  assert.equal(GENES.length, 257, 'v0.37: + 18 affect loci');
+  assert.equal(GENES.length, 349, 'D1: 349 = 257 + 92 regulatory loci');
 });

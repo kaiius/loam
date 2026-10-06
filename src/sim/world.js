@@ -119,6 +119,11 @@ export function createWorld(seed = 1, opts = {}) {
     // draws); the vasopressin-gated mate preference and display priming
     // are causal but draw-free.
     affectRng: createRng((seed * 7919 + 55) >>> 0),
+    // D1 "Regulatory depth": the duplication/pool machinery + the 92 new
+    // loci (mutation, chr-10 meiosis) run on their own sub-stream (salt
+    // 0x47) — never the affect 0x55 sub-stream. New loci never shift the
+    // main RNG sequence (BUILD_QUEUE standing rule).
+    dupRng: createRng((seed * 7919 + 0x47) >>> 0),
     driftSeeds: [], // v0.35 hydrochory: seeds riding the water [{x, y, ...}]
     currents: buildCurrents(layout), // v0.35: per-water-body current field
     // v0.13 "Roots":
@@ -817,7 +822,10 @@ export function tryMate(a, b) {
   for (let i = 0; i < nEggs; i++) {
     // v0.37 "Affect": the new affect loci mutate on their own sub-stream
     // (world.affectRng, salt 55) — the main sequence never sees those draws.
-    const eg = inherit(mom.genome, dad.genome, world.rng, undefined, world.affectRng);
+    // D1 "Regulatory depth": duplication/pool randomness + the 92 new loci
+    // run on world.dupRng (salt 0x47); dupRate/poolDrain are chemistry-gated
+    // from the mother's live biochem (generational gating).
+    const eg = inherit(mom.genome, dad.genome, world.rng, undefined, world.affectRng, world.dupRng, mom.biochem);
     // v0.14: gene duplication/deletion events enter the world's record —
     // the evolution tracker marks them on the timeline.
     for (const e of eg.dupLog || []) {

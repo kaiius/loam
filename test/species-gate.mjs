@@ -27,7 +27,7 @@ test('v0.30: speciesTag locus exists — choice over the species keys, on the mo
   // append-only: speciesTag sits at its v0.30 index; v0.32's nerve loci append after it;
   // v0.37's affect loci append last
   assert.equal(GENES[232].key, 'speciesTag');
-  assert.equal(GENES[GENES.length - 1].key, 'instMourn', 'v0.37 affect loci append last');
+  assert.equal(GENES[GENES.length - 1].key, 'g7slope', 'D1 regulatory loci append last');
 });
 
 test('v0.30: every species key has a tag choice', () => {

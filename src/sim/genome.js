@@ -582,6 +582,85 @@ GENES.push(
 // === end GENOME v0.37 =====================================================
 export const NERVES32_KEYS = new Set(GENES.slice(NERVES32_START).map((g) => g.key));
 
+// === GENOME D1 "Regulatory depth" (append-only) ==============================
+// design/D1-genome-regulatory.md — the genome becomes a program that rewrites
+// its own wiring: genes gating genes (family G, chr 10 "Regulation"), the
+// duplication machinery gains a neutral buffer (family Q + genome.pool,
+// chr 10), and the reaction/receptor channels extend founder-silent
+// (extended R on chr 6, extended C on chr 5).
+// Locus count: 257 → 349 (+92: 32 G + 4 Q + 32 ext-R + 24 ext-C). All
+// appended after the previous GENES.length — indices 0–256 are untouched.
+// (The design doc says "228 → 320"; the actual count at build time was 257 —
+// the doc's 228 was stale. The +92 is exact.)
+// Placed BEFORE GENE_MAP so the map covers the new loci.
+const D1_START = GENES.length;
+// D1 founder-exact helpers: these loci draw their founder default EXACTLY
+// (see randomAllele) — the design's founder model is exact defaults, with
+// variation entering via mutation.
+const _fx = (key, founder) => ({ key, kind: 'float', founder, founderExact: true });
+const _sx = (key, founder) => ({ key, kind: 'sym', founder, founderExact: true });
+// --- Extended R ×8 (chr 6): rx8–rx15 ----------------------------------------
+// Founder-silent: rate 0.0 (dead-silent — stricter than the rx0–7 whisper
+// 0.03 — truly off until selection turns them on), thr 0.5. Substrate and
+// product choices cycle the founder chain.
+{
+  const sub = [0, 1, 2, 3, 4, 0, 1, 2];
+  const prod = [1, 2, 3, 4, 0, 2, 3, 4];
+  for (let i = 8; i < 16; i++) {
+    GENES.push(_c(`rx${i}sub`, CHEM7, sub[i - 8]), _c(`rx${i}prod`, CHEM7, prod[i - 8]),
+      _fx(`rx${i}rate`, 0.0), _fx(`rx${i}thr`, 0.5));
+  }
+}
+// --- Extended C ×6 (chr 5): rc6–rc11 ----------------------------------------
+// Founder-silent: gain 0. Chem/sense choices cycle the rc0–5 founders.
+{
+  const senses = [0, 3, 1, 4, 13, 2]; // hunger, loneliness, tiredness, fear, illness, boredom
+  for (let i = 6; i < 12; i++) {
+    GENES.push(_c(`rc${i}chem`, CHEM7, i % 5), _c(`rc${i}sense`, SENSE24, senses[i - 6]),
+      _sx(`rc${i}gain`, 0), _fx(`rc${i}thr`, 0.5));
+  }
+}
+// --- Family Q: the buffered duplication drain (chr 10) ----------------------
+// dupRate/poolDrain reproduce DUP_RATE/DEL_RATE exactly at founder; poolCap
+// and poolRecDiv are new machinery, inert at founder (empty pool).
+GENES.push(
+  _fx('dupRate', 0.001),
+  _fx('poolDrain', 0.002),
+  _c('poolCap', [8, 12, 16], 1), // founder index 1 → 12
+  _fx('poolRecDiv', 0.15), // the recruitment divergence threshold
+);
+// --- Family G: transcription-factor analogs ×8 (chr 10) ---------------------
+// Each G gene: a regulator (chemical), a target (gene), a response curve
+// (threshold, signed slope). gateMult = 1 + slope × σ((reg − thr) × 4).
+// Founder slope 0 ⇒ mult ≡ 1.0 exactly — the neutralizer.
+const G_GENE_KEYS = new Set();
+const _gTgtGenes = [];
+for (let i = 0; i < 8; i++) {
+  const reg = _c(`g${i}reg`, CHEM7, i % 7);
+  const tgt = _c(`g${i}tgt`, [], 0); // choices wired from GTARGETS below
+  const thr = _fx(`g${i}thr`, 0.5);
+  const slope = _sx(`g${i}slope`, 0);
+  GENES.push(reg, tgt, thr, slope);
+  for (const g of [reg, tgt, thr, slope]) G_GENE_KEYS.add(g.key);
+  _gTgtGenes.push(tgt);
+}
+export const D1_KEYS = new Set(GENES.slice(D1_START).map((g) => g.key));
+// GTARGETS: GENERATED at load time from GENES — every float|sym|exp locus,
+// excluding family G itself (no gate-on-gate chains — evaluation is
+// single-pass) and excluding choice genes (a categorical can't be scaled).
+// Because GENES is append-only, target indices are stable forever.
+// KEEP THIS AFTER ALL GENES PUSHES: a future family appended below this line
+// must move this block down with it, or its loci won't become legal targets.
+export const GTARGETS = GENES
+  .filter((g) => (g.kind === 'float' || g.kind === 'sym' || g.kind === 'exp') && !G_GENE_KEYS.has(g.key))
+  .map((g) => g.key);
+{
+  // g{i}tgt founder: the index of 'curiosity' in the generated vocabulary.
+  const ci = GTARGETS.indexOf('curiosity');
+  for (const t of _gTgtGenes) { t.choices = GTARGETS; t.founder = ci; }
+}
+// === end GENOME D1 loci =====================================================
+
 const GENE_MAP = Object.fromEntries(GENES.map((g) => [g.key, g]));
 
 // --- chromosomes: linked inheritance --------------------------------------
@@ -599,6 +678,15 @@ for (let i = 0; i < 6; i++) {
   _chrC.push(`rc${i}chem`, `rc${i}sense`, `rc${i}gain`, `rc${i}thr`);
   _chrE.push(`em${i}trig`, `em${i}chem`, `em${i}amt`);
 }
+// D1 "Regulatory depth": the extended channels join their family's
+// chromosome — same story (chemistry; the chemistry/sense interface).
+for (let i = 8; i < 16; i++) _chrR.push(`rx${i}sub`, `rx${i}prod`, `rx${i}rate`, `rx${i}thr`);
+for (let i = 6; i < 12; i++) _chrC.push(`rc${i}chem`, `rc${i}sense`, `rc${i}gain`, `rc${i}thr`);
+// D1: chr 10 "Regulation" — the 36 family-G/Q loci travel together: the
+// machinery that rewrites the wiring.
+const _chrG = [];
+for (let i = 0; i < 8; i++) _chrG.push(`g${i}reg`, `g${i}tgt`, `g${i}thr`, `g${i}slope`);
+_chrG.push('dupRate', 'poolDrain', 'poolCap', 'poolRecDiv');
 for (let i = 0; i < 4; i++) _chrS.push(`st${i}event`, `st${i}val`, `st${i}int`);
 const _chrD = [];
 for (const d of ['Hunger', 'Energy', 'Social', 'Fun', 'Fear']) _chrD.push(`drv${d}Gain`, `drv${d}Base`);
@@ -679,7 +767,14 @@ export const CHROMOSOMES = [
   // sites, their regulators, the novelty preference, and the dormant-action
   // instincts travel together)
   [...EVO17_KEYS],
+  // 10 — Regulation (D1: the machinery that rewrites the wiring — family G
+  // transcription-factor analogs + family Q buffered-duplication machinery)
+  [..._chrG],
 ];
+// D1: index of the regulation chromosome. Its crossover draws run on the
+// dedicated 0x47 sub-stream in meiosis() — new loci never shift the main RNG
+// sequence. Append-only: future chromosomes go after this one.
+export const REGULATION_CHROM = CHROMOSOMES.length - 1;
 
 const MUTATION_RATE = 0.008; // per allele
 
@@ -688,6 +783,13 @@ function clamp01(v) {
 }
 
 export function randomAllele(gene, rng) {
+  // D1 "Regulatory depth": founderExact loci draw their founder default
+  // EXACTLY — no ±0.25 spread. For loci whose founder default must reproduce
+  // a current constant or an exact neutral (dupRate = DUP_RATE, poolDrain =
+  // DEL_RATE, rx8–15 rate = 0.0 dead-silent, g slope = 0 ⇒ mult ≡ 1.0 in
+  // float). Variation enters via mutation, the standard evolutionary story.
+  // No pre-D1 gene sets this flag, so all existing draws are untouched.
+  if (gene.founderExact && gene.founder !== undefined) return gene.founder;
   if (gene.kind === 'choice') {
     if (gene.founder !== undefined) return gene.founder;
     return rng.int(0, gene.choices.length - 1);
@@ -721,6 +823,74 @@ export function randomAllele(gene, rng) {
 export const DUP_RATE = 0.001; // per gene per generation: whole-gene duplication
 export const DEL_RATE = 0.002; // per extra copy per generation: deletion (prunes the neutral)
 export const MAX_EXTRA = 6; // cap on duplicated copies per genome
+// D1 "Regulatory depth": the transcription-factor gate.
+//
+// gateMultiplier(pheno, targetKey, chem) — the product over the 8 family-G
+// genes whose target is targetKey of the response curve
+//   1 + slope × σ((reg − thr) × 4)
+// σ the logistic, steepness fixed at 4; evolution tunes threshold and signed
+// amplitude. |slope| ≤ 1 and σ ∈ (0,1) ⇒ mult ∈ (0, 2): never negative,
+// expression stays non-negative. The regulator value is the LIVE chemical
+// level at the moment the target is read — gating at tick time is a pure
+// function of expressed values + live state, zero RNG draws.
+// At founder (all slopes 0) every factor is exactly 1.0 — behavior-neutral.
+// chem may be undefined (birth-time wiring before biochem exists) → 1.0.
+// The per-phenotype gate plan is cached in a WeakMap: read sites call this
+// per tick, and at founder the plan is empty so the call is one lookup.
+function sigma(x) { return 1 / (1 + Math.exp(-x)); }
+const _gatePlanCache = new WeakMap();
+function gatePlan(pheno) {
+  let plan = _gatePlanCache.get(pheno);
+  if (!plan) {
+    plan = [];
+    for (let i = 0; i < 8; i++) {
+      const slope = pheno[`g${i}slope`] ?? 0;
+      if (slope === 0) continue; // the neutralizer: mult ≡ 1.0 exactly, no gate
+      plan.push({
+        tgt: pheno[`g${i}tgt`],
+        reg: pheno[`g${i}reg`],
+        slope,
+        thr: pheno[`g${i}thr`] ?? 0.5,
+      });
+    }
+    _gatePlanCache.set(pheno, plan);
+  }
+  return plan;
+}
+export function gateMultiplier(pheno, targetKey, chem) {
+  if (!chem) return 1.0;
+  const plan = gatePlan(pheno);
+  if (plan.length === 0) return 1.0;
+  let mult = 1.0;
+  for (const g of plan) {
+    if (g.tgt !== targetKey) continue;
+    const regV = chem[g.reg];
+    if (regV === undefined) continue;
+    mult *= 1 + g.slope * sigma((regV - g.thr) * 4);
+  }
+  return mult;
+}
+// Fast path for hot read sites: one cached lookup per tick instead of one
+// per target. At founder (all slopes 0) this is false and the read sites
+// skip gateMultiplier entirely.
+export function hasActiveGates(pheno) {
+  return gatePlan(pheno).length > 0;
+}
+// Express one non-choice locus as mean × mark (no gates, no phenotype
+// derivations) — for read-site gating inside inherit(), where no phenotype
+// exists yet. Mirrors phenotype()'s base expression, including extra-dosage
+// averaging. GENE_MAP must cover the key (D1 loci are registered before it).
+function expressBase(genome, key) {
+  const gene = GENE_MAP[key];
+  const [a, b] = genome.alleles[key];
+  const mark = (genome.marks && genome.marks[key]) || 1.0;
+  let mean = (a + b) / 2;
+  const xc = genome.extra && genome.extra[key];
+  if (xc) mean = (mean + (xc[0] + xc[1]) / 2) / 2;
+  if (gene.kind === 'exp') return Math.max(0.05, mean * mark);
+  if (gene.kind === 'sym') return Math.max(-1, Math.min(1, mean * mark));
+  return clamp01(mean * mark);
+}
 // v0.18 "Realms": pin a sub-stream seed from an experiment pin instead of
 // the genome's content hash. Distinct per-pass salts keep the passes
 // independent: the same pin gives the same language alleles, the same
@@ -744,6 +914,7 @@ const PIN_SALT_DAYNIGHT = 0x28; // v0.28 day/night pass (activityPhase, instPhas
 const PIN_SALT_SPECIES30 = 0x30; // v0.30 species pass (speciesTag)
 const PIN_SALT_NERVES32 = 0x32; // v0.32 nervous-system pass
 const PIN_SALT_AFFECT37 = 0x37; // v0.37 affect pass
+const PIN_SALT_D1 = 0x47; // D1 regulatory-depth pass (founder alleles)
 export function randomGenome(rng, opts = {}) {
   // opts.pinSub (number): when set, the language (v0.16), evo-devo (v0.17),
   // realms (v0.18), hands/falling (v0.20), web-of-life (v0.22) and seasons
@@ -798,8 +969,9 @@ export function randomGenome(rng, opts = {}) {
   const isNew30 = (k) => SPECIES30_KEYS.has(k);
   const isNew32 = (k) => NERVES32_KEYS.has(k);
   const isNew37 = (k) => AFFECT_LOCI.has(k);
+  const isNewD1 = (k) => D1_KEYS.has(k);
 
-  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k) || isNew30(k) || isNew32(k) || isNew37(k);
+  const isNewer = (k) => isNew17(k) || isNew18(k) || isNew20(k) || isNewFalling(k) || isNewWeb22(k) || isNew27(k) || isNew28(k) || isNew30(k) || isNew32(k) || isNew37(k) || isNewD1(k);
   for (const gene of GENES) {
     if (gene.key.startsWith('lex') || isNewer(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, rng), randomAllele(gene, rng)];
@@ -829,7 +1001,7 @@ export function randomGenome(rng, opts = {}) {
   }
   let h3 = 0x18ea1d;
   for (const gene of GENES) {
-    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
+    if (isNew18(gene.key) || isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key) || isNewD1(gene.key)) continue;
     for (const a of alleles[gene.key]) h3 = (Math.imul(h3, 31) + Math.floor(a * 1e9)) | 0;
   }
   const realmsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_REALMS) : h3 >>> 0);
@@ -845,7 +1017,7 @@ export function randomGenome(rng, opts = {}) {
   // falling gene draws after the hands genes, deterministically.
   let h4 = 0x20a05;
   for (const gene of GENES) {
-    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
+    if (isNew20(gene.key) || isNewFalling(gene.key) || isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key) || isNewD1(gene.key)) continue;
     for (const a of alleles[gene.key]) h4 = (Math.imul(h4, 31) + Math.floor(a * 1e9)) | 0;
   }
   const handsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_HANDS) : h4 >>> 0);
@@ -858,7 +1030,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h5 = 0x22022;
   for (const gene of GENES) {
-    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
+    if (isNewWeb22(gene.key) || isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key) || isNewD1(gene.key)) continue;
     for (const a of alleles[gene.key]) h5 = (Math.imul(h5, 31) + Math.floor(a * 1e9)) | 0;
   }
   const web22Rng = createRng(pinned ? hashPin(pinSub, PIN_SALT_WEB22) : h5 >>> 0);
@@ -871,7 +1043,7 @@ export function randomGenome(rng, opts = {}) {
   // never shift the main RNG sequence.
   let h6 = 0x27027;
   for (const gene of GENES) {
-    if (isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
+    if (isNew27(gene.key) || isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key) || isNewD1(gene.key)) continue;
     for (const a of alleles[gene.key]) h6 = (Math.imul(h6, 31) + Math.floor(a * 1e9)) | 0;
   }
   const seasonsRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SEASONS) : h6 >>> 0);
@@ -884,7 +1056,7 @@ export function randomGenome(rng, opts = {}) {
   // own sub-stream in pass 7 — new loci never shift the main RNG sequence.
   let h7 = 0x28028;
   for (const gene of GENES) {
-    if (isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
+    if (isNew28(gene.key) || isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key) || isNewD1(gene.key)) continue;
     for (const a of alleles[gene.key]) h7 = (Math.imul(h7, 31) + Math.floor(a * 1e9)) | 0;
   }
   const daynightRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_DAYNIGHT) : h7 >>> 0);
@@ -898,7 +1070,7 @@ export function randomGenome(rng, opts = {}) {
   // pass stays bit-identical to v0.29.
   let h8 = 0x30030;
   for (const gene of GENES) {
-    if (isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key)) continue;
+    if (isNew30(gene.key) || isNew32(gene.key) || isNew37(gene.key) || isNewD1(gene.key)) continue;
     for (const a of alleles[gene.key]) h8 = (Math.imul(h8, 31) + Math.floor(a * 1e9)) | 0;
   }
   const speciesRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_SPECIES30) : h8 >>> 0);
@@ -912,7 +1084,7 @@ export function randomGenome(rng, opts = {}) {
   // pass stays bit-identical to v0.31.
   let h9 = 0x32032;
   for (const gene of GENES) {
-    if (isNew32(gene.key) || isNew37(gene.key)) continue;
+    if (isNew32(gene.key) || isNew37(gene.key) || isNewD1(gene.key)) continue;
     for (const a of alleles[gene.key]) h9 = (Math.imul(h9, 31) + Math.floor(a * 1e9)) | 0;
   }
   const nervesRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_NERVES32) : h9 >>> 0);
@@ -926,13 +1098,30 @@ export function randomGenome(rng, opts = {}) {
   // RNG sequence. Every earlier pass stays bit-identical to v0.36.
   let h10 = 0x37037;
   for (const gene of GENES) {
-    if (isNew37(gene.key)) continue;
+    if (isNew37(gene.key) || isNewD1(gene.key)) continue;
     for (const a of alleles[gene.key]) h10 = (Math.imul(h10, 31) + Math.floor(a * 1e9)) | 0;
   }
   const affectInitRng = createRng(pinned ? hashPin(pinSub, PIN_SALT_AFFECT37) : h10 >>> 0);
   for (const gene of GENES) {
     if (!isNew37(gene.key)) continue;
     alleles[gene.key] = [randomAllele(gene, affectInitRng), randomAllele(gene, affectInitRng)];
+    marks[gene.key] = 1.0;
+  }
+  // D1 "Regulatory depth": the 92 new loci draw from their own sub-stream in
+  // pass 11 (salt 0x47) — new loci never shift the main RNG sequence. Every
+  // earlier pass stays bit-identical.
+  // (The design doc says "pass 10, salt 0x47" — but pass 10 is already the
+  // v0.37 affect pass in this file, so D1 takes the next slot. The salt is
+  // what the doc pins, and 0x47 is unused by every earlier pass.)
+  let h11 = 0x47047;
+  for (const gene of GENES) {
+    if (isNewD1(gene.key)) continue;
+    for (const a of alleles[gene.key]) h11 = (Math.imul(h11, 31) + Math.floor(a * 1e9)) | 0;
+  }
+  const d1Rng = createRng(pinned ? hashPin(pinSub, PIN_SALT_D1) : h11 >>> 0);
+  for (const gene of GENES) {
+    if (!isNewD1(gene.key)) continue;
+    alleles[gene.key] = [randomAllele(gene, d1Rng), randomAllele(gene, d1Rng)];
     marks[gene.key] = 1.0;
   }
   // v0.18: allele overrides — applied after the draws, so a sweep can pin
@@ -944,7 +1133,7 @@ export function randomGenome(rng, opts = {}) {
       alleles[key] = Array.isArray(v) ? [v[0], v[1]] : [v, v];
     }
   }
-  return { alleles, marks, extra: {} };
+  return { alleles, marks, extra: {}, pool: {} };
 }
 
 function mutateAllele(gene, value, rng, rate = MUTATION_RATE) {
@@ -976,18 +1165,28 @@ function mutateAllele(gene, value, rng, rate = MUTATION_RATE) {
 // Meiosis: build one gamete. For each chromosome, pick 1–3 crossover points;
 // alternate between the two homologs between crossovers. Marks fade halfway
 // toward 1 (imperfect epigenetic inheritance — the past attenuates).
-export function meiosis(genome, rng) {
+// subRng (optional): the dedicated duplication/pool sub-stream (D1, salt
+// 0x47). When provided, the regulation chromosome's crossover draws AND all
+// copy-number segregation draws run on it — new loci never shift the main
+// RNG sequence. (The v0.37 "meiosis stays on the caller's rng" contract
+// predates chr 10; within-version reproducibility is preserved.)
+export function meiosis(genome, rng, subRng = null) {
   const gamete = {};
   const gameteMarks = {};
-  for (const chrom of CHROMOSOMES) {
+  for (let ci = 0; ci < CHROMOSOMES.length; ci++) {
+    const chrom = CHROMOSOMES[ci];
     if (chrom.length === 0) continue;
-    const nX = 1 + rng.int(0, 2);
+    // D1: the regulation chromosome's crossover draws run on the 0x47
+    // sub-stream (BUILD_QUEUE standing rule: new loci from their own RNG
+    // sub-stream). REGULATION_CHROM is chr 10, append-only.
+    const crng = (subRng && ci === REGULATION_CHROM) ? subRng : rng;
+    const nX = 1 + crng.int(0, 2);
     const points = new Set();
     while (points.size < nX && points.size < chrom.length - 1) {
-      points.add(1 + rng.int(0, chrom.length - 2));
+      points.add(1 + crng.int(0, chrom.length - 2));
     }
     const cuts = [...points].sort((a, b) => a - b);
-    let useFirst = rng.chance(0.5);
+    let useFirst = crng.chance(0.5);
     let cutIdx = 0;
     for (let i = 0; i < chrom.length; i++) {
       if (cutIdx < cuts.length && i === cuts[cutIdx]) {
@@ -1003,11 +1202,24 @@ export function meiosis(genome, rng) {
   }
   // v0.14: duplicated copies segregate like presence/absence alleles linked
   // to the base locus — each copy passes to the gamete with 50% chance.
+  // D1: copy-number segregation is duplication randomness → the 0x47
+  // sub-stream when provided (falls back to rng for old callers).
+  const srng = subRng || rng;
   const gameteExtra = {};
   for (const key of Object.keys(genome.extra || {})) {
-    if (rng.chance(0.5)) gameteExtra[key] = genome.extra[key].slice();
+    if (srng.chance(0.5)) gameteExtra[key] = genome.extra[key].slice();
   }
-  return { gamete, gameteMarks, gameteExtra };
+  // D1: pool copies segregate 50% like presence/absence alleles, same as
+  // extra copies. Carried as {a, b, mark, age, div} records.
+  const gametePool = {};
+  for (const key of Object.keys(genome.pool || {})) {
+    const kept = [];
+    for (const copy of genome.pool[key]) {
+      if (srng.chance(0.5)) kept.push({ ...copy });
+    }
+    if (kept.length) gametePool[key] = kept;
+  }
+  return { gamete, gameteMarks, gameteExtra, gametePool };
 }
 
 // v0.37 "Affect": the loci whose mutation draws come from the dedicated
@@ -1021,9 +1233,15 @@ export const AFFECT_LOCI = new Set([
   'griefTime', 'pairBondRate', 'sexHormoneRate', 'serotoninRate',
   'instDisplay', 'instInspect', 'instCuddle', 'instTend', 'instSeekBond', 'instMourn',
 ]);
-export function inherit(momGenome, dadGenome, rng, mutationRate = MUTATION_RATE, affectRng = null) {
-  const m = meiosis(momGenome, rng);
-  const d = meiosis(dadGenome, rng);
+export function inherit(momGenome, dadGenome, rng, mutationRate = MUTATION_RATE, affectRng = null, dupRng = null, chem = null) {
+  // dupRng: the dedicated duplication/pool sub-stream (D1, salt 0x47) — all
+  // duplication/pool randomness runs on it, never the affect 0x55 sub-stream.
+  // chem: live chemical levels (the mother's biochem at mating) — dupRate and
+  // poolDrain are legal G targets, so evolvability itself can be
+  // chemistry-gated (generational gating). Null → gates ≡ 1.0.
+  const prng = dupRng || rng;
+  const m = meiosis(momGenome, rng, dupRng);
+  const d = meiosis(dadGenome, rng, dupRng);
   const alleles = {};
   const marks = {};
   for (const gene of GENES) {
@@ -1031,32 +1249,125 @@ export function inherit(momGenome, dadGenome, rng, mutationRate = MUTATION_RATE,
     // sequence never sees these draws (the rng-boundary probe's affect arm
     // asserts this). Meiosis stays on the caller's rng for all loci: the
     // crossover ordering IS the per-version reproducibility contract.
-    const mrng = (affectRng && AFFECT_LOCI.has(gene.key)) ? affectRng : rng;
+    // D1: the 92 new loci likewise mutate on the 0x47 sub-stream — new loci
+    // never shift the main RNG sequence (BUILD_QUEUE standing rule).
+    let mrng = rng;
+    if (affectRng && AFFECT_LOCI.has(gene.key)) mrng = affectRng;
+    else if (dupRng && D1_KEYS.has(gene.key)) mrng = dupRng;
     alleles[gene.key] = [mutateAllele(gene, m.gamete[gene.key], mrng, mutationRate), mutateAllele(gene, d.gamete[gene.key], mrng, mutationRate)];
     marks[gene.key] = 1.0 + (((m.gameteMarks[gene.key] || 1) + (d.gameteMarks[gene.key] || 1)) / 2 - 1.0);
   }
   // v0.14: gene duplication — the evolvable-complexity machinery.
+  // D1: newborn duplications no longer land dosage-active in extra. They land
+  // SILENT in pool (the neutral buffer); only copies that demonstrate
+  // divergence (div ≥ poolRecDiv) are recruited to expression. Drain — not
+  // selection — is the default fate. This is the specie answer, mechanically:
+  // duplication without immediate dosage shock, divergence before recruitment.
   // Extra copies from both gametes combine (at most one per gene: two
-  // incoming copies resolve to one by drift). Deletion prunes copies;
-  // duplication copies the child's own fresh base pair. Choice genes are
-  // excluded — a second choice allele pair has no expression path, which
-  // would be a dead gene by construction.
+  // incoming copies resolve to one by drift). Deletion prunes active copies
+  // at DEL_RATE (unchanged semantics); pool copies drain at the expressed
+  // poolDrain locus. Choice genes are excluded — a second choice allele pair
+  // has no expression path, which would be a dead gene by construction.
   const extra = {};
   for (const key of Object.keys(m.gameteExtra || {})) extra[key] = m.gameteExtra[key].slice();
   for (const key of Object.keys(d.gameteExtra || {})) {
-    if (!extra[key] || rng.chance(0.5)) extra[key] = d.gameteExtra[key].slice();
+    if (!extra[key] || prng.chance(0.5)) extra[key] = d.gameteExtra[key].slice();
   }
   const dupLog = [];
   for (const key of Object.keys(extra)) {
-    if (rng.chance(DEL_RATE)) { delete extra[key]; dupLog.push({ kind: 'deletion', key }); }
+    if (prng.chance(DEL_RATE)) { delete extra[key]; dupLog.push({ kind: 'deletion', key }); }
   }
-  if (Object.keys(extra).length < MAX_EXTRA) {
-    for (const gene of GENES) {
-      if (gene.kind === 'choice' || extra[gene.key]) continue;
-      if (rng.chance(DUP_RATE)) {
-        extra[gene.key] = alleles[gene.key].slice(); // the newborn copy
-        dupLog.push({ kind: 'duplication', key: gene.key });
-        if (Object.keys(extra).length >= MAX_EXTRA) break;
+  // D1: the child's Q machinery, expressed (dupRate/poolDrain are legal G
+  // targets — chemistry-gated evolvability from day one). Gating reads the
+  // child's own fresh alleles/marks; chem is the mother's live chemistry.
+  const childView = { alleles, marks, extra };
+  const _gph = {};
+  for (let i = 0; i < 8; i++) {
+    _gph[`g${i}reg`] = GENE_MAP[`g${i}reg`].choices[alleles[`g${i}reg`][0]];
+    _gph[`g${i}tgt`] = GENE_MAP[`g${i}tgt`].choices[alleles[`g${i}tgt`][0]];
+    _gph[`g${i}thr`] = expressBase(childView, `g${i}thr`);
+    _gph[`g${i}slope`] = expressBase(childView, `g${i}slope`);
+  }
+  const dupRate = expressBase(childView, 'dupRate') * gateMultiplier(_gph, 'dupRate', chem);
+  const poolDrain = expressBase(childView, 'poolDrain') * gateMultiplier(_gph, 'poolDrain', chem);
+  const poolRecDiv = expressBase(childView, 'poolRecDiv');
+  const poolCap = GENE_MAP['poolCap'].choices[alleles['poolCap'][0]];
+  // D1: the pool — silent duplicated pairs. Parental copies arrive via the
+  // gametes (50% segregation); newborn duplications land here, never in extra.
+  const pool = {};
+  for (const key of Object.keys(m.gametePool || {})) {
+    pool[key] = m.gametePool[key].map((c) => ({ ...c }));
+  }
+  for (const key of Object.keys(d.gametePool || {})) {
+    const arr = d.gametePool[key].map((c) => ({ ...c }));
+    if (pool[key]) pool[key].push(...arr); else pool[key] = arr;
+  }
+  const poolSize = () => Object.values(pool).reduce((n, arr) => n + arr.length, 0);
+  // 1. Newborn duplications (P = expressed dupRate per non-choice gene) land
+  //    in pool, carrying a snapshot of the gene's epigenetic mark.
+  for (const gene of GENES) {
+    if (gene.kind === 'choice') continue;
+    if (prng.chance(dupRate)) {
+      const [a, b] = alleles[gene.key];
+      (pool[gene.key] || (pool[gene.key] = [])).push({ a, b, mark: marks[gene.key] ?? 1.0, age: 0, div: 0 });
+      dupLog.push({ kind: 'duplication', key: gene.key });
+    }
+  }
+  // 2. Pooled copies mutate independently (same MUTATION_RATE, pool
+  //    sub-stream); divergence from the gene's CURRENT base pair tracked:
+  //    div = |a − baseA| + |b − baseB|. Marks fade ×0.5/gen toward 1.
+  for (const key of Object.keys(pool)) {
+    const gene = GENE_MAP[key];
+    if (!gene) { delete pool[key]; continue; }
+    const [baseA, baseB] = alleles[key];
+    for (const copy of pool[key]) {
+      copy.a = mutateAllele(gene, copy.a, prng, mutationRate);
+      copy.b = mutateAllele(gene, copy.b, prng, mutationRate);
+      copy.age += 1;
+      copy.mark = 1.0 + (copy.mark - 1.0) * 0.5;
+      copy.div = Math.abs(copy.a - baseA) + Math.abs(copy.b - baseB);
+    }
+  }
+  // 3. Drain: each pooled copy deleted with P = expressed poolDrain.
+  //    Drain is the default fate.
+  for (const key of Object.keys(pool)) {
+    pool[key] = pool[key].filter((copy) => {
+      if (prng.chance(poolDrain)) { dupLog.push({ kind: 'pool-drain', key }); return false; }
+      return true;
+    });
+    if (pool[key].length === 0) delete pool[key];
+  }
+  // 4. Recruitment: a copy with div ≥ poolRecDiv is promoted to an active
+  //    dosage copy in extra (if active slots remain under the 6-cap and the
+  //    gene has no active copy — at most one extra pair per gene, as before;
+  //    otherwise it waits in the pool). Promoted copies express exactly as
+  //    today's duplicates do (phenotype() dosage-averaging).
+  for (const key of Object.keys(pool)) {
+    const kept = [];
+    for (const copy of pool[key]) {
+      if ((copy.div ?? 0) >= poolRecDiv && !extra[key] && Object.keys(extra).length < MAX_EXTRA) {
+        extra[key] = [copy.a, copy.b];
+        dupLog.push({ kind: 'recruitment', key, div: copy.div });
+      } else {
+        kept.push(copy);
+      }
+    }
+    if (kept.length) pool[key] = kept; else delete pool[key];
+  }
+  // 5. Overflow: if the pool exceeds poolCap, the oldest copies drain first
+  //    (age-ordered, no RNG needed).
+  {
+    const total = poolSize();
+    if (total > poolCap) {
+      const all = [];
+      for (const key of Object.keys(pool)) for (const copy of pool[key]) all.push({ key, copy });
+      all.sort((x, y) => y.copy.age - x.copy.age);
+      for (let i = 0; i < total - poolCap; i++) {
+        const { key, copy } = all[i];
+        const arr = pool[key];
+        arr.splice(arr.indexOf(copy), 1);
+        dupLog.push({ kind: 'pool-overflow', key });
+        if (arr.length === 0) delete pool[key];
       }
     }
   }
@@ -1064,9 +1375,9 @@ export function inherit(momGenome, dadGenome, rng, mutationRate = MUTATION_RATE,
   for (const key of Object.keys(extra)) {
     const gene = GENE_MAP[key];
     if (!gene) { delete extra[key]; continue; }
-    extra[key] = extra[key].map((a) => mutateAllele(gene, a, rng, mutationRate));
+    extra[key] = extra[key].map((a) => mutateAllele(gene, a, prng, mutationRate));
   }
-  return { alleles, marks, extra, dupLog };
+  return { alleles, marks, extra, pool, dupLog };
 }
 
 // Nudge an epigenetic mark on one locus (0.5–1.5×). Called by life events:

@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, DUP_RATE, DEL_RATE, MAX_EXTRA, EVO17_KEYS, CHROMOSOMES, SENSE32, SENSE24, ACT20, ACT13 } from '../src/sim/genome.js';
+import { GENES, randomGenome, inherit, phenotype, markLocus, genomeDistance, gateMultiplier, GTARGETS, D1_KEYS, REGULATION_CHROM, DUP_RATE, DEL_RATE, MAX_EXTRA, EVO17_KEYS, CHROMOSOMES, SENSE32, SENSE24, ACT20, ACT13 } from '../src/sim/genome.js';
 import { budPotentials, expressBuds, developmentalGrowth01, BUD_SITES, BUD_TYPES, BUD_ERUPT, BUD_NUB_HI } from '../src/sim/evodevo.js';
 import { createBrain, decide, learn, senseVector, ACTIONS, N_IN } from '../src/sim/brain.js';
 import { createBiochem, tickBiochem, mood, ageStage } from '../src/sim/biochem.js';
@@ -611,7 +611,7 @@ test('v0.5: mate finally has an instinct pathway', () => {
   assert.equal(g.sense, 3, 'driven by loneliness (need for company)');
   assert.equal(g.action, 6, 'drives the mate action');
   assert.equal(ACTIONS[6], 'mate');
-  assert.equal(GENES.length, 257); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci
+  assert.equal(GENES.length, 349); // 43 + v2's 135 (132 across 9 families + matePref's 3) + v0.14's 7 voice genes + disgust's instWasteFlee + v0.16's 6 substrate genes + v0.17's 25 evo-devo loci + v0.18's 6 realms loci + v0.20's 3 hands instincts + v0.20's instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci + D1's 92 regulatory loci
 });
 
 test('brainSize: unbounded locus — founder at emberling scale, no ceiling', () => {
@@ -3691,13 +3691,64 @@ function evoGenome(rng, overrides) {
 }
 
 test('v0.17: 217 loci, 9 chromosomes — the evo-devo 25 ride together', () => {
-  assert.equal(GENES.length, 257); // v0.17's 223 + v0.20's 3 hands instincts + instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci (8 drive + 4 rate + 6 instinct)
+  assert.equal(GENES.length, 349); // v0.17's 223 + v0.20's 3 hands instincts + instFallVocal + v0.22's instBite + v0.22.1's instHungerBite + v0.27's pantCapacity + v0.28's activityPhase/instPhaseSleep + v0.30's speciesTag + v0.32's six nerve loci + v0.37's 18 affect loci (8 drive + 4 rate + 6 instinct) + D1's 92 (32 G + 4 Q + 32 ext-R + 24 ext-C)
   assert.equal(EVO17_KEYS.size, 25);
-  assert.equal(new Set(GENES.map((g) => g.key)).size, 257, 'no duplicate keys');
-  assert.equal(CHROMOSOMES.length, 9);
+  assert.equal(new Set(GENES.map((g) => g.key)).size, 349, 'no duplicate keys');
+  assert.equal(CHROMOSOMES.length, 10);
   for (const k of EVO17_KEYS) {
     assert.ok(CHROMOSOMES[8].includes(k), `${k} rides the new chromosome 9`);
   }
+});
+
+test('D1: 349 loci, 10 chromosomes — the 92 regulatory loci ride together', () => {
+  assert.equal(D1_KEYS.size, 92, '32 G + 4 Q + 32 ext-R + 24 ext-C');
+  assert.equal(REGULATION_CHROM, 9, 'chr 10 is the regulation chromosome');
+  assert.equal(CHROMOSOMES[9].length, 36, 'all 36 family-G/Q loci on chr 10');
+  for (const k of D1_KEYS) {
+    const onChr10 = CHROMOSOMES[9].includes(k);
+    const onChr5 = CHROMOSOMES[4].includes(k);
+    const onChr6 = CHROMOSOMES[5].includes(k);
+    assert.ok(onChr10 || onChr5 || onChr6, `${k} rides chr 10, 5, or 6`);
+  }
+  // GTARGETS is GENERATED from GENES — float|sym|exp, no G genes, no choice genes.
+  assert.ok(GTARGETS.length > 200, `generated vocabulary, ${GTARGETS.length} targets`);
+  for (const k of D1_KEYS) {
+    if (k.startsWith('g')) assert.ok(!GTARGETS.includes(k), `no gate-on-gate: ${k} excluded`);
+  }
+  const geneByKey = Object.fromEntries(GENES.map((g) => [g.key, g]));
+  for (const t of GTARGETS) {
+    assert.ok(['float', 'sym', 'exp'].includes(geneByKey[t].kind), `${t} is a scalable kind`);
+  }
+  assert.ok(GTARGETS.includes('dupRate'), 'dupRate is a legal G target');
+  assert.ok(GTARGETS.includes('curiosity'), 'curiosity is a legal G target');
+  // Founder defaults are exact: gates ≡ 1.0, extended channels silent.
+  const rng = createRng(1234);
+  const g = randomGenome(rng);
+  const p = phenotype(g);
+  assert.equal(p.g0slope, 0);
+  assert.equal(p.rx8rate, 0.0);
+  assert.equal(p.rc6gain, 0);
+  assert.equal(p.dupRate, 0.001);
+  assert.equal(p.poolDrain, 0.002);
+  assert.equal(p.poolRecDiv, 0.15);
+  assert.equal(p.poolCap, 12);
+  assert.deepEqual(g.pool, {}, 'founder pool starts empty');
+  for (let i = 0; i < 8; i++) {
+    assert.equal(p[`g${i}tgt`], 'curiosity', `g${i}tgt founder targets curiosity`);
+    assert.equal(gateMultiplier(p, p[`g${i}tgt`], { bloodSugar: 0.5, adrenaline: 0.9 }), 1.0,
+      `g${i}: mult ≡ 1.0 exactly at founder`);
+  }
+  // The gate curve is the implementation: closed form within 1e-12.
+  const g2 = randomGenome(createRng(99));
+  g2.alleles.g0tgt = [GTARGETS.indexOf('drvHungerGain'), GTARGETS.indexOf('drvHungerGain')];
+  g2.alleles.g0reg = [0, 0]; // bloodSugar
+  g2.alleles.g0slope = [0.5, 0.5];
+  g2.alleles.g0thr = [0.5, 0.5];
+  const p2 = phenotype(g2);
+  const regV = 0.8;
+  const got = gateMultiplier(p2, 'drvHungerGain', { bloodSugar: regV });
+  const want = 1 + 0.5 * (1 / (1 + Math.exp(-((regV - 0.5) * 4))));
+  assert.ok(Math.abs(got - want) < 1e-12, `curve closed form: ${got} vs ${want}`);
 });
 
 test('v0.18: SENSE32 — four realms senses appended, never renumbered', () => {

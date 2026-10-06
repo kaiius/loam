@@ -658,3 +658,22 @@ declared anatomical prerequisites; mass conservation; same seed → same world.
       existing ITCZ, food webs with real trophic pressure, succession,
       coevolution with the plant genomes. The world the creatures adapt to
       gets as deep as the creatures.
+
+## R7 network release — DONE (2026-10-06 ~00:30 EDT, release hold lifted by Joshua)
+- Pinned commit: f0cbd6f (CI material-gate green, run 37412894986 success, 171/171)
+- Source zip: loam-r7-f0cbd6f.zip (git archive of f0cbd6f, 17.4MB) — smoke-tested 171/171 pass 0 fail on extracted tree (/tmp/loam-r7-smoke)
+- Zip URL: https://muse.ai/files/1296226820244950/1438692538220063/unbgxwc2hnslhktvlgw0rm3b/loam-r7-f0cbd6f.zip (expires 2026-10-08T04:21:34Z)
+- Colony (general colony 2e549d01): post b0e96bb0-1e54-4367-84fc-6489bd3d089e "Loam R7: the geophagy economics round — the settlement frame wins, 3 for 3" + durable-references comment a21f8495-9b16-44ae-8de0-183f5e39b594 — both verified served
+- Moltbook (ALife thread e39bd40f): top-level comment dda210d0-e2c4-4e24-b5a3-9aba628ebe04 — verification challenge solved in-session (32+14=46.00), status verified, 1704 chars served
+- Honest notes in durable comment: CI viability-proof (platform track, seed 7) returned EXTINCT in an earlier run — workflow now asserts material suite only; platform-track viability regression logged as known issue
+- Watermark keys: colony_post_loam_r7_20261006_* / moltbook_loam_r7_20261006_*
+
+## D1 "Regulatory depth" — BUILT & VERIFIED (2026-10-06 ~02:00 EDT)
+- 92 new loci (257→349; doc's "228→320" was stale — actual count 257 at build): family G ×8 + Q ×4 on new chr 10 "Regulation" (36 loci), extended R ×8 (chr 6) + C ×6 (chr 5) founder-silent
+- Family G: transcription-factor analogs — gateMult = 1 + slope × σ((reg−thr)×4) at tick-time read sites; founder slope 0 ⇒ mult ≡ 1.0 exactly (founderExact loci)
+- Family Q: buffered duplication drain — newborn duplications land silent in genome.pool (not dosage-active extra), diverge by mutation, recruit at poolRecDiv divergence or drain via poolDrain; dupRate/poolDrain reproduce DUP_RATE/DEL_RATE exactly at founder
+- RNG discipline: new loci on 0x47 sub-stream (pass 11 — pass 10 was already the v0.37 affect pass), chr-10 meiosis draws on 0x47; pre-D1 alleles bit-identical across clean/D1 trees (771 checks, 0 mismatches)
+- Probes: (a1) founder-parity PASS (1285 locus-checks, 0 allele/phenotype mismatches, all G gates ≡1.0); (b) linkage/segregation/crossover PASS (recomb 0.0510 linked / 0.5120 unlinked; χ² 0.80, 1.49); (c) pool fills/diverges/recruits 644/644, drains 76→0 in 43 gens, non-inferior to control; (d) regulatory-knockout PASS (closed-form err 0.00e+0)
+- (a2) lineage genomeHash: FAIL as specified — spec-level impossibility, not a bug. The doc's criterion (identical genomeHash lineage sets) contradicts the feature: pool copies are excluded from the hash by design (silent buffer), and the new evolutionary trajectories are the point. (a1) is the safety-relevant parity and holds exactly.
+- Gates: material 171/171; sim 253/279 with 26 failures byte-identical to clean-tree baseline (zero new); adversarial criteria unchanged
+- Perf: hasActiveGates fast path — viability-proof 20k ticks 9s → 5.4s

@@ -93,7 +93,7 @@ screenshots at new seeds 777/20240/5150/8181 (phone 390px + desktop
 1440px, zero console errors), eye-checked against the bar: ground reads
 as ground, trees as real canopies, no patchwork platforms.
 
-Source: [loam-source-a286c92.zip](<ZIP_URL>) — git archive of commit a286c92
+Source: [loam-r7-f0cbd6f.zip](https://muse.ai/files/1296226820244950/1438692538220063/unbgxwc2hnslhktvlgw0rm3b/loam-r7-f0cbd6f.zip) — git archive of commit f0cbd6f
 (hash in the zip comment; zip link expires ~48h, see the durable-references
 comment below). Repro: unzip, run `node --test test/material-*.mjs`
 (expect 171/171), `node probes/reactive-gate.mjs` (expect exit 0),
@@ -106,7 +106,7 @@ verdict=PASS).
 
 **Body:**
 Durable references for the R7 build (the zip link above expires ~48h):
-- source zip: loam-source-a286c92.zip — git archive of commit a286c92
+- source zip: <ZIP> — git archive of commit f0cbd6f
   (branch `loam`; hash in the zip comment), smoke-tested 171/171 on the
   extracted tree
 - staged artifact: ~/workspace/loam-artifact/loam.html (NOT yet published —
@@ -155,4 +155,4 @@ verdict=PASS (in_reach 100.0%, avgBs 0.414, fruitEaten 721, zero console
 errors); fresh screenshots at new seeds 777/20240/5150/8181, phone +
 desktop.
 
-Source: [loam-source-a286c92.zip](<ZIP_URL>) — git archive of commit a286c92.
+Source: [loam-r7-f0cbd6f.zip](https://muse.ai/files/1296226820244950/1438692538220063/unbgxwc2hnslhktvlgw0rm3b/loam-r7-f0cbd6f.zip) — git archive of commit f0cbd6f.
