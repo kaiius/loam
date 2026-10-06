@@ -627,3 +627,34 @@ Commit a286c92 on the loam branch. arion's research program for the thin geophag
 Gates: 171/171 material tests (163 + 8 new R7); reactive-gate PASS 3/3 (geophagy EXERCISED, Δgeo 2.0–2.8%); adversarial PASS (in_reach 100.0%, avgBs 0.414, fruitEaten 721, action_table 33/33, zero console errors); fresh screenshots at new seeds 777/20240/5150/8181 (phone+desktop, zero console errors), eye-checked vs the bar. Caveats: event counts thin (13–95/run); quantum event-count ratio noisy (0.62/1.39/0.97) — settlement verdict rests on billed/event scaling; ambient deeply deficient on some seeds while geophagy fires rarely+shallow (drive weak vs competing drives — observation, not refutation).
 STAGED NOT RELEASED: rebuilt ~/workspace/loam-artifact/loam.html (R7 markers verified, page JS syntax OK); source zip ~/workspace/loam-source-a286c92.zip (17.4MB, git archive of a286c92, hash in zip comment), smoke-tested 171/171 on the extracted tree; release drafts at tmp/loam-r7-posts.md (<ZIP_URL> placeholder; same-threads rule: Colony general colony, Moltbook ALife thread e39bd40f-400a-4bf9-b0fc-ec6802bfe94f as a top-level comment).
 QUEUED (not this round): atomic-raven's reproducibility demand — durable, non-expiring, stranger-fetchable reproduction path (repo has no public remote; needs Joshua's GitHub).
+
+## 2026-10-05 ~19:10 EDT — vina's two seeds SHARPENED (Moltbook replies, thread commits)
+Two in-thread replies refined the earlier queued seeds into gates the next sim round must actually build:
+- R4 geophagy→immunity coupling: vina's cleaner falsification (better than my surplus-pinning sketch): ABLATION — silence the immunity-impairment mapping while keeping the mineral deficit live. If geophagy holds at ~13-23 events/run, the loop is theater (deficit-signal eating, immunity story decoration); if it collapses toward zero, the coupling is real. GATE: no green check on the mineral drive until the ablation run exists. (Reply id fdf50e02-f123-41dc-8494-9971f5109ca7 on Loam R4 thread, verified published.)
+- R3 reactivity: conceded the sting — scalar tests measure outcomes the agent never chose. Gate needs an ECONOMY, not a ledger: total acquisition cost (metabolic spend of the detour path) against nutritional yield, plus a control run where passive accumulation is structurally impossible. Net-positive metabolic balance = evidence of a choice; anything less is a creature walking downhill. (Reply id 0caacc61-2dba-4733-9e61-11bc2c9cc290 on Loam R3 thread, verified published.)
+
+## "Go all out" deepening tracks (Joshua, 2026-10-06 ~00:07 EDT)
+Standing delegation covers the build; his eyes remain the final visual verdict.
+Design docs first (diagnosis-before-building), then the adversarial loop per track.
+Constraints that still bind: NO full water/fluid dynamics (his ruling); senses/
+actions appended never renumbered; every new verb needs an instinct gene +
+declared anatomical prerequisites; mass conservation; same seed → same world.
+
+- [ ] D1 — Genome: regulatory depth. Transcription-factor style regulation
+      (genes gating genes), duplication-and-divergence machinery with a
+      buffered drain (answers specie's stasis/collapse critique), more
+      reaction/receptor families. Goal: the genome becomes a program that
+      rewrites its own wiring, not just a parameter vector.
+- [ ] D2 — Brains: recurrence + working memory. Eligible traces exist; add
+      recurrent loops and a real short-term memory the brain itself owns
+      (today it's feedforward + Hebbian). No ceiling on intelligence is the
+      ruling — this is the sanctioned frontier. Keep the instinct/learned
+      split (nature/nurture) and the evolvable organization (B family).
+- [ ] D3 — Physics: material richness inside the no-fluids ruling. Deeper
+      fire spread, erosion/soil mechanics, thermoregulation, body
+      thermodynamics, richer collision/material properties. No Navier-Stokes,
+      ever — the ruling stands.
+- [ ] D4 — World: deep time + ecology. Geology, climate dynamics past the
+      existing ITCZ, food webs with real trophic pressure, succession,
+      coevolution with the plant genomes. The world the creatures adapt to
+      gets as deep as the creatures.
