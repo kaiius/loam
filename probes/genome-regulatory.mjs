@@ -449,12 +449,88 @@ async function probeD() {
 }
 
 // ---------------------------------------------------------------------------
+// (e) Clamp-sanitizer (claude-code-visitor-4b2, 2026-10-06).
+// gateMultiplier must never return a negative value: one flipped gate would
+// poison a whole compounded product (negative reaction rates are
+// unphysical). The sym-locus [-1,1] mutation bound is the first defense;
+// the Math.max(0, ·) floor in gateMultiplier is the structural one.
+// This probe (i) sweeps evolved-range slopes and asserts non-negativity with
+// no behavior change vs the unclamped closed form, and (ii) injects
+// out-of-range slopes directly into the phenotype (the "what if selection
+// finds it" adversary) and asserts the floor holds while the unclamped
+// product would go negative — proving the clamp actually bites.
+// ---------------------------------------------------------------------------
+async function probeE() {
+  const chem = { bloodSugar: 0.9, adrenaline: 0.2, oxytocin: 0.6 };
+  const tgtIdx = D1.GTARGETS.indexOf('rx0rate');
+  function build(slopes) { // slopes: array of 8, injected straight into alleles
+    const g = D1.randomGenome(createRng(4242));
+    for (let i = 0; i < 8; i++) {
+      g.alleles[`g${i}tgt`] = [tgtIdx, tgtIdx];
+      g.alleles[`g${i}reg`] = [0, 0]; // bloodSugar
+      g.alleles[`g${i}slope`] = [slopes[i], slopes[i]];
+      g.alleles[`g${i}thr`] = [0.5, 0.5];
+    }
+    return D1.phenotype(g);
+  }
+  const targets = ['rx0rate', 'rx1rate', 'rc0gain', 'dupRate'];
+  let minSeen = Infinity, negCount = 0, checked = 0;
+  // (i) evolved range: slopes in [-1, 1], chem sweep — clamp must be a no-op
+  for (const s of [-1, -0.7, -0.3, 0, 0.3, 0.7, 1]) {
+    const p = build([s, s, s, s, s, s, s, s]);
+    for (const t of targets) {
+      for (const regV of [0, 0.25, 0.5, 0.75, 1]) {
+        const c = { ...chem, bloodSugar: regV };
+        const m = D1.gateMultiplier(p, t, c);
+        checked++; if (m < minSeen) minSeen = m;
+        if (m < 0) negCount++;
+      }
+    }
+  }
+  // (ii) adversary: out-of-range slopes injected DIRECTLY into the phenotype
+  // (bypassing the sym [-1,1] allele clamp and phenotype expression — the
+  // "what if a future code path breaks the invariant" scenario)
+  let adversaryNeg = 0, adversaryBites = 0, adversaryChecked = 0;
+  const sigma = (x) => 1 / (1 + Math.exp(-x));
+  for (const slopes of [[-1.5, 0, 0, 0, 0, 0, 0, 0], [-2, -2, 0, 0, 0, 0, 0, 0], [3, 3, -1.5, 0, 0, 0, 0, 0]]) {
+    const g = D1.randomGenome(createRng(4242));
+    for (let i = 0; i < 8; i++) {
+      g.alleles[`g${i}tgt`] = [tgtIdx, tgtIdx];
+      g.alleles[`g${i}reg`] = [0, 0]; // bloodSugar
+      g.alleles[`g${i}slope`] = [0, 0]; // silenced at allele level...
+      g.alleles[`g${i}thr`] = [0.5, 0.5];
+    }
+    const p = D1.phenotype(g);
+    for (let i = 0; i < 8; i++) p[`g${i}slope`] = slopes[i]; // ...then injected raw
+    for (const regV of [0, 0.5, 0.9, 1]) {
+      const c = { ...chem, bloodSugar: regV };
+      const got = D1.gateMultiplier(p, 'rx0rate', c);
+      // unclamped closed form, for the bite check
+      let want = 1;
+      for (let i = 0; i < 8; i++) {
+        const s = slopes[i];
+        if (s === 0) continue;
+        want *= 1 + s * sigma((regV - 0.5) * 4);
+      }
+      adversaryChecked++;
+      if (got < 0) adversaryNeg++;
+      if (want < 0 && got === 0) adversaryBites++;
+    }
+  }
+  const pass = negCount === 0 && adversaryNeg === 0 && adversaryBites > 0;
+  report('(e) clamp-sanitizer', pass,
+    `evolved-range: ${checked} evals, min mult ${minSeen.toFixed(6)}, negatives ${negCount}; ` +
+    `adversary: ${adversaryChecked} evals, negatives ${adversaryNeg}, clamp bites ${adversaryBites}`);
+}
+
+// ---------------------------------------------------------------------------
 const which = process.argv[2] || 'all';
 const run = async (name, fn) => { if (which === 'all' || which === name) await fn(); };
 await run('a', probeA);
 await run('b', probeB);
 await run('c', probeC);
 await run('d', probeD);
+await run('e', probeE);
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} probes passed${failed.length ? ' — FAILED: ' + failed.map((f) => f.name).join(', ') : ''}`);
 process.exit(failed.length ? 1 : 0);

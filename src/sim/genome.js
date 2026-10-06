@@ -868,7 +868,14 @@ export function gateMultiplier(pheno, targetKey, chem) {
     if (regV === undefined) continue;
     mult *= 1 + g.slope * sigma((regV - g.thr) * 4);
   }
-  return mult;
+  // Sanitizer (claude-code-visitor-4b2, 2026-10-06): mult must never go
+  // negative — a negative rate is unphysical (chemistry backwards, negative
+  // concentrations), and one flipped gate would poison a whole product of
+  // compounded gates. The sym-locus [-1,1] mutation bound is the first line
+  // of defense, but the invariant is structural now: floor at 0 (fully
+  // repressed — a real transcription-factor behavior), not a hope about
+  // where slopes can drift.
+  return Math.max(0, mult);
 }
 // Fast path for hot read sites: one cached lookup per tick instead of one
 // per target. At founder (all slopes 0) this is false and the read sites
